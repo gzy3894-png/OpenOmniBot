@@ -16,6 +16,7 @@ env:
   FLUTTER_VERSION: "3.38.7"
   NDK_VERSION: "28.2.13676358"
   ALLOWED_THIRD_PARTY_WRAPPER_SHA: "ee3739525a995bcb5601621a6e2daec1f183bbefc375743acc235cec33547e04"
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
 
 jobs:
   build-pr411-apk:
@@ -92,7 +93,7 @@ jobs:
 
       - name: Build develop standard debug APK
         run: >-
-          ./gradlew --no-daemon --parallel --build-cache
+          ./gradlew --no-daemon --build-cache --max-workers=2
           :app:assembleDevelopStandardDebug
           -Ptarget=lib/main_standard.dart
 
