@@ -1,0 +1,117 @@
+name: Personal PR 411 APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to build
+        required: true
+        default: fix-codex-thread-restore
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "17"
+  FLUTTER_VERSION: "3.38.7"
+  NDK_VERSION: "28.2.13676358"
+  ALLOWED_THIRD_PARTY_WRAPPER_SHA: "ee3739525a995bcb5601621a6e2daec1f183bbefc375743acc235cec33547e04"
+
+jobs:
+  build-pr411-apk:
+    name: Build PR 411 debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          submodules: false
+
+      - name: Print checkout revision
+        run: |
+          git status --short --branch
+          git rev-parse HEAD
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Validate Gradle wrappers
+        uses: gradle/actions/wrapper-validation@v4
+        with:
+          allow-checksums: ${{ env.ALLOWED_THIRD_PARTY_WRAPPER_SHA }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Android NDK
+        id: cache-android-ndk
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VERSION }}
+            ${{ env.ANDROID_SDK_ROOT }}/licenses
+          key: ${{ runner.os }}-android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Install Android NDK
+        if: steps.cache-android-ndk.outputs.cache-hit != 'true'
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "ndk;${{ env.NDK_VERSION }}"
+
+      - name: Export Android NDK environment
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Install Flutter dependencies
+        working-directory: ui
+        run: flutter pub get --enforce-lockfile
+
+      - name: Run PR 411 conversation history test
+        working-directory: ui
+        run: flutter test test/services/conversation_history_service_test.dart
+
+      - name: Build develop standard debug APK
+        run: >-
+          ./gradlew --no-daemon --parallel --build-cache
+          :app:assembleDevelopStandardDebug
+          -Ptarget=lib/main_standard.dart
+
+      - name: Collect APK metadata
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/developStandard/debug/app-develop-standard-debug.apk artifacts/OpenOmniBot-pr411-develop-standard-debug.apk
+          sha256sum artifacts/OpenOmniBot-pr411-develop-standard-debug.apk | tee artifacts/OpenOmniBot-pr411-develop-standard-debug.sha256
+          {
+            echo "ref=${{ inputs.ref }}"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "variant=developStandardDebug"
+            echo "applicationId=cn.com.omnimind.bot.debug"
+            echo "versionName=$(grep -m1 'versionName =' app/build.gradle.kts | sed -E 's/.*\"([^\"]+)\".*/\1/')"
+          } | tee artifacts/OpenOmniBot-pr411-develop-standard-debug.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenOmniBot-pr411-develop-standard-debug
+          path: artifacts/*
+          if-no-files-found: error
