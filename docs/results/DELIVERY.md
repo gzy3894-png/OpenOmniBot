@@ -1,14 +1,14 @@
 # 当前交付单
 
-> 更新：2026-07-15 · Stage **goal / skill / review / layout 包 BUILDING**  
-> **你只做：装包 → 测 → 交报告（或只回 PASS/FAIL）**（APK 就绪后）  
-> **主线程：Wave C M7-Ship 出包中**
+> 更新：2026-07-15 · Stage **goal / skill / review / layout 包 READY**  
+> **你只做：装包 → 测 → 交报告（或只回 PASS/FAIL）**  
+> **主线程等待验收**
 
 ---
 
 ## 1. 现在请你做
 
-1. 等待本节 **§2 状态变为 READY** 后安装：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（覆盖旧同名文件）  
+1. 安装：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（覆盖旧同名文件）  
 2. 若系统提示签名冲突：先卸载 `cn.com.omnimind.bot.debug` 再装（**仅此一次**；之后同证书可覆盖升级）  
 3. 可配置 GPT（本包为 **stableDebug 固定签**，后续同签可升级安装）  
 4. 按下方 **§3 本包测点** 点测；回：`PASS` / `FAIL` + 卡在哪；或填 [`_TEMPLATE-smoke-report.md`](./_TEMPLATE-smoke-report.md)
@@ -17,23 +17,25 @@
 
 ---
 
-## 2. 当前包（BUILDING）
+## 2. 当前包（READY）
 
 | 项 | 值 |
 |----|-----|
-| 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（就绪后覆盖） |
-| 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-<shortsha>-standard-debug.apk` |
-| 状态 | **BUILDING** |
-| sha256 | （GHA 成功后回填） |
-| 大小 | （GHA 成功后回填） |
+| 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-d739f18-standard-debug.apk` |
+| 状态 | **READY** |
+| sha256 | `7b7016df0bdf90718550b554798422dba00ceffea0a09eb36072ea6bd40f9886` |
+| 大小 | ~349 MB（366162422 bytes） |
 | 变体 | `developStandardDebug` · `-Ptarget=lib/main_standard.dart` |
 | applicationId | `cn.com.omnimind.bot.debug` |
 | versionName | `0.5.6.4`（versionCode 1） |
-| commit | （产品 commit 推送后回填） |
+| commit | 产品 `d739f18` · `fix(codex): goal mode sync, review/skill prompts, layout inset, compact chips` |
+| CI/ship tip | `596ae4f` · `ci(baseline): raise Gradle heap to 6g for D8 mergeExtDex`（同分支 HEAD；APK 按此 SHA 构建） |
 | 基线 | 基于 system tips UX `31c4f35` / docs `ee65c7c`；方案 `PLAN-2026-07-15-goal-skill-review-layout` |
 | 分支 | `secondary/s1-baseline` |
 | fork | `gzy3894-png/OpenOmniBot` |
-| GHA | Baseline Standard Debug · 触发中 / 待 watch |
+| GHA | [Baseline Standard Debug #29418496475](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29418496475) · **success**（含 CI heap 修复） |
+| 前次失败 | [run 29417034628](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29417034628) attempt1/2 · D8 `Java heap space` @ `mergeExtDexDevelopStandardDebug`（产品 `d739f18`/`e0ba90a`） |
 | 签名策略 | `stableDebug` + secrets `AWB_DEBUG_*`（与 AWB 内测 jks 同源） |
 | 期望证书 SHA256 | `6D:79:D3:52:E6:8F:C7:E1:95:6F:E1:4C:41:B6:AF:FA:D2:A1:40:3E:B2:2A:F9:E7:6B:4E:21:3F:A1:02:44:C6` |
 
@@ -45,6 +47,7 @@
 - **S1** `/skill` 与 `@技能 附言` 发送链保留 skill 名 + 附言  
 - **R1** bare `/review` → `startReview`；`/review <prompt>` → model turn 带全文  
 - **L1** 助手 markdown 行内 code 收敛为紧凑样式，减轻灰 chip 拆坏「状态:」等中文行  
+- **CI** Baseline workflow `GRADLE_OPTS=-Xmx6g`，缓解 D8 mergeExtDex OOM  
 
 ---
 
@@ -75,7 +78,7 @@
 - 配置页 defaultGoal 写入 toml；不会每次 turn 自动 setThreadGoal  
 - 技能依赖 `AgentSkillStoreService` 列表；空库时为空态  
 - 目标发送时若 `_isAiResponding`，只保证 RPC+UI，不强制第二 turn  
-- GHA 偶发 D8 `Java heap space`（`mergeExtDex`）可能需 re-run  
+- GHA 在 2g 堆曾连续 OOM；已用 6g `GRADLE_OPTS` 缓解，极端负载仍可能偶发  
 - 本机无 Flutter test 执行；依赖 GHA 编译 + 真机验收  
 
 ---
@@ -101,8 +104,8 @@
 - [x] goal 可见 turn + Fast 开/关提示修复出包（`6b09bf2` / run 29400076462）  
 - [x] system tips UX 出包（`31c4f35` / run 29407300883 attempt 2）  
 - [x] 方案 PLAN goal-skill-review-layout 用户确认 + Wave A/B 实现落盘  
-- [ ] **Wave C M7-Ship：GHA 出包 + stage + DELIVERY READY**  
-- [ ] 主线程等待你验收（重点 §3 #1–#7）  
+- [x] **Wave C M7-Ship：GHA 出包 + stage + DELIVERY READY**（`d739f18` + CI `596ae4f` / run 29418496475）  
+- [ ] **主线程等待你验收**（重点 §3 #1–#7）  
 
 ---
 
@@ -118,4 +121,5 @@
 | 2026-07-15 | fix `4a285f7`；GHA 29394732847 success；sha256 `e82684ad…` staged Download |
 | 2026-07-15 | fix `6b09bf2` model-visible `/goal` turn + Fast on/off priority-lane tips；GHA 29400076462 success；sha256 `14bbb431…` staged Download |
 | 2026-07-15 | `31c4f35` system tip style + session tips；GHA 29407300883 attempt1 D8 OOM fail → attempt2 success；sha256 `542bf2de…` staged Download |
-| 2026-07-15 | goal-skill-review-layout 实现落盘（G1/G2/F1/S1/R1/L1）；DELIVERY **BUILDING**；待 push + GHA |
+| 2026-07-15 | 产品 `d739f18` goal-skill-review-layout；GHA 29417034628 attempt1/2 D8 OOM fail |
+| 2026-07-15 | CI `596ae4f` GRADLE_OPTS 6g；GHA 29418496475 success；sha256 `7b7016df…` staged Download；**READY** |

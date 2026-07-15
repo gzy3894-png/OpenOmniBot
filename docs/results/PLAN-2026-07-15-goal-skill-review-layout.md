@@ -182,7 +182,7 @@ PASS：目标完成那一段「目标内容 / 状态 / complete / 耗时」阅�
 - [x] 用户确认方案或修正  
 - [x] Wave A 派发  
 - [x] Wave B（M4 GoalSync+Review+SkillSend）  
-- [x] Wave C（M7-Ship 出包中 / 完成后勾真机）  
+- [x] Wave C（M7-Ship GHA success + APK staged）  
 - [ ] 真机验收  
 
-**当前命令**：**Wave A/B 实现完成；Wave C M7-Ship BUILDING（push + GHA + stage）**。
+**当前命令**：**Wave A/B/C 完成；APK READY（产品 d739f18 / CI 596ae4f / GHA 29418496475）；主线程真机验收 §4 #1–#7**。
