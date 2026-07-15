@@ -96,13 +96,13 @@ void main() {
     expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintOnEn);
     expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintOnZh);
 
-    // On tips: priority lane / ~1.5× / ~2× (EN) and 优先通道 / 1.5 / 2 (ZH)
-    expect(kCodexFastModeHintOnEn.toLowerCase(), contains('priority'));
+    // On tips: short PO copy — 1.5× speed + 1.5–2× billing (no priority-lane essay)
     expect(kCodexFastModeHintOnEn, contains('1.5'));
-    expect(kCodexFastModeHintOnEn, contains('2'));
-    expect(kCodexFastModeHintOnZh, contains('优先通道'));
+    expect(kCodexFastModeHintOnEn.toLowerCase(), contains('billing'));
+    expect(kCodexFastModeHintOnEn, isNot(contains('priority')));
     expect(kCodexFastModeHintOnZh, contains('1.5'));
-    expect(kCodexFastModeHintOnZh, contains('2'));
+    expect(kCodexFastModeHintOnZh, contains('计费'));
+    expect(kCodexFastModeHintOnZh, isNot(contains('优先通道')));
 
     // Off tips via enabled: false
     expect(
@@ -114,6 +114,8 @@ void main() {
       kCodexFastModeHintOffZh,
     );
     expect(kCodexFastModeHintOffEn.toLowerCase(), contains('off'));
+    expect(kCodexFastModeHintOffEn.toLowerCase(), contains('billing'));
     expect(kCodexFastModeHintOffZh, contains('关闭'));
+    expect(kCodexFastModeHintOffZh, contains('计费'));
   });
 }

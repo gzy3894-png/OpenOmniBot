@@ -2,20 +2,18 @@ import 'codex_skill_tokens.dart';
 import 'codex_slash_commands.dart';
 
 /// Fast-mode session tip (EN): shown when Fast is turned on.
-/// Aligns with Codex Speed docs: priority lane, ~1.5× model speed, higher credits.
+/// Short PO copy: ~1.5× speed; billing ~1.5–2×.
 const String kCodexFastModeHintOnEn =
-    'Fast on (priority lane): ~1.5× speed; higher credit use (~2× Standard, model-dependent).';
+    'Fast on: ~1.5× speed; billing ~1.5–2×.';
 
 /// Fast-mode session tip (ZH): shown when Fast is turned on.
-const String kCodexFastModeHintOnZh =
-    '已开启 Fast（优先通道）：速度约 1.5×，credits 消耗更高（约 2×，视模型）。';
+const String kCodexFastModeHintOnZh = '已开启 Fast：1.5× 速度；计费约 1.5–2×。';
 
 /// Fast-mode session tip (EN): shown when Fast is turned off.
-const String kCodexFastModeHintOffEn =
-    'Fast off: back to standard latency and credit rate.';
+const String kCodexFastModeHintOffEn = 'Fast off: standard speed and billing.';
 
 /// Fast-mode session tip (ZH): shown when Fast is turned off.
-const String kCodexFastModeHintOffZh = '已关闭 Fast：恢复标准通道与标准 credits 消耗。';
+const String kCodexFastModeHintOffZh = '已关闭 Fast：恢复标准速度与计费。';
 
 /// Backward-compatible alias for [kCodexFastModeHintOnEn].
 const String kCodexFastModeHintEn = kCodexFastModeHintOnEn;
@@ -25,8 +23,8 @@ const String kCodexFastModeHintZh = kCodexFastModeHintOnZh;
 
 /// Localized Fast tip for transcript insertion.
 ///
-/// [enabled] true → on tip (priority lane / higher credits);
-/// false → off tip (standard latency and credit rate).
+/// [enabled] true → on tip (~1.5× speed; billing ~1.5–2×);
+/// false → off tip (standard speed and billing).
 /// Defaults to true so existing `codexFastModeHint(isEnglish: …)` call sites stay valid.
 String codexFastModeHint({required bool isEnglish, bool enabled = true}) {
   if (enabled) {
