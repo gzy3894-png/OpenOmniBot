@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:ui/l10n/legacy_text_localizer.dart';
+import 'package:ui/theme/omni_theme_palette.dart';
 import 'package:ui/theme/theme_context.dart';
 
 /// Bridge so the plan proposal card can invoke ChatPage approve/reject without
