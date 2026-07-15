@@ -93,7 +93,27 @@ void main() {
     expect(kCodexGoalClearCommand, '/goal clear');
     expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintEn);
     expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintZh);
-    expect(kCodexFastModeHintEn.toLowerCase(), contains('latency'));
-    expect(kCodexFastModeHintZh, contains('延迟'));
+    expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintOnEn);
+    expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintOnZh);
+
+    // On tips: priority lane / ~1.5× / ~2× (EN) and 优先通道 / 1.5 / 2 (ZH)
+    expect(kCodexFastModeHintOnEn.toLowerCase(), contains('priority'));
+    expect(kCodexFastModeHintOnEn, contains('1.5'));
+    expect(kCodexFastModeHintOnEn, contains('2'));
+    expect(kCodexFastModeHintOnZh, contains('优先通道'));
+    expect(kCodexFastModeHintOnZh, contains('1.5'));
+    expect(kCodexFastModeHintOnZh, contains('2'));
+
+    // Off tips via enabled: false
+    expect(
+      codexFastModeHint(isEnglish: true, enabled: false),
+      kCodexFastModeHintOffEn,
+    );
+    expect(
+      codexFastModeHint(isEnglish: false, enabled: false),
+      kCodexFastModeHintOffZh,
+    );
+    expect(kCodexFastModeHintOffEn.toLowerCase(), contains('off'));
+    expect(kCodexFastModeHintOffZh, contains('关闭'));
   });
 }

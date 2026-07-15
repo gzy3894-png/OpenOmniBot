@@ -1,16 +1,53 @@
 import 'codex_skill_tokens.dart';
 import 'codex_slash_commands.dart';
 
-/// Fast-mode session tip (EN): shown once when Fast is turned on.
-const String kCodexFastModeHintEn =
-    'Fast mode on: this session prioritizes lower latency.';
+/// Fast-mode session tip (EN): shown when Fast is turned on.
+/// Aligns with Codex Speed docs: priority lane, ~1.5× model speed, higher credits.
+const String kCodexFastModeHintOnEn =
+    'Fast on (priority lane): ~1.5× speed; higher credit use (~2× Standard, model-dependent).';
 
-/// Fast-mode session tip (ZH): shown once when Fast is turned on.
-const String kCodexFastModeHintZh = '已开启 Fast：本会话优先降低响应延迟。';
+/// Fast-mode session tip (ZH): shown when Fast is turned on.
+const String kCodexFastModeHintOnZh =
+    '已开启 Fast（优先通道）：速度约 1.5×，credits 消耗更高（约 2×，视模型）。';
+
+/// Fast-mode session tip (EN): shown when Fast is turned off.
+const String kCodexFastModeHintOffEn =
+    'Fast off: back to standard latency and credit rate.';
+
+/// Fast-mode session tip (ZH): shown when Fast is turned off.
+const String kCodexFastModeHintOffZh = '已关闭 Fast：恢复标准通道与标准 credits 消耗。';
+
+/// Backward-compatible alias for [kCodexFastModeHintOnEn].
+const String kCodexFastModeHintEn = kCodexFastModeHintOnEn;
+
+/// Backward-compatible alias for [kCodexFastModeHintOnZh].
+const String kCodexFastModeHintZh = kCodexFastModeHintOnZh;
 
 /// Localized Fast tip for transcript insertion.
-String codexFastModeHint({required bool isEnglish}) {
-  return isEnglish ? kCodexFastModeHintEn : kCodexFastModeHintZh;
+///
+/// [enabled] true → on tip (priority lane / higher credits);
+/// false → off tip (standard latency and credit rate).
+/// Defaults to true so existing `codexFastModeHint(isEnglish: …)` call sites stay valid.
+String codexFastModeHint({required bool isEnglish, bool enabled = true}) {
+  if (enabled) {
+    return isEnglish ? kCodexFastModeHintOnEn : kCodexFastModeHintOnZh;
+  }
+  return isEnglish ? kCodexFastModeHintOffEn : kCodexFastModeHintOffZh;
+}
+
+/// Convenience: Fast-on tip.
+String codexFastModeHintOn({required bool isEnglish}) =>
+    codexFastModeHint(isEnglish: isEnglish, enabled: true);
+
+/// Convenience: Fast-off tip.
+String codexFastModeHintOff({required bool isEnglish}) =>
+    codexFastModeHint(isEnglish: isEnglish, enabled: false);
+
+/// Display form for a goal objective (e.g. transcript / chrome).
+/// Planning semantics for setGoal remain in [planCodexComposerSubmit].
+String formatCodexGoalCommand(String objective) {
+  final trimmed = objective.trim();
+  return trimmed.isEmpty ? '/goal' : '/goal $trimmed';
 }
 
 /// Command string handlers should send when turning goal mode off.

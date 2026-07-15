@@ -549,6 +549,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       return;
     }
     final turningOn = enabled && !_activeCodexFastEnabled;
+    final turningOff = !enabled && _activeCodexFastEnabled;
     if (!mounted) return;
     setState(() {
       _activeCodexFastEnabled = enabled;
@@ -561,7 +562,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       // Local transcript tip only — never send as a model turn.
       if (turningOn) {
         await _appendCodexLocalSystemTip(
-          codexFastModeHint(isEnglish: LegacyTextLocalizer.isEnglish),
+          codexFastModeHint(
+            isEnglish: LegacyTextLocalizer.isEnglish,
+            enabled: true,
+          ),
         );
       }
     } else {
@@ -570,6 +574,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _kCodexServiceTierPreferenceKey,
         _kCodexOffServiceTier,
       );
+      // Local transcript tip only — never send as a model turn.
+      if (turningOff) {
+        await _appendCodexLocalSystemTip(
+          codexFastModeHint(
+            isEnglish: LegacyTextLocalizer.isEnglish,
+            enabled: false,
+          ),
+        );
+      }
     }
   }
 
@@ -809,10 +822,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
         return true;
       case CodexSlashSubmitKind.setGoal:
-        _messageController.clear();
-        _hideSlashCommandPanel();
+        // Do not pre-clear here: successful path starts a turn via
+        // `_startCodexTurnCommand`, which already clears + hides panel.
+        final objective = (plan.intent.value ?? plan.plainText).trim();
+        final display = plan.normalizedText.trim().isNotEmpty
+            ? plan.normalizedText.trim()
+            : (objective.isEmpty ? '/goal' : '/goal $objective');
         await _executeCodexSetGoalCommand(
-          plan.intent.value ?? plan.plainText,
+          objective,
+          displayText: display,
         );
         return true;
       case CodexSlashSubmitKind.clearGoal:
@@ -1128,9 +1146,13 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         await _executeCodexResumeCommand(intent.value);
         return true;
       case CodexSlashSubmitKind.setGoal:
-        _messageController.clear();
-        _hideSlashCommandPanel();
-        await _executeCodexSetGoalCommand(intent.value ?? '');
+        // Shared path with goal-mode composer: RPC + model-visible turn.
+        // Clear/hide is handled inside `_executeCodexSetGoalCommand` /
+        // `_startCodexTurnCommand` to avoid double-clear races.
+        await _executeCodexSetGoalCommand(
+          intent.value ?? '',
+          displayText: trimmed,
+        );
         return true;
       case CodexSlashSubmitKind.clearGoal:
         _messageController.clear();
@@ -1414,7 +1436,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
-  Future<void> _executeCodexSetGoalCommand(String objective) async {
+  Future<void> _executeCodexSetGoalCommand(
+    String objective, {
+    String? displayText,
+  }) async {
     final normalized = objective.trim();
     if (normalized.isEmpty) {
       _showSnackBar(
@@ -1437,22 +1462,34 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     try {
       await _ensureCodexConnectedForSlashCommand();
+      // 1) Real Codex goal RPC first — only start a turn after success.
       await CodexAppServerService.setThreadGoal(
         conversationId: _isRemoteCodexConfigured() ? null : conversationId,
         threadId: threadId.isEmpty ? null : threadId,
         objective: normalized,
       );
       if (!mounted) return;
+      // 2) UI goal chrome / mode state (even if a turn cannot start yet).
       setState(() {
         _codexGoalModeEnabled = true;
         _codexActiveGoalText = normalized;
       });
-      showToast(
-        LegacyTextLocalizer.isEnglish
-            ? 'Goal updated'
-            : 'Goal 已更新',
-        type: ToastType.success,
-      );
+      // 3) Model-visible turn: user bubble shows `/goal …`, model gets objective.
+      final commandDisplay = () {
+        final raw = (displayText ?? '').trim();
+        if (raw.isNotEmpty) return raw;
+        return '/goal $normalized';
+      }();
+      if (_isAiResponding) {
+        // Goal RPC + UI already applied; cannot start another turn right now.
+        _messageController.clear();
+        _hideSlashCommandPanel();
+      } else {
+        await _startCodexTurnCommand(
+          displayText: commandDisplay,
+          actualText: normalized,
+        );
+      }
     } catch (error) {
       if (!mounted) return;
       showToast(
