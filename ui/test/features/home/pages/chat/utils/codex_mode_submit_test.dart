@@ -64,6 +64,56 @@ void main() {
     });
   });
 
+
+  group('buildCodexSkillActualText B3', () {
+    test('embeds shellSkillFilePath and keeps prompt', () {
+      final actual = buildCodexSkillActualText(
+        skillNames: const ['find-install-skills'],
+        prompt: '这个技能呢',
+        skillPathsByLowerName: const {
+          'find-install-skills':
+              '/workspace/.omnibot/skills/find-install-skills/SKILL.md',
+        },
+      );
+      expect(actual, contains('/skill find-install-skills'));
+      expect(
+        actual,
+        contains(
+          'skill_path: /workspace/.omnibot/skills/find-install-skills/SKILL.md',
+        ),
+      );
+      expect(actual, contains('这个技能呢'));
+      // path must not look like a bare @ bubble
+      expect(actual.startsWith('@'), isFalse);
+    });
+
+    test('preferCodexSkillFilePath prefers shell path', () {
+      expect(
+        preferCodexSkillFilePath(
+          shellSkillFilePath: '/shell/path/SKILL.md',
+          skillFilePath: '/app/path/SKILL.md',
+        ),
+        '/shell/path/SKILL.md',
+      );
+      expect(
+        preferCodexSkillFilePath(
+          shellSkillFilePath: '',
+          skillFilePath: '/app/path/SKILL.md',
+        ),
+        '/app/path/SKILL.md',
+      );
+    });
+
+    test('parseCodexSkillSlashArgs splits known names and prompt', () {
+      final parsed = parseCodexSkillSlashArgs(
+        'find-install-skills 这个技能呢',
+        knownSkillNames: const ['find-install-skills'],
+      );
+      expect(parsed.skillNames, ['find-install-skills']);
+      expect(parsed.prompt, '这个技能呢');
+    });
+  });
+
   group('buildCodexSkillCommand', () {
     test('S1 command includes skill name and prompt', () {
       expect(
@@ -95,6 +145,25 @@ void main() {
       expect(plan.intent.kind, CodexSlashSubmitKind.setGoal);
       expect(plan.intent.value, 'ship slash UX');
       expect(plan.normalizedText, '/goal ship slash UX');
+      expect(plan.handled, isTrue);
+    });
+
+    test('B1 goal mode bare slash is not slash dirty path', () {
+      final plan = planCodexComposerSubmit(
+        '/',
+        goalModeEnabled: true,
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.showGoal);
+      expect(plan.normalizedText, '/goal');
+      expect(plan.handled, isTrue);
+    });
+
+    test('B1 goal mode bare slash with spaces is not slash', () {
+      final plan = planCodexComposerSubmit(
+        '/  ',
+        goalModeEnabled: true,
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.showGoal);
       expect(plan.handled, isTrue);
     });
 
@@ -309,19 +378,19 @@ void main() {
     test('plan on/off', () {
       expect(
         codexSessionTipPlan(enabled: true, isEnglish: false),
-        '已开启 Plan',
+        '已开启计划模式',
       );
       expect(
         codexSessionTipPlan(enabled: false, isEnglish: false),
-        '已关闭 Plan',
+        '已关闭计划模式',
       );
       expect(
         codexSessionTipPlan(enabled: true, isEnglish: true),
-        'Plan on',
+        'Plan mode on',
       );
       expect(
         codexSessionTipPlan(enabled: false, isEnglish: true),
-        'Plan off',
+        'Plan mode off',
       );
     });
 

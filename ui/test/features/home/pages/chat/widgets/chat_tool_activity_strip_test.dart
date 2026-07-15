@@ -106,7 +106,7 @@ void main() {
         'toolTypeLabel': '计划',
         'status': 'success',
         'statusLabel': '已选',
-        'summary': '当前已启用 Plan 模式',
+        'summary': '当前已启用计划模式',
         'isToggle': true,
         'toggleValue': true,
       },

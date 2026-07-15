@@ -82,6 +82,34 @@ void main() {
     expect(args['collaborationMode'], 'plan');
   });
 
+  test('B5 startReview forwards custom instructions target', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.startReview(
+      conversationId: 7,
+      threadId: 'thread-review',
+      target: const <String, dynamic>{
+        'type': 'custom',
+        'instructions': '帮我审查 app/src/...',
+      },
+    );
+
+    expect(capturedCall?.method, 'review/start');
+    final args = Map<String, dynamic>.from(
+      (capturedCall?.arguments as Map).cast<String, dynamic>(),
+    );
+    expect(args['conversationId'], 7);
+    expect(args['threadId'], 'thread-review');
+    expect(args['target'], const <String, dynamic>{
+      'type': 'custom',
+      'instructions': '帮我审查 app/src/...',
+    });
+  });
+
   test('lists codex models, collaboration modes, and config', () async {
     final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
@@ -101,6 +129,27 @@ void main() {
       'thread/loaded/list',
     ]);
     expect(calls.first.arguments, {'limit': 100});
+  });
+
+  test('updateThreadSettings forwards model and effort only', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.updateThreadSettings(
+      threadId: ' thread-9 ',
+      model: ' gpt-custom ',
+      effort: ' high ',
+    );
+
+    expect(capturedCall?.method, 'thread/settings/update');
+    expect(capturedCall?.arguments, {
+      'threadId': 'thread-9',
+      'model': 'gpt-custom',
+      'effort': 'high',
+    });
   });
 
   test('ignoreUserInput responds with empty answers payload', () async {

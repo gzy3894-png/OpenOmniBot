@@ -61,6 +61,7 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     _codexEventSubscription = CodexAppServerService.events.listen(
       _handleCodexAppServerEvent,
     );
+    _bindCodexPlanProposalBridge();
     unawaited(_refreshCodexStatus());
 
     _inputFocusNode.addListener(_onFocusChange);
@@ -629,6 +630,7 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     _openClawTokenController.dispose();
     _openClawUserIdController.dispose();
     _stopRemoteCodexSessionSync();
+    _unbindCodexPlanProposalBridge();
     _codexEventSubscription?.cancel();
     super.dispose();
   }

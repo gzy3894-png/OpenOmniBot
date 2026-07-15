@@ -369,7 +369,7 @@ String resolveAgentToolTypeLabel(Map<String, dynamic> cardData) {
     case 'file':
       return LegacyTextLocalizer.localize('文件');
     case 'plan':
-      return LegacyTextLocalizer.localize('计划');
+      return LegacyTextLocalizer.localize('计划模式');
     case 'account':
       return LegacyTextLocalizer.localize('账户');
     case 'status':

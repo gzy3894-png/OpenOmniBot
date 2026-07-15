@@ -481,6 +481,50 @@ class CodexAppServerService {
     });
   }
 
+  /// Update live thread run settings (model/effort/etc.) via app-server
+  /// `thread/settings/update`. Only non-empty overrides are forwarded so
+  /// callers can patch a single field without clearing others.
+  static Future<Map<String, dynamic>> updateThreadSettings({
+    required String threadId,
+    String? model,
+    String? effort,
+    String? serviceTier,
+    String? collaborationMode,
+    String? summary,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    Map<String, dynamic>? sandboxPolicy,
+    String? permissions,
+    String? cwd,
+    String? personality,
+  }) {
+    final resolvedThreadId = threadId.trim();
+    if (resolvedThreadId.isEmpty) {
+      throw ArgumentError.value(threadId, 'threadId', 'must not be empty');
+    }
+    return _invokeMap('thread/settings/update', {
+      'threadId': resolvedThreadId,
+      if (model != null && model.trim().isNotEmpty) 'model': model.trim(),
+      if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
+      if (serviceTier != null && serviceTier.trim().isNotEmpty)
+        'serviceTier': serviceTier.trim(),
+      if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
+        'collaborationMode': collaborationMode.trim(),
+      if (summary != null && summary.trim().isNotEmpty)
+        'summary': summary.trim(),
+      if (approvalPolicy != null && approvalPolicy.trim().isNotEmpty)
+        'approvalPolicy': approvalPolicy.trim(),
+      if (approvalsReviewer != null && approvalsReviewer.trim().isNotEmpty)
+        'approvalsReviewer': approvalsReviewer.trim(),
+      if (sandboxPolicy != null) 'sandboxPolicy': sandboxPolicy,
+      if (permissions != null && permissions.trim().isNotEmpty)
+        'permissions': permissions.trim(),
+      if (cwd != null && cwd.trim().isNotEmpty) 'cwd': cwd.trim(),
+      if (personality != null && personality.trim().isNotEmpty)
+        'personality': personality.trim(),
+    });
+  }
+
   static Future<Map<String, dynamic>> listModels() {
     return _invokeMap('model/list', {'limit': 100});
   }

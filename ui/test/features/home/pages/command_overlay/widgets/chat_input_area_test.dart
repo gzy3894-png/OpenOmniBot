@@ -106,6 +106,26 @@ void main() {
     expect(tapped, isTrue);
   });
 
+  testWidgets('tapping @ skill trigger button invokes callback', (tester) async {
+    var tapped = false;
+    await tester.pumpWidget(
+      _buildTestApp(
+        contextUsageRatio: null,
+        onTriggerSkillMention: () {
+          tapped = true;
+        },
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey('chat-input-trigger-at-button')),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(tapped, isTrue);
+  });
+
   testWidgets('codex permission selector opens menu and selects mode', (
     tester,
   ) async {
@@ -520,6 +540,7 @@ Widget _buildTestApp({
   required double? contextUsageRatio,
   VoidCallback? onLongPressContextUsageRing,
   VoidCallback? onTriggerSlashCommand,
+  VoidCallback? onTriggerSkillMention,
   bool useLargeComposerStyle = false,
   CodexPermissionMode? codexPermissionMode,
   ValueChanged<CodexPermissionMode>? onCodexPermissionModeChanged,
@@ -543,6 +564,7 @@ Widget _buildTestApp({
           contextUsageRatio: contextUsageRatio,
           onLongPressContextUsageRing: onLongPressContextUsageRing,
           onTriggerSlashCommand: onTriggerSlashCommand,
+          onTriggerSkillMention: onTriggerSkillMention,
           modelPickerSettings: modelPickerSettings,
           codexRunSettings: codexRunSettings,
           onCodexRunSettingsChanged: onCodexRunSettingsChanged,

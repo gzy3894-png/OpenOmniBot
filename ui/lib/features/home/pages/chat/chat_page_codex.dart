@@ -5,7 +5,8 @@ const String _kCodexReasoningEffortPreferenceKey = 'reasoning_effort';
 const String _kCodexCollaborationModePreferenceKey = 'collaboration_mode';
 const String _kCodexServiceTierPreferenceKey = 'service_tier';
 const String _kCodexPreferenceStoragePrefix = 'chat_codex_command_preference';
-const String _kDefaultCodexReasoningEffort = 'xhigh';
+// Known effort labels for option lists only — never a silent UI default.
+const String _kKnownCodexReasoningEffortXHigh = 'xhigh';
 const String _kCodexFastServiceTier = 'fast';
 const String _kCodexOffServiceTier = 'off';
 const Duration _remoteCodexExternalActiveGrace = Duration(seconds: 6);
@@ -393,12 +394,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           _activeCodexModelId = preferredModel;
         }
         if ((_activeCodexReasoningEffort ?? '').trim().isEmpty) {
+          // Prefer config/model defaults; leave unset when unknown so UI does
+          // not pretend the session is running at a hard-coded effort.
           _activeCodexReasoningEffort =
-              configSettings.reasoningEffort ??
-              modelDefaultEffort ??
-              (effortOptions.isNotEmpty
-                  ? effortOptions.last
-                  : _kDefaultCodexReasoningEffort);
+              configSettings.reasoningEffort ?? modelDefaultEffort;
         }
         _codexReasoningEffortOptions = effortOptions;
         _isCodexModelListLoading = false;
@@ -474,10 +473,44 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     final previous = (_activeCodexModelId ?? '').trim();
     final changed = previous != normalized;
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    // Thread settings are the live source of truth when a thread is active.
+    if (threadId.isNotEmpty && changed) {
+      try {
+        await CodexAppServerService.updateThreadSettings(
+          threadId: threadId,
+          model: normalized,
+        );
+      } catch (error) {
+        if (!mounted) return;
+        unawaited(
+          DebugFileLog.logModel(
+            'select_failed',
+            model: normalized,
+            previous: previous.isEmpty ? null : previous,
+          ),
+        );
+        showToast(
+          LegacyTextLocalizer.isEnglish
+              ? 'Failed to update Codex model: $error'
+              : '更新 Codex 模型失败：$error',
+          type: ToastType.error,
+        );
+        return;
+      }
+    }
     if (!mounted) return;
     setState(() {
       _activeCodexModelId = normalized;
     });
+    unawaited(
+      DebugFileLog.logModel(
+        'select',
+        model: normalized,
+        previous: previous.isEmpty ? null : previous,
+      ),
+    );
+    // Local preference is a cache for cold start / pre-thread UI only.
     await _writeCodexPreference(_kCodexModelPreferenceKey, normalized);
     if (clearComposer) {
       _messageController.clear();
@@ -502,6 +535,31 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     final previous = (_activeCodexReasoningEffort ?? '').trim();
     final changed = previous != normalized;
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if (threadId.isNotEmpty && changed) {
+      try {
+        await CodexAppServerService.updateThreadSettings(
+          threadId: threadId,
+          effort: normalized,
+        );
+      } catch (error) {
+        if (!mounted) return;
+        unawaited(
+          DebugFileLog.logModel(
+            'effort_failed',
+            effort: normalized,
+            previous: previous.isEmpty ? null : previous,
+          ),
+        );
+        showToast(
+          LegacyTextLocalizer.isEnglish
+              ? 'Failed to update Codex effort: $error'
+              : '更新 Codex 思考等级失败：$error',
+          type: ToastType.error,
+        );
+        return;
+      }
+    }
     if (!mounted) return;
     setState(() {
       _activeCodexReasoningEffort = normalized;
@@ -510,6 +568,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         options: _codexReasoningEffortOptions,
       );
     });
+    unawaited(
+      DebugFileLog.logModel(
+        'effort',
+        effort: normalized,
+        previous: previous.isEmpty ? null : previous,
+      ),
+    );
+    // Local preference is a cache for cold start / pre-thread UI only.
     await _writeCodexPreference(
       _kCodexReasoningEffortPreferenceKey,
       normalized,
@@ -614,6 +680,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     setState(() {
       _activeCodexFastEnabled = enabled;
     });
+    unawaited(
+      DebugFileLog.logModel(
+        enabled ? 'fast_on' : 'fast_off',
+        serviceTier: enabled ? _kCodexFastServiceTier : _kCodexOffServiceTier,
+      ),
+    );
     if (enabled) {
       await _writeCodexPreference(
         _kCodexServiceTierPreferenceKey,
@@ -700,6 +772,66 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       }
     }
     return names;
+  }
+
+  /// name/id (lower) → preferred skill file path for B3 model payload.
+  Map<String, String> get _codexSkillPathByLowerName {
+    final map = <String, String>{};
+    for (final skill in _codexSkillCatalog) {
+      final path = preferCodexSkillFilePath(
+        shellSkillFilePath: skill.shellSkillFilePath,
+        skillFilePath: skill.skillFilePath,
+      );
+      if (path.isEmpty) {
+        continue;
+      }
+      final nameKey = skill.name.trim().toLowerCase();
+      if (nameKey.isNotEmpty) {
+        map.putIfAbsent(nameKey, () => path);
+      }
+      final idKey = skill.id.trim().toLowerCase();
+      if (idKey.isNotEmpty) {
+        map.putIfAbsent(idKey, () => path);
+      }
+    }
+    return map;
+  }
+
+  /// Builds model-facing skill text with implicit path; user display stays
+  /// free of path (B3). Falls back to name-only `/skill` when path unknown.
+  String _buildCodexSkillActualText({
+    required List<String> skillNames,
+    String prompt = '',
+    String? slashArgs,
+  }) {
+    var names = skillNames
+        .map((n) => n.trim())
+        .where((n) => n.isNotEmpty)
+        .toList(growable: false);
+    var body = prompt.trim();
+    final args = (slashArgs ?? '').trim();
+    if (names.isEmpty && args.isNotEmpty) {
+      final parsed = parseCodexSkillSlashArgs(
+        args,
+        knownSkillNames: _codexKnownSkillNames,
+      );
+      names = parsed.skillNames;
+      if (body.isEmpty) {
+        body = parsed.prompt;
+      }
+    }
+    if (names.isEmpty && args.isNotEmpty) {
+      final parsed = parseCodexSkillSlashArgs(args);
+      names = parsed.skillNames;
+      if (body.isEmpty) {
+        body = parsed.prompt;
+      }
+    }
+    return buildCodexSkillActualText(
+      skillNames: names,
+      prompt: body,
+      skillPathsByLowerName: _codexSkillPathByLowerName,
+    );
   }
 
   Future<void> _ensureCodexSkillCatalogLoaded() async {
@@ -794,8 +926,19 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       if (!mounted) {
         return;
       }
+      // B1: 目标模式与 `/` slash 互斥。开 mode 时清掉 slash 触发器注入的裸 `/`
+      // 草稿，并关 slash 面板，避免正文发送被当成脏 slash。
+      final draft = _messageController.text;
+      if (RegExp(r'^\s*/\s*$').hasMatch(draft)) {
+        _messageController.clear();
+      }
+      _hideSlashCommandPanel();
       setState(() {
         _codexGoalModeEnabled = true;
+        _showSlashCommandPanel = false;
+        _showModelMentionPanel = false;
+        _openClawPanelExpanded = false;
+        _slashCommandExpandedByMode[_activeMode] = false;
       });
       await _refreshCodexActiveGoalText();
       return;
@@ -830,24 +973,137 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       }
       final objective = _extractCodexGoalObjective(response);
       final trimmedObjective = (objective ?? '').trim();
-      final serverEmpty = trimmedObjective.isEmpty;
+      final statusNorm =
+          (_extractCodexGoalStatus(response) ?? '').trim().toLowerCase();
+      // B2: ThreadGoal.status 含 complete；agent 可能保留 objective 但标 complete。
+      final isComplete = statusNorm == 'complete';
+      final goalExplicitlyNull =
+          response.containsKey('goal') && response['goal'] == null;
+      final hasActiveGoal = trimmedObjective.isNotEmpty && !isComplete;
+      unawaited(
+        DebugFileLog.logGoal(
+          'get',
+          objective: hasActiveGoal ? trimmedObjective : '',
+          threadId: threadId.isEmpty ? null : threadId,
+          conversationId: conversationId,
+        ),
+      );
       setState(() {
-        if (!serverEmpty) {
+        if (hasActiveGoal) {
           _codexActiveGoalText = trimmedObjective;
           return;
         }
-        // Server has no active objective.
+        // Server has no active objective (empty / complete / cleared).
         _codexActiveGoalText = null;
-        // Only auto-disable goal mode when a previously-known local goal was
-        // cleared/completed. Keep mode on when the user just enabled empty
-        // goal mode and never had a server goal yet.
-        if (hadLocalGoal) {
+        // Only auto-disable when a previously-known local goal was
+        // cleared/completed, or server reports complete/null goal. Keep mode
+        // on when the user just enabled empty 目标模式 and never had a goal.
+        if (hadLocalGoal || isComplete || goalExplicitlyNull) {
           _codexGoalModeEnabled = false;
         }
       });
     } catch (error) {
       debugPrint('Refresh Codex goal text failed: $error');
+      unawaited(
+        DebugFileLog.logError(
+          'goal.get',
+          error,
+          fields: <String, Object?>{
+            if (threadId.isNotEmpty) 'threadId': threadId,
+            if (conversationId != null) 'conversationId': conversationId,
+          },
+        ),
+      );
     }
+  }
+
+  /// B13: Goal RPC 需要 threadId。空会话先 startThread 再回填。
+  Future<String?> _ensureActiveCodexThreadId() async {
+    final existing = (_activeCodexThreadId ?? '').trim();
+    if (existing.isNotEmpty) {
+      return existing;
+    }
+
+    await _ensureCodexConnectedForSlashCommand();
+
+    final remoteCodex = _isRemoteCodexConfigured();
+    int? conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    if (!remoteCodex) {
+      try {
+        await _ensureActiveConversationReadyForStreaming();
+      } catch (error) {
+        debugPrint('Ensure conversation before startThread failed: $error');
+      }
+      conversationId =
+          _currentConversationIdByMode[ChatPageMode.codex] ??
+          _currentConversationId;
+    }
+
+    final cwd = (_codexStatus.remoteCwd ?? _codexStatus.cwd ?? '').trim();
+    final response = await CodexAppServerService.startThread(
+      conversationId: remoteCodex ? null : conversationId,
+      cwd: cwd.isEmpty ? null : cwd,
+      model: _activeCodexModelId,
+      effort: _activeCodexReasoningEffort,
+      collaborationMode: _activeCodexCollaborationMode,
+      serviceTier: _activeCodexServiceTierOrNull,
+    );
+    final threadId =
+        _asCodexString(response['threadId']) ??
+        _asCodexString(_asCodexMap(response['thread'])?['id']);
+    if (threadId == null || threadId.isEmpty) {
+      throw StateError(
+        LegacyTextLocalizer.isEnglish
+            ? 'Codex did not return a thread id for Goal mode'
+            : 'Codex 未返回目标模式可用的线程 id',
+      );
+    }
+
+    _activeCodexThreadId = threadId;
+    if (remoteCodex) {
+      _activateRemoteCodexRuntimeForThread(threadId);
+      _startRemoteCodexSessionSync(threadId);
+    } else {
+      final localConversationId = _asCodexInt(response['conversationId']);
+      if (localConversationId != null &&
+          _currentConversationIdByMode[ChatPageMode.codex] == null) {
+        _currentConversationIdByMode[ChatPageMode.codex] = localConversationId;
+      }
+      await _persistVisibleThreadTargetIfNeeded();
+    }
+    return threadId;
+  }
+
+  /// 将 thread/goal/updated|cleared（或 get 载荷）同步到本地 chrome。
+  void _applyCodexGoalFromServerMap(
+    Map<String, dynamic>? goal, {
+    required bool cleared,
+  }) {
+    if (!mounted) {
+      return;
+    }
+    if (cleared || goal == null) {
+      setState(() {
+        _codexActiveGoalText = null;
+        _codexGoalModeEnabled = false;
+      });
+      return;
+    }
+    final objective = (_asCodexString(goal['objective']) ?? '').trim();
+    final statusNorm =
+        (_asCodexString(goal['status']) ?? '').trim().toLowerCase();
+    final isComplete = statusNorm == 'complete';
+    if (objective.isEmpty || isComplete) {
+      setState(() {
+        _codexActiveGoalText = null;
+        _codexGoalModeEnabled = false;
+      });
+      return;
+    }
+    setState(() {
+      _codexActiveGoalText = objective;
+      _codexGoalModeEnabled = true;
+    });
   }
 
   /// Codex composer submit planner entry: slash + goal-mode + `@skill`.
@@ -857,7 +1113,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (trimmed.isEmpty) {
       return false;
     }
-    if (trimmed.contains('@')) {
+    if (trimmed.contains('@') ||
+        trimmed.toLowerCase().startsWith('/skill')) {
       await _ensureCodexSkillCatalogLoaded();
     }
     final plan = planCodexComposerSubmit(
@@ -888,14 +1145,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           await _openCodexSkillsPanel();
           return true;
         }
+        // B3: ensure catalog so path can be injected into actualText only.
+        await _ensureCodexSkillCatalogLoaded();
+        final skillActual = _buildCodexSkillActualText(
+          skillNames: plan.skillNames,
+          prompt: plan.plainText,
+          slashArgs: args.isNotEmpty
+              ? args
+              : (normalized.toLowerCase().startsWith('/skill')
+                  ? normalized.substring('/skill'.length).trim()
+                  : normalized),
+        );
         await _startCodexTurnCommand(
+          // User bubble: keep raw @name 附言 (or typed text) — never path.
           displayText: rawText,
-          actualText: normalized.isEmpty
-              ? buildCodexSkillCommand(
-                  skillNames: plan.skillNames,
-                  prompt: plan.plainText,
-                )
-              : normalized,
+          actualText: skillActual,
         );
         return true;
       case CodexSlashSubmitKind.setGoal:
@@ -911,27 +1175,13 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
         return true;
       case CodexSlashSubmitKind.startReview:
-        // R1: bare /review → startReview RPC; `/review <prompt>` → model turn
-        // (review/start has no prompt field). Consume plan.intent.value only —
-        // bare plan.plainText is the full `/review` string, not a prompt.
+        // B5: bare /review → startReview(uncommittedChanges);
+        // `/review <附言>` → startReview(target:{type:custom,instructions}).
+        // Consume plan.intent.value only — bare plainText is full `/review`.
         final reviewPrompt = (plan.intent.value ?? '').trim();
-        final reviewDisplay = plan.normalizedText.trim().isNotEmpty
-            ? plan.normalizedText.trim()
-            : (rawText.trim().isNotEmpty
-                ? rawText.trim()
-                : (reviewPrompt.isEmpty
-                    ? '/review'
-                    : '/review $reviewPrompt'));
-        if (reviewPrompt.isEmpty) {
-          await _startCodexReviewCommand();
-        } else {
-          await _startCodexTurnCommand(
-            displayText: reviewDisplay,
-            actualText: reviewDisplay.toLowerCase().startsWith('/review')
-                ? reviewDisplay
-                : '/review $reviewPrompt',
-          );
-        }
+        await _startCodexReviewCommand(
+          instructions: reviewPrompt.isEmpty ? null : reviewPrompt,
+        );
         return true;
       case CodexSlashSubmitKind.clearGoal:
       case CodexSlashSubmitKind.showGoal:
@@ -1063,12 +1313,159 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     unawaited(_clearCodexPreference(_kCodexCollaborationModePreferenceKey));
   }
 
-  void _autoDeactivateCodexPlanModeAfterTurn() {
-    if (!_isCodexPlanMode(_activeCodexCollaborationMode)) {
+  void _syncCodexModelFromServer(String? model) {
+    final normalized = model?.trim() ?? '';
+    if (normalized.isEmpty || normalized.startsWith('/')) {
       return;
     }
-    _activeCodexCollaborationMode = null;
-    unawaited(_clearCodexPreference(_kCodexCollaborationModePreferenceKey));
+    if ((_activeCodexModelId ?? '').trim() == normalized) {
+      return;
+    }
+    _activeCodexModelId = normalized;
+    _codexModelOptions = _mergeCodexOptionIds(
+      current: normalized,
+      preferred: normalized,
+      options: _codexModelOptions,
+    );
+    unawaited(_writeCodexPreference(_kCodexModelPreferenceKey, normalized));
+  }
+
+  void _syncCodexReasoningEffortFromServer(String? effort) {
+    final normalized = _normalizeCodexReasoningEffort(effort);
+    if (normalized == null) {
+      return;
+    }
+    if ((_activeCodexReasoningEffort ?? '').trim() == normalized) {
+      return;
+    }
+    _activeCodexReasoningEffort = normalized;
+    _codexReasoningEffortOptions = _mergeCodexReasoningEffortOptions(
+      current: normalized,
+      options: _codexReasoningEffortOptions,
+    );
+    unawaited(
+      _writeCodexPreference(_kCodexReasoningEffortPreferenceKey, normalized),
+    );
+  }
+
+  /// B7: planning turns no longer auto-leave plan mode.
+  /// Kept as a no-op for any residual call sites.
+  void _autoDeactivateCodexPlanModeAfterTurn() {
+    // Intentionally empty — approval handoff owns mode exit.
+  }
+
+  Future<void> _handleCodexPlanProposalDecision({
+    required String cardId,
+    required bool approved,
+    String? planText,
+  }) async {
+    if (!mounted) return;
+    _updateCodexPlanProposalStatus(
+      cardId: cardId,
+      status: approved ? 'approved' : 'rejected',
+    );
+    if (!approved) {
+      // Stay in plan mode; do not start an implementation turn.
+      if (!_isCodexPlanMode(_activeCodexCollaborationMode)) {
+        await _activateCodexPlanMode(persistOnly: true, dismissPanel: false);
+      }
+      await _appendCodexLocalSystemTip(
+        LegacyTextLocalizer.isEnglish
+            ? 'Rejected — stay in plan mode'
+            : '已拒绝，继续停留在计划模式',
+      );
+      if (mounted) setState(() {});
+      return;
+    }
+
+    // Approve: leave plan mode (default) then start implementation turn.
+    if (_isCodexPlanMode(_activeCodexCollaborationMode)) {
+      await _deactivateCodexPlanMode(dismissPanel: false);
+    }
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if (threadId.isNotEmpty) {
+      try {
+        await CodexAppServerService.updateThreadSettings(
+          threadId: threadId,
+          collaborationMode: 'default',
+        );
+      } catch (error) {
+        debugPrint('Codex plan approve: updateThreadSettings failed: $error');
+      }
+    }
+    final implementText = LegacyTextLocalizer.isEnglish
+        ? 'Implement the plan.'
+        : '实施计划。';
+    await _startCodexTurnCommand(
+      displayText: implementText,
+      actualText: implementText,
+      collaborationModeOverride: 'default',
+    );
+  }
+
+  void _updateCodexPlanProposalStatus({
+    required String cardId,
+    required String status,
+  }) {
+    final normalizedId = cardId.trim();
+    if (normalizedId.isEmpty) return;
+    final index = _messages.indexWhere((message) => message.id == normalizedId);
+    if (index == -1) return;
+    final existing = _messages[index];
+    final cardData = Map<String, dynamic>.from(
+      existing.cardData ?? const <String, dynamic>{},
+    );
+    if ((cardData['type'] ?? '').toString() != 'codex_plan_proposal') {
+      return;
+    }
+    cardData['status'] = status;
+    final updated = existing.copyWith(
+      content: {
+        ...?existing.content,
+        'cardData': cardData,
+        'id': existing.contentId ?? existing.id,
+      },
+    );
+    if (!mounted) {
+      _messages[index] = updated;
+      return;
+    }
+    setState(() {
+      _messages[index] = updated;
+    });
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    if (conversationId != null) {
+      final runtime = _runtimeCoordinator.runtimeFor(
+        conversationId: conversationId,
+        mode: kChatRuntimeModeCodex,
+      );
+      if (runtime != null) {
+        final runtimeIndex = runtime.messages.indexWhere(
+          (message) => message.id == normalizedId,
+        );
+        if (runtimeIndex != -1) {
+          runtime.messages[runtimeIndex] = updated;
+        }
+      }
+    }
+  }
+
+  void _bindCodexPlanProposalBridge() {
+    CodexPlanProposalBridge.handler = ({
+      required String cardId,
+      required bool approved,
+      String? planText,
+    }) {
+      return _handleCodexPlanProposalDecision(
+        cardId: cardId,
+        approved: approved,
+        planText: planText,
+      );
+    };
+  }
+
+  void _unbindCodexPlanProposalBridge() {
+    CodexPlanProposalBridge.handler = null;
   }
 
   @override
@@ -1134,8 +1531,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       await _loadCodexModelOptions();
       return;
     }
+    // B5: panel tap pre-fills `/review ` — do NOT start review immediately.
     if (command == '/review') {
-      await _startCodexReviewCommand();
+      _messageController.value = const TextEditingValue(
+        text: '/review ',
+        selection: TextSelection.collapsed(offset: 8),
+      );
+      _requestComposerFocus();
+      _handleSlashCommandInput();
       return;
     }
     if (command == '/init') {
@@ -1200,19 +1603,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         await _selectCodexModel(intent.value ?? '');
         return true;
       case CodexSlashSubmitKind.startReview:
-        // Bare panel/slash → RPC; `/review <prompt>` → turn so prompt reaches model.
+        // B5: bare → uncommitted review; with prompt → custom.instructions.
         final reviewPrompt = (intent.value ?? '').trim();
-        if (reviewPrompt.isEmpty) {
-          _messageController.clear();
-          _hideSlashCommandPanel();
-          await _startCodexReviewCommand();
-          return true;
-        }
-        await _startCodexTurnCommand(
-          displayText: trimmed,
-          actualText: trimmed.startsWith('/review')
-              ? trimmed
-              : '/review $reviewPrompt',
+        await _startCodexReviewCommand(
+          instructions: reviewPrompt.isEmpty ? null : reviewPrompt,
         );
         return true;
       case CodexSlashSubmitKind.startInit:
@@ -1289,12 +1683,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           await _openCodexSkillsPanel();
           return true;
         }
-        // S1: keep skill name + any trailing prompt on the wire.
-        // Prefer the raw `/skill …` text (includes prompt). Else rebuild
-        // `/skill <args>` so args (name + optional 附言) are never dropped.
-        final skillActual = trimmed.toLowerCase().startsWith('/skill')
-            ? trimmed
-            : '/skill $args';
+        // B3: wire path into actualText; display stays user-visible text only.
+        await _ensureCodexSkillCatalogLoaded();
+        final skillActual = _buildCodexSkillActualText(
+          skillNames: const <String>[],
+          slashArgs: args,
+        );
         await _startCodexTurnCommand(
           displayText: trimmed,
           actualText: skillActual,
@@ -1314,10 +1708,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
 
   Future<void> _executeCodexCompactCommand() async {
     final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
-    final threadId = _activeCodexThreadId?.trim();
-    if ((conversationId == null || _isRemoteCodexConfigured()) &&
-        (threadId == null || threadId.isEmpty)) {
-      _showSnackBar(
+    // B12: force a real threadId; connect first, never toast-only.
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+    } catch (error) {
+      if (!mounted) return;
+      await _appendCodexLocalSystemTip(
+        LegacyTextLocalizer.isEnglish
+            ? 'Compact failed: $error'
+            : '压缩失败：$error',
+      );
+      return;
+    }
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if (threadId.isEmpty) {
+      if (!mounted) return;
+      await _appendCodexLocalSystemTip(
         LegacyTextLocalizer.isEnglish
             ? 'No active Codex thread to compact'
             : '当前没有可压缩的 Codex 线程',
@@ -1325,25 +1731,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       return;
     }
     try {
-      await _ensureCodexConnectedForSlashCommand();
       await CodexAppServerService.startCompact(
         conversationId: _isRemoteCodexConfigured() ? null : conversationId,
-        threadId: threadId?.isEmpty == true ? null : threadId,
+        threadId: threadId,
       );
       if (!mounted) return;
-      showToast(
+      await _appendCodexLocalSystemTip(
         LegacyTextLocalizer.isEnglish
             ? 'Context compact started'
             : '已开始压缩上下文',
-        type: ToastType.success,
       );
     } catch (error) {
       if (!mounted) return;
-      showToast(
+      await _appendCodexLocalSystemTip(
         LegacyTextLocalizer.isEnglish
             ? 'Compact failed: $error'
             : '压缩失败：$error',
-        type: ToastType.error,
       );
     }
   }
@@ -1509,7 +1912,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _showSnackBar(
         LegacyTextLocalizer.isEnglish
             ? 'No active Codex thread for goal'
-            : '当前没有可查询 goal 的线程',
+            : '当前没有可查询目标的线程',
       );
       return;
     }
@@ -1523,21 +1926,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _showSnackBar(
           LegacyTextLocalizer.isEnglish
               ? 'No goal set for this thread'
-              : '当前线程未设置 goal',
+              : '当前线程未设置目标',
         );
         return;
       }
       _showSnackBar(
         LegacyTextLocalizer.isEnglish
-            ? 'Goal: $objective'
-            : 'Goal：$objective',
+            ? 'Goal mode: $objective'
+            : '目标模式：$objective',
       );
     } catch (error) {
       if (!mounted) return;
       showToast(
         LegacyTextLocalizer.isEnglish
-            ? 'Get goal failed: $error'
-            : '获取 goal 失败：$error',
+            ? 'Get Goal mode failed: $error'
+            : '获取目标模式失败：$error',
         type: ToastType.error,
       );
     }
@@ -1556,19 +1959,25 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       );
       return;
     }
-    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
-    final threadId = (_activeCodexThreadId ?? '').trim();
-    if ((conversationId == null || _isRemoteCodexConfigured()) &&
-        threadId.isEmpty) {
-      _showSnackBar(
-        LegacyTextLocalizer.isEnglish
-            ? 'No active Codex thread for goal'
-            : '当前没有可设置 goal 的线程',
-      );
-      return;
-    }
+    String threadId = (_activeCodexThreadId ?? '').trim();
+    int? conversationId = _currentConversationIdByMode[ChatPageMode.codex];
     try {
       await _ensureCodexConnectedForSlashCommand();
+      // B13: 无 thread 不能 setGoal → 先 ensureThread 再 set。
+      if (threadId.isEmpty) {
+        final ensured = await _ensureActiveCodexThreadId();
+        threadId = (ensured ?? '').trim();
+      }
+      conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+      if (threadId.isEmpty &&
+          (conversationId == null || _isRemoteCodexConfigured())) {
+        _showSnackBar(
+          LegacyTextLocalizer.isEnglish
+              ? 'Could not start a thread for Goal mode. Check Codex connection and retry.'
+              : '无法为「目标模式」创建线程，请检查 Codex 连接后重试',
+        );
+        return;
+      }
       // 1) Real Codex goal RPC first — only start a turn after success.
       await CodexAppServerService.setThreadGoal(
         conversationId: _isRemoteCodexConfigured() ? null : conversationId,
@@ -1576,6 +1985,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         objective: normalized,
       );
       if (!mounted) return;
+      unawaited(
+        DebugFileLog.logGoal(
+          'set',
+          objective: normalized,
+          threadId: threadId.isEmpty ? null : threadId,
+          conversationId: conversationId,
+        ),
+      );
       // 2) UI goal chrome / mode state (even if a turn cannot start yet).
       setState(() {
         _codexGoalModeEnabled = true;
@@ -1598,11 +2015,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
       }
     } catch (error) {
+      unawaited(
+        DebugFileLog.logError(
+          'goal.set',
+          error,
+          fields: <String, Object?>{
+            'objective': normalized,
+            if (threadId.isNotEmpty) 'threadId': threadId,
+            if (conversationId != null) 'conversationId': conversationId,
+          },
+        ),
+      );
       if (!mounted) return;
       showToast(
         LegacyTextLocalizer.isEnglish
-            ? 'Set goal failed: $error'
-            : '设置 goal 失败：$error',
+            ? 'Set Goal mode failed: $error'
+            : '设置目标模式失败：$error',
         type: ToastType.error,
       );
     }
@@ -1622,7 +2050,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _showSnackBar(
         LegacyTextLocalizer.isEnglish
             ? 'No active Codex thread for goal'
-            : '当前没有可清除 goal 的线程',
+            : '当前没有可清除目标的线程',
       );
       return;
     }
@@ -1633,22 +2061,39 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         threadId: threadId.isEmpty ? null : threadId,
       );
       if (!mounted) return;
+      unawaited(
+        DebugFileLog.logGoal(
+          'clear',
+          threadId: threadId.isEmpty ? null : threadId,
+          conversationId: conversationId,
+        ),
+      );
       setState(() {
         _codexGoalModeEnabled = false;
         _codexActiveGoalText = null;
       });
       showToast(
         LegacyTextLocalizer.isEnglish
-            ? 'Goal cleared'
-            : 'Goal 已清除',
+            ? 'Goal mode cleared'
+            : '已清除目标模式',
         type: ToastType.success,
       );
     } catch (error) {
+      unawaited(
+        DebugFileLog.logError(
+          'goal.clear',
+          error,
+          fields: <String, Object?>{
+            if (threadId.isNotEmpty) 'threadId': threadId,
+            if (conversationId != null) 'conversationId': conversationId,
+          },
+        ),
+      );
       if (!mounted) return;
       showToast(
         LegacyTextLocalizer.isEnglish
-            ? 'Clear goal failed: $error'
-            : '清除 goal 失败：$error',
+            ? 'Clear Goal mode failed: $error'
+            : '清除目标模式失败：$error',
         type: ToastType.error,
       );
     }
@@ -1701,6 +2146,30 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final resultObjective = _asCodexString(resultMap?['objective']);
     if (resultObjective != null && resultObjective.trim().isNotEmpty) {
       return resultObjective.trim();
+    }
+    return null;
+  }
+
+  /// B2: status from get/set response or nested goal map (active/complete/…).
+  String? _extractCodexGoalStatus(Map<String, dynamic> response) {
+    final direct = _asCodexString(response['status']);
+    if (direct != null && direct.trim().isNotEmpty) {
+      return direct.trim();
+    }
+    final goalMap = _asCodexMap(response['goal']);
+    final nested = _asCodexString(goalMap?['status']);
+    if (nested != null && nested.trim().isNotEmpty) {
+      return nested.trim();
+    }
+    final resultMap = _asCodexMap(response['result']);
+    final resultStatus = _asCodexString(resultMap?['status']);
+    if (resultStatus != null && resultStatus.trim().isNotEmpty) {
+      return resultStatus.trim();
+    }
+    final resultGoal = _asCodexMap(resultMap?['goal']);
+    final nestedResult = _asCodexString(resultGoal?['status']);
+    if (nestedResult != null && nestedResult.trim().isNotEmpty) {
+      return nestedResult.trim();
     }
     return null;
   }
@@ -1792,14 +2261,33 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   }
 
   @override
-  Future<void> _startCodexReviewCommand() async {
+  Future<void> _startCodexReviewCommand({String? instructions}) async {
     if (_isAiResponding) {
       return;
     }
+    final reviewPrompt = (instructions ?? '').trim();
+    final displayText =
+        reviewPrompt.isEmpty ? '/review' : '/review $reviewPrompt';
+    unawaited(
+      DebugFileLog.logReview(
+        reviewPrompt.isEmpty ? 'start_rpc' : 'start_with_prompt',
+        prompt: reviewPrompt.isEmpty ? null : reviewPrompt,
+        display: displayText,
+        threadId: _activeCodexThreadId,
+        conversationId: _currentConversationIdByMode[ChatPageMode.codex],
+      ),
+    );
     _inputFocusNode.unfocus();
     _messageController.clear();
     _hideSlashCommandPanel();
-    final messageIds = addUserMessage('/review');
+    // Bare → uncommittedChanges (second action); with 附言 → custom.instructions.
+    final reviewTarget = reviewPrompt.isEmpty
+        ? null
+        : <String, dynamic>{
+            'type': 'custom',
+            'instructions': reviewPrompt,
+          };
+    final messageIds = addUserMessage(displayText);
     // Local transcript tip only — never send as a model turn.
     await _appendCodexLocalSystemTip(
       codexSessionTipReviewStarted(
@@ -1859,6 +2347,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final response = await CodexAppServerService.startReview(
         conversationId: remoteCodex ? null : resolvedConversationId,
         threadId: _activeCodexThreadId,
+        target: reviewTarget,
         approvalPolicy: _codexPermissionMode.approvalPolicy,
         approvalsReviewer: _codexPermissionMode.approvalsReviewer,
         sandboxPolicy: _codexPermissionMode.sandboxPolicy,
@@ -1880,6 +2369,19 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       }
       await _writeCodexCommandPreferencesForCurrentConversation();
     } catch (error) {
+      unawaited(
+        DebugFileLog.logError(
+          'review.start',
+          error,
+          fields: <String, Object?>{
+            if ((_activeCodexThreadId ?? '').isNotEmpty)
+              'threadId': _activeCodexThreadId,
+            if (_currentConversationIdByMode[ChatPageMode.codex] != null)
+              'conversationId':
+                  _currentConversationIdByMode[ChatPageMode.codex],
+          },
+        ),
+      );
       if (!mounted) return;
       handleAgentError('Codex review 启动失败: $error');
     }
@@ -1893,6 +2395,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (_isAiResponding) {
       return;
     }
+    unawaited(
+      DebugFileLog.logComposer(
+        display: displayText,
+        actual: actualText,
+        kind: 'turn',
+        threadId: _activeCodexThreadId,
+        conversationId: _currentConversationIdByMode[ChatPageMode.codex],
+      ),
+    );
     _inputFocusNode.unfocus();
     _messageController.clear();
     _hideSlashCommandPanel();
@@ -2061,19 +2572,57 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     if (isVisibleConversation) {
       _syncCodexCollaborationModeFromServer(result.collaborationMode);
+      _syncCodexModelFromServer(result.model);
+      _syncCodexReasoningEffortFromServer(result.effort);
+    }
+    // B2: live goal notifications (thread/goal/updated|cleared).
+    if (isVisibleConversation) {
+      final goalMethod = diagnosticMethod;
+      final isGoalUpdated =
+          goalMethod == 'thread/goal/updated' ||
+          goalMethod == 'thread.goal.updated' ||
+          result.method == 'thread/goal/updated' ||
+          result.method == 'thread.goal.updated';
+      final isGoalCleared =
+          goalMethod == 'thread/goal/cleared' ||
+          goalMethod == 'thread.goal.cleared' ||
+          result.method == 'thread/goal/cleared' ||
+          result.method == 'thread.goal.cleared';
+      if (isGoalCleared) {
+        _applyCodexGoalFromServerMap(null, cleared: true);
+      } else if (isGoalUpdated) {
+        final params =
+            _asCodexMap(event['params']) ??
+            _asCodexMap(event['message']) ??
+            event;
+        final goalMap =
+            _asCodexMap(params['goal']) ??
+            _asCodexMap(_asCodexMap(params['params'])?['goal']);
+        _applyCodexGoalFromServerMap(goalMap, cleared: false);
+      }
     }
     if (isVisibleConversation && result.method == 'turn/completed') {
       final completedTurnId = result.turnId;
-      final completedPlanTurn =
-          completedTurnId != null && _codexPlanTurnIds.remove(completedTurnId);
-      if (completedPlanTurn ||
-          (completedTurnId == null &&
-              _isCodexPlanMode(_activeCodexCollaborationMode))) {
-        _autoDeactivateCodexPlanModeAfterTurn();
+      // B7: stay in plan mode after planning turns complete so the user can
+      // approve/reject the proposal. Do not silent auto-deactivate.
+      if (completedTurnId != null) {
+        _codexPlanTurnIds.remove(completedTurnId);
       }
       _activeCodexTurnId = null;
-      // G1: model may clear/complete goal mid-turn — resync text + mode.
+      // G1/B2: model may clear/complete goal mid-turn — resync text + mode.
       unawaited(_refreshCodexActiveGoalText());
+    }
+    // B12: official compact completion notification → session tip.
+    if (isVisibleConversation &&
+        (diagnosticMethod == 'thread/compacted' ||
+            diagnosticMethod == 'thread.compacted' ||
+            result.method == 'thread/compacted' ||
+            result.method == 'thread.compacted')) {
+      unawaited(
+        _appendCodexLocalSystemTip(
+          LegacyTextLocalizer.isEnglish ? 'Compacted' : '已压缩',
+        ),
+      );
     }
     if (isVisibleConversation) {
       final runtime = _runtimeCoordinator.runtimeFor(
@@ -2229,6 +2778,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       }
       await _writeCodexCommandPreferencesForCurrentConversation();
     } catch (error) {
+      unawaited(
+        DebugFileLog.logError(
+          'turn.start',
+          error,
+          fields: <String, Object?>{
+            if ((_activeCodexThreadId ?? '').isNotEmpty)
+              'threadId': _activeCodexThreadId,
+            if (_currentConversationIdByMode[ChatPageMode.codex] != null)
+              'conversationId':
+                  _currentConversationIdByMode[ChatPageMode.codex],
+            'model': _activeCodexModelId,
+            'effort': _activeCodexReasoningEffort,
+          },
+        ),
+      );
       if (!mounted) return;
       handleAgentError('Codex 启动失败: $error');
     }
@@ -6023,7 +6587,7 @@ List<String> _mergeCodexReasoningEffortOptions({
     'low',
     'medium',
     'high',
-    _kDefaultCodexReasoningEffort,
+    _kKnownCodexReasoningEffortXHigh,
   ]) {
     add(option);
   }

@@ -66,12 +66,12 @@ String codexSessionTipSkillInserted(String skillName, {required bool isEnglish})
   return isEnglish ? 'Skill inserted: $token' : '已插入技能：$token';
 }
 
-/// Session tip: Plan mode on/off.
+/// Session tip: 计划模式 / Plan mode on/off (B7 product name).
 String codexSessionTipPlan({required bool enabled, required bool isEnglish}) {
   if (enabled) {
-    return isEnglish ? 'Plan on' : '已开启 Plan';
+    return isEnglish ? 'Plan mode on' : '已开启计划模式';
   }
-  return isEnglish ? 'Plan off' : '已关闭 Plan';
+  return isEnglish ? 'Plan mode off' : '已关闭计划模式';
 }
 
 /// Session tip: permission mode change.
@@ -123,7 +123,8 @@ class CodexComposerSubmit {
 /// Plans Codex composer submit from raw input + session mode flags.
 ///
 /// Priority:
-/// 1. Leading `/` slash → [resolveCodexSlashSubmitIntent] (unchanged behavior)
+/// 1. Leading `/` slash → [resolveCodexSlashSubmitIntent]
+///    (goal mode: bare `/` is NOT slash — treated as empty goal show)
 /// 2. `@skill` mentions → [CodexSlashSubmitKind.startSkill] / `/skill ...`
 /// 3. [goalModeEnabled] + non-empty non-slash body → setGoal / `/goal <text>`
 /// 4. Otherwise plain message ([handled] = false, kind none)
@@ -145,10 +146,20 @@ CodexComposerSubmit planCodexComposerSubmit(
   }
 
   if (trimmed.startsWith('/')) {
-    // R1 (plan layer): `/review <prompt>` keeps startReview + prompt value.
+    // B1: 目标模式下裸 `/`（slash 面板残留）不当 slash，走 setGoal/showGoal。
+    // 真正的 `/command` 仍优先 slash。
+    if (goalModeEnabled && RegExp(r'^/\s*$').hasMatch(trimmed)) {
+      return const CodexComposerSubmit(
+        intent: CodexSlashSubmitIntent(CodexSlashSubmitKind.showGoal),
+        normalizedText: '/goal',
+        plainText: '',
+        handled: true,
+      );
+    }
+
+    // B5 (plan layer): `/review <prompt>` keeps startReview + prompt value
+    // (handler maps to custom.instructions; bare → uncommitted).
     // Bare `/review` still comes from [resolveCodexSlashSubmitIntent].
-    // Full slash-table support for review args remains in codex_slash_commands
-    // (M4 / shared utils outside this module lock).
     final reviewPrompt = _codexReviewPromptArg(trimmed);
     if (reviewPrompt != null) {
       return CodexComposerSubmit(
@@ -228,6 +239,9 @@ CodexComposerSubmit planCodexComposerSubmit(
 /// Builds normalized `/skill` command text.
 ///
 /// Format: `/skill <name>[ <name>...][ <prompt>]`
+///
+/// Display-facing and catalog-normalized form (no absolute path). Prefer
+/// [buildCodexSkillActualText] for model/startTurn payloads (B3).
 String buildCodexSkillCommand({
   required List<String> skillNames,
   String prompt = '',
@@ -245,6 +259,127 @@ String buildCodexSkillCommand({
     return '/skill $namePart';
   }
   return '/skill $namePart $body';
+}
+
+/// Prefer the shell-visible skill file path, then the app-local path (B3).
+///
+/// Empty when neither is set — callers should still send name + prompt.
+String preferCodexSkillFilePath({
+  String shellSkillFilePath = '',
+  String skillFilePath = '',
+}) {
+  final shell = shellSkillFilePath.trim();
+  if (shell.isNotEmpty) {
+    return shell;
+  }
+  return skillFilePath.trim();
+}
+
+/// Model/startTurn payload for skills: name + **implicit path** + optional 附言.
+///
+/// Bridge currently only accepts free-form [text], so path is embedded as a
+/// readable `skill_path:` line. User bubbles must use [displayText] / raw
+/// `@name 附言` instead — never this string.
+///
+/// [skillPathsByLowerName] keys are lower-cased skill names (or ids).
+String buildCodexSkillActualText({
+  required List<String> skillNames,
+  String prompt = '',
+  Map<String, String> skillPathsByLowerName = const <String, String>{},
+}) {
+  final names = skillNames
+      .map((n) => n.trim())
+      .where((n) => n.isNotEmpty)
+      .toList(growable: false);
+  final body = prompt.trim();
+  if (names.isEmpty) {
+    return buildCodexSkillCommand(skillNames: names, prompt: body);
+  }
+
+  final buffer = StringBuffer();
+  for (var i = 0; i < names.length; i++) {
+    final name = names[i];
+    if (i > 0) {
+      buffer.writeln();
+    }
+    buffer.write('/skill $name');
+    final path = (skillPathsByLowerName[name.toLowerCase()] ?? '').trim();
+    if (path.isNotEmpty) {
+      buffer.writeln();
+      buffer.write('skill_path: $path');
+    }
+  }
+  if (body.isNotEmpty) {
+    buffer.writeln();
+    buffer.write(body);
+  }
+  return buffer.toString();
+}
+
+/// Splits `/skill` args into leading skill name tokens (matched against
+/// [knownSkillNames] when provided) and trailing prompt.
+///
+/// When [knownSkillNames] is empty, only the first whitespace-separated token
+/// is treated as a skill name.
+({List<String> skillNames, String prompt}) parseCodexSkillSlashArgs(
+  String args, {
+  Iterable<String> knownSkillNames = const <String>[],
+}) {
+  var rest = args.trim();
+  if (rest.isEmpty) {
+    return (skillNames: const <String>[], prompt: '');
+  }
+
+  final known = <String, String>{};
+  for (final name in knownSkillNames) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      continue;
+    }
+    known[trimmed.toLowerCase()] = trimmed;
+  }
+  final knownLowerSorted = known.keys.toList()
+    ..sort((a, b) => b.length.compareTo(a.length));
+
+  final names = <String>[];
+  if (knownLowerSorted.isNotEmpty) {
+    while (rest.isNotEmpty) {
+      final lower = rest.toLowerCase();
+      String? matched;
+      var matchedLen = 0;
+      for (final key in knownLowerSorted) {
+        if (!lower.startsWith(key)) {
+          continue;
+        }
+        final end = key.length;
+        if (end < rest.length && !RegExp(r'\s').hasMatch(rest[end])) {
+          continue;
+        }
+        matched = known[key];
+        matchedLen = end;
+        break;
+      }
+      if (matched == null) {
+        break;
+      }
+      names.add(matched);
+      rest = rest.substring(matchedLen).trimLeft();
+    }
+  } else {
+    final match = RegExp(r'^(\S+)(?:\s+(.*))?$', dotAll: true).firstMatch(rest);
+    if (match != null) {
+      final name = (match.group(1) ?? '').trim();
+      if (name.isNotEmpty) {
+        names.add(name);
+      }
+      rest = (match.group(2) ?? '').trim();
+    }
+  }
+
+  return (
+    skillNames: List<String>.unmodifiable(names),
+    prompt: rest.trim(),
+  );
 }
 
 String _skillCommandValue({

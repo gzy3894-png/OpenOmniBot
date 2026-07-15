@@ -251,6 +251,14 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
             child: _buildSlashTriggerButton(iconSize: 20),
           ),
         ],
+        if (widget.onTriggerSkillMention != null) ...[
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: _buildSkillAtTriggerButton(iconSize: 20),
+          ),
+        ],
         const SizedBox(width: 4),
         Expanded(
           child: Align(
@@ -366,6 +374,38 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
                 widget.onPopupVisibilityChanged?.call(false);
               }
               widget.onTriggerSlashCommand?.call();
+            },
+    );
+  }
+
+  /// B11: explicit `@` control next to slash → Codex skills panel.
+  Widget _buildSkillAtTriggerButton({required double iconSize}) {
+    final color = IconTheme.of(context).color ??
+        Theme.of(context).iconTheme.color ??
+        const Color(0xFF54627A);
+    return IconButton(
+      key: const ValueKey('chat-input-trigger-at-button'),
+      padding: EdgeInsets.zero,
+      iconSize: iconSize,
+      tooltip: '技能',
+      icon: Text(
+        '@',
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontSize: iconSize,
+          fontWeight: FontWeight.w700,
+          height: 1.0,
+          color: color,
+        ),
+      ),
+      onPressed: widget.onTriggerSkillMention == null
+          ? null
+          : () {
+              if (_isPopupVisible) {
+                setState(() => _isPopupVisible = false);
+                widget.onPopupVisibilityChanged?.call(false);
+              }
+              widget.onTriggerSkillMention?.call();
             },
     );
   }
@@ -718,6 +758,14 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
             width: 24,
             height: 24,
             child: _buildSlashTriggerButton(iconSize: 18),
+          ),
+          const SizedBox(width: 2),
+        ],
+        if (widget.onTriggerSkillMention != null) ...[
+          SizedBox(
+            width: 24,
+            height: 24,
+            child: _buildSkillAtTriggerButton(iconSize: 18),
           ),
           const SizedBox(width: 2),
         ],

@@ -181,6 +181,9 @@ Map<String, dynamic> buildCodexSkillCard(
     'skillSource': skill.source,
     'skillEnabled': skill.enabled,
     'skillInstalled': skill.installed,
+    // B3: path for handlers / future structured UserInput.skill
+    'skillFilePath': skill.skillFilePath,
+    'shellSkillFilePath': skill.shellSkillFilePath,
     'mentionToken': mention,
     'nav': null,
   };

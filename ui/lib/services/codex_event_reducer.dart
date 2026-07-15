@@ -15,6 +15,8 @@ class CodexReduceResult {
     this.turnId,
     this.requestId,
     this.collaborationMode,
+    this.model,
+    this.effort,
   });
 
   final bool handled;
@@ -23,6 +25,10 @@ class CodexReduceResult {
   final String? turnId;
   final Object? requestId;
   final String? collaborationMode;
+  /// Thread model from `thread/settings/updated` (or equivalent).
+  final String? model;
+  /// Thread reasoning effort from `thread/settings/updated` (or equivalent).
+  final String? effort;
 }
 
 class CodexEventReducer {
@@ -99,6 +105,8 @@ class CodexEventReducer {
         threadId: threadId,
         turnId: turnId,
         collaborationMode: _collaborationModeFromThreadSettings(params),
+        model: _modelFromThreadSettings(params),
+        effort: _effortFromThreadSettings(params),
       );
     }
 
@@ -189,6 +197,26 @@ class CodexEventReducer {
             isFinal: false,
           );
         }
+      } else if (itemType == 'plan') {
+        // B7: plan items render as main-area proposal cards.
+        final proposalCardId = _planProposalCardId(
+          itemId: startedItemId,
+          parentTaskId: parentTaskId,
+          turnId: turnId,
+        );
+        _upsertPlanProposalCard(
+          runtime,
+          cardId: proposalCardId,
+          taskId: parentTaskId,
+          params: item,
+          streamMeta: _streamMeta(
+            runtime,
+            parentTaskId: parentTaskId,
+            entryId: proposalCardId,
+            kind: method == 'item/updated' ? 'tool_progress' : 'tool_started',
+          ),
+          appendDelta: false,
+        );
       } else if (isCodexToolItemType(itemType)) {
         final toolInfo = normalizeCodexToolCall(
           item,
@@ -312,28 +340,24 @@ class CodexEventReducer {
     }
 
     if (method == 'item/plan/delta' || method == 'turn/plan/updated') {
-      final text =
-          _extractText(params['delta']) ??
-          _extractText(params['plan']) ??
-          _extractText(params['text']) ??
-          '';
-      final cardId = '${itemId ?? parentTaskId}-codex-plan';
-      _upsertToolCard(
+      // B7: main-transcript plan proposal (not only tool strip).
+      final proposalCardId = _planProposalCardId(
+        itemId: itemId,
+        parentTaskId: parentTaskId,
+        turnId: turnId,
+      );
+      _upsertPlanProposalCard(
         runtime,
-        cardId: cardId,
+        cardId: proposalCardId,
         taskId: parentTaskId,
-        toolType: 'plan',
-        title: 'Codex plan',
-        status: 'running',
-        summary: text,
-        progress: text,
-        raw: params,
+        params: params,
         streamMeta: _streamMeta(
           runtime,
           parentTaskId: parentTaskId,
-          entryId: cardId,
+          entryId: proposalCardId,
           kind: 'tool_progress',
         ),
+        appendDelta: method == 'item/plan/delta',
       );
       return CodexReduceResult(
         handled: true,
@@ -917,30 +941,27 @@ class CodexEventReducer {
         return handled();
       case 'plan_update':
       case 'plan_delta':
-        final text =
-            _extractText(msg['delta']) ??
-            _extractText(msg['plan']) ??
-            _safeJson(msg);
         final itemId =
             _firstString([msg['itemId'], msg['item_id'], callId]) ??
             taskIdFor();
         final taskId = taskIdFor();
-        _upsertToolCard(
+        final proposalCardId = _planProposalCardId(
+          itemId: itemId,
+          parentTaskId: taskId,
+          turnId: protocolTurnId,
+        );
+        _upsertPlanProposalCard(
           runtime,
-          cardId: '$itemId-codex-plan',
+          cardId: proposalCardId,
           taskId: taskId,
-          toolType: 'plan',
-          title: 'Codex plan',
-          status: 'running',
-          summary: text,
-          progress: text,
-          raw: <String, dynamic>{...msg, 'type': 'plan'},
+          params: <String, dynamic>{...msg, 'type': 'plan'},
           streamMeta: _streamMeta(
             runtime,
             parentTaskId: taskId,
-            entryId: '$itemId-codex-plan',
+            entryId: proposalCardId,
             kind: 'tool_progress',
           ),
+          appendDelta: msgType == 'plan_delta',
         );
         return handled();
       case 'item_started':
@@ -1479,6 +1500,184 @@ class CodexEventReducer {
     );
   }
 
+  String _planProposalCardId({
+    String? itemId,
+    required String parentTaskId,
+    String? turnId,
+  }) {
+    final seed = itemId ?? turnId ?? parentTaskId;
+    return '$seed-codex-plan-proposal';
+  }
+
+  void _upsertPlanProposalCard(
+    ChatConversationRuntimeState runtime, {
+    required String cardId,
+    required String taskId,
+    required Map<String, dynamic> params,
+    required Map<String, dynamic> streamMeta,
+    bool appendDelta = false,
+  }) {
+    _touchActiveTurn(runtime, taskId);
+    final index = runtime.messages.indexWhere(
+      (message) => message.id == cardId,
+    );
+    final existing = index == -1 ? null : runtime.messages[index];
+    final existingCardData = existing?.cardData ?? const <String, dynamic>{};
+    final existingStatus =
+        (existingCardData['status'] ?? '').toString().trim().toLowerCase();
+    // Do not clobber a user decision already recorded on the card.
+    if (existingStatus == 'approved' || existingStatus == 'rejected') {
+      return;
+    }
+
+    final explanation =
+        _extractText(params['explanation']) ??
+        _extractText(params['reason']) ??
+        (existingCardData['explanation'] ?? '').toString();
+    final steps = _extractPlanSteps(params['plan']) ??
+        _extractPlanSteps(params['steps']) ??
+        _extractPlanSteps(params['items']);
+    final deltaText =
+        _extractText(params['delta']) ??
+        _extractText(params['text']) ??
+        '';
+    final planBody =
+        _formatPlanBody(params['plan']) ??
+        _extractText(params['plan']) ??
+        _extractText(params['content']) ??
+        '';
+
+    String planText = (existingCardData['planText'] ?? '').toString();
+    if (appendDelta && deltaText.isNotEmpty) {
+      planText = '$planText$deltaText';
+    } else if (planBody.isNotEmpty) {
+      planText = planBody;
+    } else if (deltaText.isNotEmpty && planText.isEmpty) {
+      planText = deltaText;
+    }
+
+    final effectiveSteps = steps ??
+        (existingCardData['planSteps'] is List
+            ? List<dynamic>.from(existingCardData['planSteps'] as List)
+            : const <dynamic>[]);
+    if (effectiveSteps.isNotEmpty && planText.trim().isEmpty) {
+      planText = effectiveSteps
+          .whereType<Map>()
+          .map((step) {
+            final map = step.map(
+              (key, value) => MapEntry(key.toString(), value),
+            );
+            return (map['step'] ?? map['text'] ?? map['title'] ?? '')
+                .toString()
+                .trim();
+          })
+          .where((line) => line.isNotEmpty)
+          .map((line) => '- $line')
+          .join('\n');
+    }
+
+    final status = planText.trim().isEmpty && effectiveSteps.isEmpty
+        ? 'running'
+        : 'pending';
+    final startTime = _startTimeForEntry(
+      runtime,
+      cardId,
+      existingMessage: existing,
+    );
+    final cardData = <String, dynamic>{
+      'type': 'codex_plan_proposal',
+      'taskId': taskId,
+      'cardId': cardId,
+      'title': '计划方案',
+      'planText': planText,
+      'explanation': explanation,
+      'planSteps': effectiveSteps,
+      'status': status,
+      'rawParamsJson': _safeJson(params),
+      'startTime': startTime,
+      'conversationId': runtime.conversationId,
+    };
+    final message = ChatMessageModel(
+      id: cardId,
+      type: 2,
+      user: 3,
+      content: {'cardData': cardData, 'id': cardId},
+      streamMeta: streamMeta,
+      createAt: DateTime.fromMillisecondsSinceEpoch(startTime),
+    );
+    if (index == -1) {
+      runtime.messages.insert(0, message);
+    } else {
+      runtime.messages[index] = existing!.copyWith(
+        content: {'cardData': cardData, 'id': cardId},
+        streamMeta: streamMeta,
+      );
+    }
+    runtime.lastAgentToolType = 'plan';
+  }
+
+  List<Map<String, dynamic>>? _extractPlanSteps(dynamic value) {
+    if (value is! List) {
+      return null;
+    }
+    final steps = <Map<String, dynamic>>[];
+    for (final item in value) {
+      if (item is Map) {
+        final map = item.map(
+          (key, nested) => MapEntry(key.toString(), nested),
+        );
+        final step = (map['step'] ?? map['text'] ?? map['title'] ?? '')
+            .toString()
+            .trim();
+        if (step.isEmpty) {
+          continue;
+        }
+        steps.add(<String, dynamic>{
+          'step': step,
+          'status': (map['status'] ?? map['state'] ?? 'pending')
+              .toString()
+              .trim()
+              .toLowerCase(),
+        });
+      } else {
+        final text = _extractText(item)?.trim() ?? '';
+        if (text.isEmpty) continue;
+        steps.add(<String, dynamic>{'step': text, 'status': 'pending'});
+      }
+    }
+    return steps.isEmpty ? null : steps;
+  }
+
+  String? _formatPlanBody(dynamic value) {
+    if (value is List) {
+      final lines = <String>[];
+      for (final item in value) {
+        if (item is Map) {
+          final map = item.map(
+            (key, nested) => MapEntry(key.toString(), nested),
+          );
+          final step = (map['step'] ?? map['text'] ?? map['title'] ?? '')
+              .toString()
+              .trim();
+          if (step.isEmpty) continue;
+          final status = (map['status'] ?? map['state'] ?? '')
+              .toString()
+              .trim()
+              .toLowerCase();
+          lines.add(status.isEmpty ? '- $step' : '- [$status] $step');
+        } else {
+          final text = _extractText(item)?.trim() ?? '';
+          if (text.isNotEmpty) {
+            lines.add('- $text');
+          }
+        }
+      }
+      if (lines.isEmpty) return null;
+      return lines.join('\n');
+    }
+    return null;
+  }
+
   void _upsertToolCard(
     ChatConversationRuntimeState runtime, {
     required String cardId,
@@ -1862,6 +2061,29 @@ class CodexEventReducer {
       final cardId = '${itemId ?? taskId}-codex-thinking';
       _markThinkingItemCompleted(runtime, taskId, cardId);
       runtime.codexReplayDeltaOffsets.remove(cardId);
+    }
+    if (itemType == 'plan') {
+      final completedItemId = itemId ?? _string(item['id']) ?? taskId;
+      final proposalCardId = _planProposalCardId(
+        itemId: completedItemId,
+        parentTaskId: taskId,
+        turnId: null,
+      );
+      _upsertPlanProposalCard(
+        runtime,
+        cardId: proposalCardId,
+        taskId: taskId,
+        params: item,
+        streamMeta: _streamMeta(
+          runtime,
+          parentTaskId: taskId,
+          entryId: proposalCardId,
+          kind: 'tool_progress',
+        ),
+        appendDelta: false,
+      );
+      runtime.codexReplayDeltaOffsets.remove(proposalCardId);
+      return;
     }
     if (isCodexToolItemType(itemType)) {
       final toolInfo = normalizeCodexToolCall(
@@ -3658,13 +3880,16 @@ bool _statusIsCancelled(String? status) {
       status == 'interrupted';
 }
 
-String? _collaborationModeFromThreadSettings(Map<String, dynamic> params) {
-  final settings =
-      _asStringMap(params['threadSettings']) ??
+Map<String, dynamic> _threadSettingsMap(Map<String, dynamic> params) {
+  return _asStringMap(params['threadSettings']) ??
       _asStringMap(params['thread_settings']) ??
       _asStringMap(params['settings']) ??
       _asStringMap(params['thread']) ??
       params;
+}
+
+String? _collaborationModeFromThreadSettings(Map<String, dynamic> params) {
+  final settings = _threadSettingsMap(params);
   final modeValue =
       settings['collaborationMode'] ??
       settings['collaboration_mode'] ??
@@ -3678,6 +3903,32 @@ String? _collaborationModeFromThreadSettings(Map<String, dynamic> params) {
   final nestedSettings =
       _asStringMap(modeMap?['settings']) ?? _asStringMap(settings['settings']);
   return _firstString([nestedSettings?['mode'], nestedSettings?['kind']]);
+}
+
+String? _modelFromThreadSettings(Map<String, dynamic> params) {
+  final settings = _threadSettingsMap(params);
+  return _firstString([
+    settings['model'],
+    settings['modelId'],
+    settings['model_id'],
+    params['model'],
+    params['modelId'],
+    params['model_id'],
+  ]);
+}
+
+String? _effortFromThreadSettings(Map<String, dynamic> params) {
+  final settings = _threadSettingsMap(params);
+  return _firstString([
+    settings['effort'],
+    settings['reasoningEffort'],
+    settings['reasoning_effort'],
+    settings['modelReasoningEffort'],
+    settings['model_reasoning_effort'],
+    params['effort'],
+    params['reasoningEffort'],
+    params['reasoning_effort'],
+  ]);
 }
 
 int? _asInt(dynamic value) {

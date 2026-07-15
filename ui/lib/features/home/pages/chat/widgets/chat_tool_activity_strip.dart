@@ -947,7 +947,8 @@ class _ToolStopButton extends StatelessWidget {
   }
 }
 
-class _HistoryDrawer extends StatelessWidget {
+/// reverse 自下上列表；可滚时显示 Scrollbar +「下滑」hint（B8）。
+class _HistoryDrawer extends StatefulWidget {
   const _HistoryDrawer({
     required this.cards,
     required this.onOpenCard,
@@ -961,53 +962,156 @@ class _HistoryDrawer extends StatelessWidget {
   final ValueChanged<int> onPointerEnd;
 
   @override
+  State<_HistoryDrawer> createState() => _HistoryDrawerState();
+}
+
+class _HistoryDrawerState extends State<_HistoryDrawer> {
+  final ScrollController _scrollController = ScrollController();
+  bool _showScrollHint = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_handleScroll);
+  }
+
+  @override
+  void didUpdateWidget(covariant _HistoryDrawer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cards.length != widget.cards.length) {
+      _showScrollHint = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.removeListener(_handleScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleScroll() {
+    if (!_scrollController.hasClients) {
+      return;
+    }
+    final scrolled = _scrollController.offset.abs() > 4;
+    if (scrolled && _showScrollHint && mounted) {
+      setState(() {
+        _showScrollHint = false;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final dividerColor = context.isDarkTheme
         ? context.omniPalette.borderSubtle.withValues(alpha: 0.52)
         : const Color(0x140F2034);
+    final cards = widget.cards;
+    // reverse + max 5 行可见：>4 条必可滚；其余按高度仍可能可滚，统一开滚动。
     final scrollable = cards.length > 4;
+    final isEnglish = LegacyTextLocalizer.isEnglish;
+    final scrollHintText = isEnglish
+        ? 'Swipe down for more'
+        : '下滑查看更多';
+    final secondaryTextColor = context.isDarkTheme
+        ? context.omniPalette.textSecondary
+        : const Color(0xFF7C8DA5);
+
+    final listView = ListView.separated(
+      controller: _scrollController,
+      reverse: true,
+      padding: EdgeInsets.zero,
+      shrinkWrap: !scrollable,
+      physics: scrollable
+          ? const BouncingScrollPhysics(parent: ClampingScrollPhysics())
+          : const NeverScrollableScrollPhysics(),
+      itemBuilder: (context, index) {
+        final card = cards[index];
+        final isBottomMost = index == 0;
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            border: isBottomMost
+                ? null
+                : Border(bottom: BorderSide(color: dividerColor, width: 1)),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => widget.onOpenCard(card),
+              child: ToolActivityRow(
+                card: card,
+                trailing: _buildCommandTrailingControl(
+                  card,
+                  onTap: () => widget.onOpenCard(card),
+                  onSelectCommand: widget.onOpenCard,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      separatorBuilder: (_, __) => const SizedBox.shrink(),
+      itemCount: cards.length,
+    );
+
     return Container(
       key: kChatToolActivityPanelKey,
       padding: EdgeInsets.zero,
       child: Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: (event) => onPointerDown(event.pointer),
-        onPointerUp: (event) => onPointerEnd(event.pointer),
-        onPointerCancel: (event) => onPointerEnd(event.pointer),
-        child: ListView.separated(
-          reverse: true,
-          padding: EdgeInsets.zero,
-          shrinkWrap: true,
-          physics: scrollable
-              ? const BouncingScrollPhysics(parent: ClampingScrollPhysics())
-              : const NeverScrollableScrollPhysics(),
-          itemBuilder: (context, index) {
-            final card = cards[index];
-            final isBottomMost = index == 0;
-            return DecoratedBox(
-              decoration: BoxDecoration(
-                border: isBottomMost
-                    ? null
-                    : Border(bottom: BorderSide(color: dividerColor, width: 1)),
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => onOpenCard(card),
-                  child: ToolActivityRow(
-                    card: card,
-                    trailing: _buildCommandTrailingControl(
-                      card,
-                      onTap: () => onOpenCard(card),
-                      onSelectCommand: onOpenCard,
+        onPointerDown: (event) => widget.onPointerDown(event.pointer),
+        onPointerUp: (event) => widget.onPointerEnd(event.pointer),
+        onPointerCancel: (event) => widget.onPointerEnd(event.pointer),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Scrollbar(
+              controller: _scrollController,
+              thumbVisibility: scrollable,
+              thickness: scrollable ? 3.0 : 0.0,
+              radius: const Radius.circular(999),
+              child: listView,
+            ),
+            if (scrollable && _showScrollHint)
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: IgnorePointer(
+                  child: Container(
+                    alignment: Alignment.center,
+                    padding: const EdgeInsets.only(top: 2, bottom: 2),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          (context.isDarkTheme
+                                  ? context.omniPalette.pageBackground
+                                  : Colors.white)
+                              .withValues(alpha: 0.92),
+                          (context.isDarkTheme
+                                  ? context.omniPalette.pageBackground
+                                  : Colors.white)
+                              .withValues(alpha: 0.0),
+                        ],
+                      ),
+                    ),
+                    child: Text(
+                      scrollHintText,
+                      key: const ValueKey('chat-command-history-scroll-hint'),
+                      style: TextStyle(
+                        color: secondaryTextColor.withValues(alpha: 0.9),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w500,
+                        height: 1.1,
+                      ),
                     ),
                   ),
                 ),
               ),
-            );
-          },
-          separatorBuilder: (_, __) => const SizedBox.shrink(),
-          itemCount: cards.length,
+          ],
         ),
       ),
     );

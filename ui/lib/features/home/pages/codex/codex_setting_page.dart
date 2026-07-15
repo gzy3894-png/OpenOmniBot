@@ -20,7 +20,8 @@ class CodexSettingPage extends StatefulWidget {
 }
 
 class _CodexSettingPageState extends State<CodexSettingPage> {
-  static const String _defaultCodexModel = 'gpt-5.5';
+  // Placeholder only — never force a product default model id.
+  static const String _modelHint = 'model-id';
   static const String _defaultCodexHome = '/root/.codex';
   static const Duration _autoSaveDelay = Duration(milliseconds: 700);
 
@@ -75,7 +76,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   void initState() {
     super.initState();
     _baseUrlController = TextEditingController();
-    _modelController = TextEditingController(text: _defaultCodexModel);
+    _modelController = TextEditingController();
     _apiKeyController = TextEditingController();
     _bridgeUrlController = TextEditingController();
     _bridgeTokenController = TextEditingController();
@@ -125,10 +126,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     _isSyncing = true;
     try {
       _setControllerText(_baseUrlController, config.baseUrl);
-      _setControllerText(
-        _modelController,
-        config.model.trim().isEmpty ? _defaultCodexModel : config.model,
-      );
+      _setControllerText(_modelController, config.model);
       _setControllerText(_apiKeyController, config.apiKey);
       _setControllerText(_bridgeUrlController, config.remoteBridgeUrl);
       _setControllerText(_bridgeTokenController, config.remoteBridgeToken);
@@ -870,7 +868,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                           key: const Key('codex-config-model-field'),
                           controller: _modelController,
                           label: 'Model',
-                          hint: _defaultCodexModel,
+                          hint: _modelHint,
                         ),
                         const SizedBox(height: 12),
                         _buildTextField(

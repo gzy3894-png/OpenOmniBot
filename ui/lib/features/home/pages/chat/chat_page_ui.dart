@@ -385,8 +385,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     final goalModeEnabled = _codexGoalModeEnabled;
     final fastModeEnabled = _activeCodexFastEnabled;
     final isEnglish = LegacyTextLocalizer.isEnglish;
-    // Work-mode catalog: mode toggles + skills nav first, then one-shot
-    // actions. Model/permission stay on dedicated composer buttons.
+    // B8 白名单：常用工作模式优先；下架 init/resume/new/diff/status（scout）。
+    // 顺序：goal-mode → fast → skills → review → plan → stop → compact。
     final commands = <Map<String, dynamic>>[
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-goal-mode',
@@ -403,7 +403,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                   : '开启后输入目标并发送')
             : (isEnglish
                   ? 'Off: clear goal mode and thread goal'
-                  : '关闭清除目标模式与线程 goal'),
+                  : '关闭清除目标模式与线程目标'),
         progress: goalModeEnabled
             ? (isEnglish
                   ? ((_codexActiveGoalText ?? '').trim().isEmpty
@@ -464,27 +464,27 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         displayName: '/review',
         toolTypeLabel: isEnglish ? 'Review' : '审查',
         status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
+        statusLabel: isEnglish ? 'Prefill' : '预填',
         summary: isEnglish
-            ? 'Review changes in the current workspace'
-            : '审查当前工作区改动',
+            ? 'Prefill /review ; add notes, then send'
+            : '预填 /review ，补附言后发送',
         progress: isEnglish
-            ? 'Runs Codex review on the active thread'
-            : '在当前线程中启动 Codex review',
+            ? 'Send with notes → custom review; bare /review → uncommitted'
+            : '带附言发送走 custom 审查；裸 /review 审查未提交改动',
         controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-plan',
         toolTitle: '/plan',
-        displayName: '/plan',
+        displayName: isEnglish ? 'Plan mode' : '计划模式',
         toolTypeLabel: isEnglish ? 'Plan' : '计划',
         status: planModeEnabled ? 'success' : 'running',
         statusLabel: planModeEnabled
-            ? (isEnglish ? 'Selected' : '已选')
+            ? (isEnglish ? 'On' : '开启')
             : (isEnglish ? 'Off' : '关闭'),
         summary: planModeEnabled
-            ? (isEnglish ? 'Plan mode is active' : '当前已启用 Plan 模式')
-            : (isEnglish ? 'Plan mode is off' : '当前未启用 Plan 模式'),
+            ? (isEnglish ? 'Plan mode is active' : '当前已启用计划模式')
+            : (isEnglish ? 'Plan mode is off' : '当前未启用计划模式'),
         progress: _codexCollaborationModeListError != null
             ? _codexCollaborationModeListError!
             : _isCodexCollaborationModeListLoading
@@ -497,66 +497,6 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         isToggle: true,
         toggleValue: planModeEnabled,
         controlType: 'toggle',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-init',
-        toolTitle: '/init',
-        displayName: '/init',
-        toolTypeLabel: isEnglish ? 'Init' : '初始化',
-        status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
-        summary: isEnglish
-            ? 'Generate or update AGENTS.md'
-            : '生成或更新 AGENTS.md',
-        progress: isEnglish
-            ? 'Creates Codex initialization guidance'
-            : '生成 Codex 初始化指引',
-        controlType: 'action',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-compact',
-        toolTitle: '/compact',
-        displayName: '/compact',
-        toolTypeLabel: isEnglish ? 'Compact' : '压缩',
-        status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
-        summary: isEnglish
-            ? 'Compact the current thread context'
-            : '压缩当前线程上下文',
-        progress: isEnglish
-            ? 'Calls thread compact on the active Codex thread'
-            : '对当前 Codex 线程执行上下文压缩',
-        controlType: 'action',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-status',
-        toolTitle: '/status',
-        displayName: '/status',
-        toolTypeLabel: isEnglish ? 'Status' : '状态',
-        status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
-        summary: isEnglish
-            ? 'Show local Codex status snapshot'
-            : '查看本地 Codex 状态摘要',
-        progress: isEnglish
-            ? 'Model, effort, fast, permission, thread, ready'
-            : '模型、思考、Fast、权限、线程、就绪状态',
-        controlType: 'action',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-diff',
-        toolTitle: '/diff',
-        displayName: '/diff',
-        toolTypeLabel: isEnglish ? 'Diff' : '差异',
-        status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
-        summary: isEnglish
-            ? 'Show the latest known diff summary'
-            : '展示最近可用的 diff 摘要',
-        progress: isEnglish
-            ? 'Uses tool results already present in chat'
-            : '仅使用聊天中已有的工具结果',
-        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-stop',
@@ -574,38 +514,22 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         controlType: 'action',
       ),
       _buildCodexCommandCard(
-        cardId: 'slash-command-codex-new',
-        toolTitle: '/new',
-        displayName: '/new',
-        toolTypeLabel: isEnglish ? 'New' : '新建',
+        cardId: 'slash-command-codex-compact',
+        toolTitle: '/compact',
+        displayName: '/compact',
+        toolTypeLabel: isEnglish ? 'Compact' : '压缩',
         status: 'running',
         statusLabel: isEnglish ? 'Command' : '命令',
         summary: isEnglish
-            ? 'Start a fresh conversation'
-            : '开始新的对话',
+            ? 'Compact the current thread context'
+            : '压缩当前线程上下文',
         progress: isEnglish
-            ? 'Clears the current chat surface and thread binding'
-            : '清空当前聊天面并解除线程绑定',
-        controlType: 'action',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-resume',
-        toolTitle: '/resume',
-        displayName: '/resume',
-        toolTypeLabel: isEnglish ? 'Resume' : '恢复',
-        status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
-        summary: isEnglish
-            ? 'Resume a Codex thread by id'
-            : '按 threadId 恢复 Codex 线程',
-        progress: isEnglish
-            ? 'Tap then enter /resume <threadId>'
-            : '点击后填写 /resume <threadId>',
+            ? 'Calls thread compact on the active Codex thread'
+            : '对当前 Codex 线程执行上下文压缩',
         controlType: 'action',
       ),
     ];
-    // Bare `/` (panel open) shows the full work-mode list; further typing
-    // filters by title / display / label / cardId.
+    // Bare `/` 展示白名单全量；继续输入时按 title/display/label/cardId 过滤。
     final showAll = query.isEmpty || query == '/';
     if (showAll) {
       return commands;
@@ -827,6 +751,20 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     );
   }
 
+  /// tool / slash overlay 锚点高度：优先整柱（含 Goal bar），勿只量 ChatInputArea。
+  double _resolveOverlayAnchorPillarHeight() {
+    if (_inputPillarMeasuredHeight > 0.5) {
+      return _inputPillarMeasuredHeight;
+    }
+    // 整柱尚未测到时回退：composer + wrapper 顶 padding + Goal bar 占用。
+    if (_inputAreaHeight > 0.5) {
+      return _inputAreaHeight +
+          _kChatInputWrapperTopPadding +
+          _resolveCodexGoalBarOccupancy();
+    }
+    return 0.0;
+  }
+
   ChatPaneOverlayAnchorGeometry _resolveToolActivityAnchorGeometry({
     required BuildContext layoutContext,
     required BoxConstraints constraints,
@@ -834,7 +772,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     required double keyboardSpacer,
     required double inputAreaHeight,
   }) {
-    final normalizedInputHeight = inputAreaHeight.isFinite
+    // inputAreaHeight 现为输入柱 pillar 高（含 Goal bar）；兼容旧调用方命名。
+    final normalizedPillarHeight = inputAreaHeight.isFinite
         ? inputAreaHeight
         : 0.0;
     final derivedWidth = math.max(0.0, constraints.maxWidth - 48);
@@ -843,18 +782,18 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       return _lastStableToolActivityAnchorGeometry!;
     }
 
-    if (_isInputAreaVisible && normalizedInputHeight > 0.5) {
+    if (_isInputAreaVisible && normalizedPillarHeight > 0.5) {
       final geometry = resolveChatPaneOverlayAnchorGeometry(
         viewportSize: constraints.biggest,
         bottomSpacing:
-            inputBottomPadding + keyboardSpacer + normalizedInputHeight,
-        anchorHeight: normalizedInputHeight,
+            inputBottomPadding + keyboardSpacer + normalizedPillarHeight,
+        anchorHeight: normalizedPillarHeight,
       );
       _lastStableToolActivityAnchorGeometry = geometry;
       return geometry;
     }
 
-    final liveGeometry = _resolveToolActivityAnchorGeometryFromInputArea(
+    final liveGeometry = _resolveToolActivityAnchorGeometryFromInputPillar(
       layoutContext: layoutContext,
       constraints: constraints,
       derivedWidth: derivedWidth,
@@ -872,9 +811,28 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     if (!_isInputAreaVisible) {
       return fallbackGeometry;
     }
+    // 最终回退：优先整柱 key，再退 ChatInputArea（避免 Goal bar 被漏掉）。
+    final pillarContext = _inputAreaKey.currentContext;
+    final pillarBox = pillarContext?.findRenderObject();
+    final stackBox = layoutContext.findRenderObject();
+    if (pillarBox is RenderBox &&
+        stackBox is RenderBox &&
+        pillarBox.hasSize &&
+        stackBox.hasSize) {
+      final pillarOffset =
+          pillarBox.localToGlobal(Offset.zero, ancestor: stackBox);
+      final rect = pillarOffset & pillarBox.size;
+      final geometry = ChatPaneOverlayAnchorGeometry(
+        rect: rect,
+        bottom: (constraints.maxHeight - rect.top)
+            .clamp(0.0, constraints.maxHeight)
+            .toDouble(),
+      );
+      _lastStableToolActivityAnchorGeometry = geometry;
+      return geometry;
+    }
     final inputContext = _chatInputAreaKey.currentContext;
     final inputBox = inputContext?.findRenderObject();
-    final stackBox = layoutContext.findRenderObject();
     if (inputBox is! RenderBox ||
         stackBox is! RenderBox ||
         !inputBox.hasSize ||
@@ -893,8 +851,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     return geometry;
   }
 
+  /// 从 `_inputAreaKey` 整柱（含 Goal bar topBanner）测 live 锚点。
   ChatPaneOverlayAnchorGeometry?
-  _resolveToolActivityAnchorGeometryFromInputArea({
+  _resolveToolActivityAnchorGeometryFromInputPillar({
     required BuildContext layoutContext,
     required BoxConstraints constraints,
     required double derivedWidth,
@@ -902,13 +861,27 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     if (!_isInputAreaVisible) {
       return null;
     }
+    final stackBox = layoutContext.findRenderObject();
+    if (stackBox is! RenderBox || !stackBox.hasSize) {
+      return null;
+    }
+    final pillarContext = _inputAreaKey.currentContext;
+    final pillarBox = pillarContext?.findRenderObject();
+    if (pillarBox is RenderBox && pillarBox.hasSize) {
+      final pillarOffset =
+          pillarBox.localToGlobal(Offset.zero, ancestor: stackBox);
+      final top = pillarOffset.dy.clamp(0.0, constraints.maxHeight).toDouble();
+      return ChatPaneOverlayAnchorGeometry(
+        rect: Rect.fromLTWH(24, top, derivedWidth, pillarBox.size.height),
+        bottom: (constraints.maxHeight - top)
+            .clamp(0.0, constraints.maxHeight)
+            .toDouble(),
+      );
+    }
+    // 整柱尚未挂载时回退 ChatInputArea（可能漏 Goal bar，仅过渡帧）。
     final inputContext = _chatInputAreaKey.currentContext;
     final inputBox = inputContext?.findRenderObject();
-    final stackBox = layoutContext.findRenderObject();
-    if (inputBox is! RenderBox ||
-        stackBox is! RenderBox ||
-        !inputBox.hasSize ||
-        !stackBox.hasSize) {
+    if (inputBox is! RenderBox || !inputBox.hasSize) {
       return null;
     }
     final inputOffset = inputBox.localToGlobal(Offset.zero, ancestor: stackBox);
@@ -1430,6 +1403,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     // shadow reads as part of the input surface instead of as separate chrome.
     final suppressToolActivitySurfaceShadow =
         showToolActivityStrip || showSlashCommandStrip;
+    // B4：overlay 锚在输入柱 pillar 顶（含 Goal bar），勿只传 ChatInputArea 高。
     final overlayAnchor = (toolActivityCards.isEmpty && !showSlashCommandStrip)
         ? null
         : _resolveToolActivityAnchorGeometry(
@@ -1437,7 +1411,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
             constraints: constraints,
             inputBottomPadding: inputBottomPadding,
             keyboardSpacer: keyboardSpacer,
-            inputAreaHeight: _inputAreaHeight,
+            inputAreaHeight: _resolveOverlayAnchorPillarHeight(),
           );
     if ((!showToolActivityStrip || toolActivityCards.isEmpty) &&
         _toolActivityOccupiedHeight > 0) {
@@ -1594,6 +1568,11 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       useAttachmentPickerForPlus: true,
                       onPickAttachment: _pickAttachments,
                       onTriggerSlashCommand: _triggerSlashCommandPanel,
+                      onTriggerSkillMention: _activeMode == ChatPageMode.codex
+                          ? () {
+                              unawaited(_openCodexSkillsPanel());
+                            }
+                          : null,
                       attachments: _pendingAttachments,
                       onRemoveAttachment: _removePendingAttachment,
                       // Goal bar = topBanner of input column. mode 关则 null
@@ -1602,7 +1581,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                               _codexGoalModeEnabled
                           ? CodexGoalModeBar(
                               goalText: _codexActiveGoalText,
-                              showWhenEmpty: true,
+                              // B6: 空目标不占位锁底栏
+                              showWhenEmpty: false,
                               visible: true,
                               onHeightChanged: _handleCodexGoalBarHeightChanged,
                               onClear: () {
@@ -1644,8 +1624,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       codexRunSettings: _activeMode == ChatPageMode.codex
                           ? CodexRunSettings(
                               modelId: _activeCodexModelId ?? '',
+                              // Empty = unset; never pretend xhigh silently.
                               reasoningEffort:
-                                  _activeCodexReasoningEffort ?? 'xhigh',
+                                  _activeCodexReasoningEffort ?? '',
                               modelOptions: _codexModelOptions,
                               reasoningEffortOptions:
                                   _codexReasoningEffortOptions,

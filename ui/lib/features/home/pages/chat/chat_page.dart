@@ -20,6 +20,7 @@ import '../../../../services/assists_core_service.dart';
 import '../../widgets/home_drawer.dart';
 import '../authorize/authorize_page_args.dart';
 import '../command_overlay/widgets/chat_input_area.dart';
+import '../command_overlay/widgets/cards/codex_plan_proposal_card.dart';
 import '../command_overlay/services/tool_card_detail_gesture_gate.dart';
 import '../common/openclaw_connection_checker.dart';
 import '../omnibot_workspace/widgets/omnibot_workspace_browser.dart';
@@ -38,6 +39,7 @@ import 'package:ui/services/codex_diff_parser.dart';
 import 'package:ui/services/codex_tool_call_parser.dart';
 import 'package:ui/services/conversation_model_override_service.dart';
 import 'package:ui/services/conversation_history_service.dart';
+import 'package:ui/services/debug_file_log.dart';
 import 'package:ui/services/conversation_service.dart';
 import 'package:ui/services/device_service.dart';
 import 'package:ui/services/home_greeting_settings_service.dart';
@@ -1806,6 +1808,11 @@ abstract class _ChatPageStateBase extends State<ChatPage>
 
   Future<void> _deactivateCodexPlanMode({bool dismissPanel = true});
 
+  /// B7 plan proposal approve/reject bridge (main-area card → ChatPage).
+  void _bindCodexPlanProposalBridge();
+
+  void _unbindCodexPlanProposalBridge();
+
   Future<void> _handleCodexSlashCommandCardSelected(
     Map<String, dynamic> cardData,
   );
@@ -1822,7 +1829,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
 
   Future<void> _executeCodexInitCommand();
 
-  Future<void> _startCodexReviewCommand();
+  /// B5: optional [instructions] → review target custom.instructions;
+  /// bare/null → uncommittedChanges (second action after prefill).
+  Future<void> _startCodexReviewCommand({String? instructions});
 
   Future<void> _handleCodexTap();
 

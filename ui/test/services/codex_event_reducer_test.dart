@@ -1886,6 +1886,30 @@ diff --git a/lib/main.dart b/lib/main.dart
     expect(result.collaborationMode, 'default');
   });
 
+  test('reads model and effort from thread settings update', () {
+    final result = reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'thread/settings/updated',
+        'params': {
+          'threadId': 'thread-2',
+          'threadSettings': {
+            'model': 'gpt-custom',
+            'effort': 'high',
+            'collaborationMode': {'mode': 'default'},
+          },
+        },
+      },
+    );
+
+    expect(result.handled, isTrue);
+    expect(result.method, 'thread/settings/updated');
+    expect(result.threadId, 'thread-2');
+    expect(result.model, 'gpt-custom');
+    expect(result.effort, 'high');
+    expect(result.collaborationMode, 'default');
+  });
+
   test('maps app-server request_user_input request before turn completes', () {
     final result = reducer.reduce(
       runtime: runtime,
@@ -3128,4 +3152,64 @@ diff --git a/lib/main.dart b/lib/main.dart
       expect(cardData['toolTitle'], 'plain_tool');
     },
   );
+
+  test('turn/plan/updated maps to plan proposal card', () {
+    final result = reducer.reduce(
+      runtime: runtime,
+      event: {
+        'message': {
+          'method': 'turn/plan/updated',
+          'params': {
+            'turnId': 'turn-plan-1',
+            'explanation': 'Need approval before edits',
+            'plan': [
+              {'step': 'Inspect codebase', 'status': 'completed'},
+              {'step': 'Apply patch', 'status': 'pending'},
+            ],
+          },
+        },
+      },
+    );
+
+    expect(result.handled, isTrue);
+    final cardData = runtime.messages.single.cardData!;
+    expect(cardData['type'], 'codex_plan_proposal');
+    expect(cardData['status'], 'pending');
+    expect(cardData['explanation'], 'Need approval before edits');
+    expect(cardData['planText'], contains('Inspect codebase'));
+    expect((cardData['planSteps'] as List).length, 2);
+  });
+
+  test('item/plan/delta appends into plan proposal card', () {
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'message': {
+          'method': 'item/plan/delta',
+          'params': {
+            'turnId': 'turn-plan-2',
+            'itemId': 'plan-item-1',
+            'delta': 'Step one',
+          },
+        },
+      },
+    );
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'message': {
+          'method': 'item/plan/delta',
+          'params': {
+            'turnId': 'turn-plan-2',
+            'itemId': 'plan-item-1',
+            'delta': ' then two',
+          },
+        },
+      },
+    );
+
+    final cardData = runtime.messages.single.cardData!;
+    expect(cardData['type'], 'codex_plan_proposal');
+    expect(cardData['planText'], 'Step one then two');
+  });
 }

@@ -134,6 +134,8 @@ class ChatInputArea extends StatefulWidget {
   final List<ChatInputAttachment> attachments;
   final ValueChanged<String>? onRemoveAttachment;
   final VoidCallback? onTriggerSlashCommand;
+  /// Codex `@` skill entry (B11). Null hides the button.
+  final VoidCallback? onTriggerSkillMention;
   final String? selectedModelOverrideId;
   final VoidCallback? onClearSelectedModelOverride;
   final double? contextUsageRatio;
@@ -179,6 +181,7 @@ class ChatInputArea extends StatefulWidget {
     this.attachments = const [],
     this.onRemoveAttachment,
     this.onTriggerSlashCommand,
+    this.onTriggerSkillMention,
     this.selectedModelOverrideId,
     this.onClearSelectedModelOverride,
     this.contextUsageRatio,

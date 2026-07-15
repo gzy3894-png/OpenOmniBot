@@ -475,9 +475,11 @@ class CodexAppServerManager private constructor(
         val model = args.stringValue("model").orEmpty()
         val apiKey = args.stringValue("apiKey").orEmpty()
         val serviceTier = normalizeCodexServiceTier(args.stringValue("serviceTier"))
+        // Only write effort when the caller provided a valid value — do not
+        // silently invent xhigh in config.toml.
         val modelReasoningEffort =
             normalizeCodexReasoningEffort(args.stringValue("modelReasoningEffort"))
-                ?: "xhigh"
+                .orEmpty()
         val defaultGoal = args.stringValue("defaultGoal").orEmpty().trim()
         val remoteConfig = CodexRemoteBridgeConfig(
             enabled = args["remoteEnabled"] == true,
@@ -1179,15 +1181,18 @@ private fun buildCodexConfigToml(
     baseUrl: String,
     model: String,
     serviceTier: String? = null,
-    modelReasoningEffort: String = "xhigh",
+    modelReasoningEffort: String = "",
     defaultGoal: String = ""
 ): String {
     val lines = mutableListOf(
         "model_provider = \"omnimind\"",
         "model = ${tomlString(model)}",
-        "model_reasoning_effort = ${tomlString(modelReasoningEffort.ifBlank { "xhigh" })}",
         "disable_response_storage = true"
     )
+    val normalizedEffort = normalizeCodexReasoningEffort(modelReasoningEffort)
+    if (!normalizedEffort.isNullOrBlank()) {
+        lines += "model_reasoning_effort = ${tomlString(normalizedEffort)}"
+    }
     val normalizedServiceTier = normalizeCodexServiceTier(serviceTier)
     if (!normalizedServiceTier.isNullOrBlank()) {
         lines += "service_tier = ${tomlString(normalizedServiceTier)}"
