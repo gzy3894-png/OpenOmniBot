@@ -1,8 +1,8 @@
 # 当前交付单
 
-> 更新：2026-07-15 · Stage **goal 可见 turn + Fast 开/关提示 修复包 READY**  
+> 更新：2026-07-15 · Stage **系统提示样式 + 会话 tip 覆盖 包 READY**  
 > **你只做：装包 → 测 → 交报告（或只回 PASS/FAIL）**  
-> **主线程等待重新验收**
+> **主线程等待验收**
 
 ---
 
@@ -22,46 +22,54 @@
 | 项 | 值 |
 |----|-----|
 | 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
-| 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-6b09bf2-standard-debug.apk` |
+| 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-31c4f35-standard-debug.apk` |
 | 状态 | **READY** |
-| sha256 | `14bbb431d7264281b68842ba0902a8245dc5b14799185a9894195162f278a891` |
-| 大小 | ~349 MB（366148482 bytes） |
+| sha256 | `542bf2dea54771ef16c52e36130afe6fd4e629efb3f51b6ba0359496ca7c48ff` |
+| 大小 | ~349 MB（366151386 bytes） |
 | 变体 | `developStandardDebug` · `-Ptarget=lib/main_standard.dart` |
 | applicationId | `cn.com.omnimind.bot.debug` |
 | versionName | `0.5.6.4`（versionCode 1） |
-| commit | `6b09bf2` · `fix(codex): model-visible /goal turn + Fast on/off priority-lane tips` |
-| 基线 | 基于 modes/skills 包 `4a285f7` / docs `41b7393` 的 goal+Fast 修复 |
+| commit | `31c4f35` · `feat(codex): system tip style + session tips for model/effort/review/skills` |
+| 基线 | 基于 goal/Fast 修复 `6b09bf2` / docs `1470e56` 的 system tips UX 包 |
 | 分支 | `secondary/s1-baseline` |
 | fork | `gzy3894-png/OpenOmniBot` |
-| GHA | [Baseline Standard Debug #29400076462](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29400076462) · success |
+| GHA | [Baseline Standard Debug #29407300883](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29407300883) · success（attempt 2；attempt 1 为 D8 OOM 瞬时失败） |
 | 签名策略 | `stableDebug` + secrets `AWB_DEBUG_*`（与 AWB 内测 jks 同源） |
 | 期望证书 SHA256 | `6D:79:D3:52:E6:8F:C7:E1:95:6F:E1:4C:41:B6:AF:FA:D2:A1:40:3E:B2:2A:F9:E7:6B:4E:21:3F:A1:02:44:C6` |
 
-**本包相对上一 READY（`4a285f7`）修复：**
+**本包相对上一 READY（`6b09bf2`）新增：**
 
-- 发送目标：`setThreadGoal` RPC 成功后 **再** `_startCodexTurnCommand`  
-  - 用户气泡显示 `/goal …`  
-  - 模型实际收到 objective 正文（`actualText`）  
-  - 不能只 toast「Goal 已更新」而无会话 turn  
-- Fast **开**提示：优先通道 / 约 1.5× 速度 / 约 2× credits  
-- Fast **关**也有本地会话提示（标准通道与标准 credits）  
-- 若 AI 正在回复则仅完成 RPC+UI，不抢第二 turn  
+- 本地系统提示视觉：`MessageBubble` 识别 `content.localSystemTip` / `kind=local_system_tip`（兼容 id `codex-fast-tip` / `codex-system-tip`）  
+  - **更小字号**（约正文 `×0.86`）  
+  - **上下细分割线**  
+  - secondary 色、左对齐；非用户气泡 / 非 AI 正文流  
+- 会话 tip 覆盖（均为本地 transcript，不作为 model turn）：  
+  - Fast 开/关（**短文案**：`1.5× 速度；计费约 1.5–2×` / 关闭恢复标准）  
+  - 模型切换、思考等级、审查开始、技能插入、Plan 开/关、权限切换  
+- content 写入带 `localSystemTip: true` + `kind: local_system_tip`  
 
 ---
 
-## 3. 本包测点（方案 §4 · 已按本修复收紧）
+## 3. 本包测点（system tips UX）
 
 | # | 操作 | PASS |
 |---|------|------|
-| 1 | 点 `chat-input-trigger-slash-button` | 新列表含目标开关 / Fast / 技能 / 审查类 |
-| 2 | 开目标模式 | 出现「目标:」前缀态 + 常显目标区 |
-| 3 | 输入目标并发送 | **会话出现用户气泡 `/goal …` 且模型有回复**（不能仅 toast）；UI 同步目标正文 |
-| 4 | 关目标模式 | `/goal clear`；UI 清除 |
-| 5 | 开/关 Fast | **开**：会话内可见优先通道 / 约 1.5× / 约 2× credits；**关也有提示**；后续 turn 跟随 serviceTier |
-| 6 | `@` 或面板技能 | 列表；选中后 `@技能名`；发送≈`/skill` |
-| 7 | review | 点一下可跑 |
-| 8 | ＋ 附件 | 行为与改前一致 |
-| 9 | model / permission | 仍独立按钮，不在根 slash 塞回 |
+| 1 | 开 Fast | 短文案 + **小字号** + **上下分割线** |
+| 2 | 关 Fast | 短关闭文案 + 同上样式 |
+| 3 | 切换模型 | 会话内系统提示（如「已切换模型：…」） |
+| 4 | 切换思考等级 | 会话内系统提示 |
+| 5 | 点审查 | 系统提示「已开始审查」（或等价） |
+| 6 | 插入技能（@/面板） | 系统提示「已插入技能：@…」 |
+| 7 | Plan / 权限 | 各有系统提示 |
+| 8 | 普通用户/AI 正文 | 字号 **不变**（仅 tip 变小） |
+
+回归（不扩 scope，有空可点）：
+
+| # | 操作 | PASS |
+|---|------|------|
+| R1 | 目标模式发送 | 用户气泡 `/goal …` 且模型有回复（`6b09bf2`） |
+| R2 | `@` 技能发送 | 约等于 `/skill` |
+| R3 | ＋ 附件 | 与改前一致 |
 
 残余（已知，非阻塞）：
 
@@ -69,7 +77,8 @@
 - `/diff` 只展示聊天里已有 diff 卡片，不主动拉 git  
 - 配置页 defaultGoal 写入 toml；不会每次 turn 自动 setThreadGoal  
 - 技能依赖 `AgentSkillStoreService` 列表；空库时为空态  
-- 目标发送时若 `_isAiResponding`，本包只保证 RPC+UI，不强制第二 turn（等空闲再发）  
+- 目标发送时若 `_isAiResponding`，只保证 RPC+UI，不强制第二 turn  
+- GHA attempt 1 曾 D8 `Java heap space`（`mergeExtDex`）；attempt 2 成功；偶发 CI OOM 可能再出现  
 
 ---
 
@@ -77,9 +86,9 @@
 
 | 判定 | 含义 | 下一步 |
 |------|------|--------|
-| **GATE-PASS** | 启动 + Codex + 上述关键测点大体可用 | 可继续下一小步 |
-| **GATE-FAIL** | 闪退 / 无法进壳 / 目标·Fast·技能明显坏 | 只修，不扩 scope |
-| **PASS-B** | 壳稳但部分 slash/skill 半实现 | 可接受已知残余 |
+| **GATE-PASS** | 启动 + Codex + tip 样式/覆盖大体可用 | 可继续下一小步 |
+| **GATE-FAIL** | 闪退 / tip 样式全无 / 关键开关无 tip | 只修，不扩 scope |
+| **PASS-B** | 壳稳但个别 tip 文案或覆盖半实现 | 可接受已知残余 |
 
 ---
 
@@ -92,7 +101,8 @@
 - [x] modes/skills 实现静态核对（`reports/m7-static-verify.md`）  
 - [x] modes/skills GHA 出包 + Download stage（`4a285f7` / run 29394732847）  
 - [x] goal 可见 turn + Fast 开/关提示修复出包（`6b09bf2` / run 29400076462）  
-- [ ] **主线程等待你重新验收**（重点 #3 / #5）  
+- [x] system tips UX 出包（`31c4f35` / run 29407300883 attempt 2）  
+- [ ] **主线程等待你验收**（重点 tip 字号/分割线 + 覆盖 #1–#7）  
 
 ---
 
@@ -106,4 +116,5 @@
 | 2026-07-15 | `c388f54` Fast/slash/config/image 推 fork；GHA 29386637049 success；sha256 `2278ba38…` staged Download |
 | 2026-07-15 | modes/skills `0871898`；首轮 GHA 29394428147 fail（UI mixin 调私有 clearGoal） |
 | 2026-07-15 | fix `4a285f7`；GHA 29394732847 success；sha256 `e82684ad…` staged Download |
-| 2026-07-15 | fix `6b09bf2` model-visible `/goal` turn + Fast on/off priority-lane tips；GHA 29400076462 success；sha256 `14bbb431…` staged Download；主线程等待重验 |
+| 2026-07-15 | fix `6b09bf2` model-visible `/goal` turn + Fast on/off priority-lane tips；GHA 29400076462 success；sha256 `14bbb431…` staged Download |
+| 2026-07-15 | `31c4f35` system tip style + session tips；GHA 29407300883 attempt1 D8 OOM fail → attempt2 success；sha256 `542bf2de…` staged Download；主线程等待 tip UX 验收 |

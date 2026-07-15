@@ -98,9 +98,9 @@ M1 与 M4 文件不重叠 → 可与 Bubble 三线并行；M4 只 **调用** M1 
 ## 4. 调度状态
 
 - [x] 方案（纠正误读 + 模块锁）  
-- [ ] Wave A：M1 + M-Bubble  
-- [ ] Wave B：M4  
-- [ ] Wave C：M7  
+- [x] Wave A：M1 + M-Bubble  
+- [x] Wave B：M4  
+- [x] Wave C：M7（`31c4f35` / GHA 29407300883 success / APK staged）  
 - [ ] 用户真机验收  
 
-**当前命令**：立即 Wave A（M1 ∥ M-Bubble），同时派 M4（只写 codex/ui 回调，不写 M1/Bubble 文件）。  
+**当前命令**：装测 system tips UX（见 `docs/results/DELIVERY.md` §3）；主线程只收 PASS/FAIL。  
