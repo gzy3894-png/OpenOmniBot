@@ -1508,13 +1508,10 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                               goalText: _codexActiveGoalText,
                               showWhenEmpty: _codexGoalModeEnabled,
                               onClear: () {
-                                // Local chrome reset + existing clear RPC.
-                                // Full goal-mode lifecycle still owned by M4.
-                                setState(() {
-                                  _codexGoalModeEnabled = false;
-                                  _codexActiveGoalText = null;
-                                });
-                                unawaited(_executeCodexClearGoalCommand());
+                                // Cross-mixin: use base abstract API (Codex
+                                // mixin private _executeCodexClearGoalCommand
+                                // is not visible on _ChatPageUiMixin).
+                                unawaited(_setCodexGoalModeEnabled(false));
                               },
                             )
                           : null,

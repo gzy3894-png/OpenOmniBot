@@ -1793,6 +1793,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
 
   Future<void> _setCodexFastEnabled(bool enabled);
 
+  /// Goal-mode session toggle (composer prefix + bar + clearGoal on off).
+  Future<void> _setCodexGoalModeEnabled(bool enabled);
+
   Future<void> _activateCodexPlanMode({
     bool persistOnly = false,
     bool dismissPanel = true,
