@@ -1,5 +1,21 @@
 # AGENTS.md
 
+> **二次开发 / 精简纪律（2026-07-15 起，优先于下文过时命令）**  
+> - 路线：[`docs/slim-roadmap.md`](docs/slim-roadmap.md) — **一步步 Stage，禁止一刀砍模块**  
+> - 模块地图：[`docs/module-map/`](docs/module-map/)  
+> - 真机金线：[`docs/smoke-codex.md`](docs/smoke-codex.md)  
+> - **唯一推荐 debug 构建**：
+>   ```bash
+>   cd ui && flutter pub get
+>   cd .. && ./gradlew :app:assembleDevelopStandardDebug -Ptarget=lib/main_standard.dart
+>   ```
+> - **禁止**裸 `./gradlew assemble` / `./gradlew build` / `./gradlew test`（空 `omniinfer` submodule 时会在 settings 失败）  
+> - **禁止**未做 S4 解耦就删除 `:assists` / `:accessibility`  
+> - 生命线：Codex LOCAL + TerminalManager 长进程 + proot/alpine + baselib CodexThreadBinding + Flutter codex channel  
+> - 本机无 Flutter/Android SDK 时不要硬编；走 CI（`.github/workflows/ci.yml` 已是 standard 路径）
+
+---
+
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
