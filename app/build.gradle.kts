@@ -138,6 +138,19 @@ android {
             enableV2Signing = true
             enableV3Signing = true
         }
+        // Secondary-dev: fixed internal debug keystore via env (GHA secrets AWB_DEBUG_*).
+        // Same cert across builds so upgrade-install keeps data / GPT config.
+        // Local builds without env keep AGP default debug keystore.
+        create("stableDebug") {
+            val ksPath = prop("AWB_DEBUG_KEYSTORE_FILE").ifBlank { prop("AWB_DEBUG_KEYSTORE_PATH") }
+            storeFile = ksPath.takeIf { it.isNotBlank() }?.let { file(it) }
+            storePassword = prop("AWB_DEBUG_STORE_PASSWORD").ifBlank { null }
+            keyAlias = prop("AWB_DEBUG_KEY_ALIAS").ifBlank { null }
+            keyPassword = prop("AWB_DEBUG_KEY_PASSWORD").ifBlank { null }
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
+        }
     }
     buildTypes {
         release {
@@ -150,13 +163,23 @@ android {
             )
         }
         debug {
-            signingConfig = signingConfigs.getByName("debug")
             applicationIdSuffix = ".debug"
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            val stable = signingConfigs.getByName("stableDebug")
+            val ks = stable.storeFile
+            signingConfig = if (ks != null && ks.isFile &&
+                !stable.storePassword.isNullOrBlank() &&
+                !stable.keyAlias.isNullOrBlank() &&
+                !stable.keyPassword.isNullOrBlank()
+            ) {
+                stable
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
