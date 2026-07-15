@@ -133,10 +133,13 @@ jobs:
           AWB_DEBUG_STORE_PASSWORD: ${{ env.AWB_DEBUG_STORE_PASSWORD }}
           AWB_DEBUG_KEY_ALIAS: ${{ env.AWB_DEBUG_KEY_ALIAS }}
           AWB_DEBUG_KEY_PASSWORD: ${{ env.AWB_DEBUG_KEY_PASSWORD }}
-          # D8 mergeExtDex OOMs at project default 2g; --no-daemon uses this process heap.
-          GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
+          # D8 mergeExtDex OOMs at project default 2g and sometimes at 6g on
+          # busy runners; pin both GRADLE_OPTS and org.gradle.jvmargs, and cap
+          # workers so dex merge does not fan out memory.
+          GRADLE_OPTS: "-Xmx8g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
         run: >-
-          ./gradlew --no-daemon --parallel --build-cache
+          ./gradlew --no-daemon --build-cache --max-workers=2
+          -Dorg.gradle.jvmargs="-Xmx8g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
           :app:assembleDevelopStandardDebug
           -Ptarget=lib/main_standard.dart
 
