@@ -179,9 +179,10 @@ PASS：目标完成那一段「目标内容 / 状态 / complete / 耗时」阅�
 ## 5. 调度状态
 
 - [x] 对齐理解（本文件）  
-- [ ] 用户确认方案或修正  
-- [ ] Wave A 派发  
-- [ ] Wave B / C  
+- [x] 用户确认方案或修正  
+- [x] Wave A 派发  
+- [x] Wave B（M4 GoalSync+Review+SkillSend）  
+- [x] Wave C（M7-Ship 出包中 / 完成后勾真机）  
 - [ ] 真机验收  
 
-**当前命令**：**只出方案，待用户确认后再调度实现。**  
+**当前命令**：**Wave A/B 实现完成；Wave C M7-Ship BUILDING（push + GHA + stage）**。
