@@ -18,6 +18,12 @@ void main() {
       resolveCodexSlashSubmitIntent('/review').kind,
       CodexSlashSubmitKind.startReview,
     );
+    // R1: `/review <prompt>` must not fall through as unsupported.
+    final reviewPrompted = resolveCodexSlashSubmitIntent(
+      '/review 帮我审查 app/src/...',
+    );
+    expect(reviewPrompted.kind, CodexSlashSubmitKind.startReview);
+    expect(reviewPrompted.value, '帮我审查 app/src/...');
     expect(
       resolveCodexSlashSubmitIntent('/init').kind,
       CodexSlashSubmitKind.startInit,

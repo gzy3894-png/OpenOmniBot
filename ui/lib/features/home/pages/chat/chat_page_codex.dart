@@ -817,6 +817,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         threadId.isEmpty) {
       return;
     }
+    // Snapshot before server get so we can detect "had goal → cleared".
+    final hadLocalGoal = (_codexActiveGoalText ?? '').trim().isNotEmpty;
     try {
       await _ensureCodexConnectedForSlashCommand();
       final response = await CodexAppServerService.getThreadGoal(
@@ -827,11 +829,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         return;
       }
       final objective = _extractCodexGoalObjective(response);
+      final trimmedObjective = (objective ?? '').trim();
+      final serverEmpty = trimmedObjective.isEmpty;
       setState(() {
-        _codexActiveGoalText =
-            (objective == null || objective.trim().isEmpty)
-            ? null
-            : objective.trim();
+        if (!serverEmpty) {
+          _codexActiveGoalText = trimmedObjective;
+          return;
+        }
+        // Server has no active objective.
+        _codexActiveGoalText = null;
+        // Only auto-disable goal mode when a previously-known local goal was
+        // cleared/completed. Keep mode on when the user just enabled empty
+        // goal mode and never had a server goal yet.
+        if (hadLocalGoal) {
+          _codexGoalModeEnabled = false;
+        }
       });
     } catch (error) {
       debugPrint('Refresh Codex goal text failed: $error');
@@ -898,12 +910,34 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           displayText: display,
         );
         return true;
+      case CodexSlashSubmitKind.startReview:
+        // R1: bare /review → startReview RPC; `/review <prompt>` → model turn
+        // (review/start has no prompt field). Consume plan.intent.value only —
+        // bare plan.plainText is the full `/review` string, not a prompt.
+        final reviewPrompt = (plan.intent.value ?? '').trim();
+        final reviewDisplay = plan.normalizedText.trim().isNotEmpty
+            ? plan.normalizedText.trim()
+            : (rawText.trim().isNotEmpty
+                ? rawText.trim()
+                : (reviewPrompt.isEmpty
+                    ? '/review'
+                    : '/review $reviewPrompt'));
+        if (reviewPrompt.isEmpty) {
+          await _startCodexReviewCommand();
+        } else {
+          await _startCodexTurnCommand(
+            displayText: reviewDisplay,
+            actualText: reviewDisplay.toLowerCase().startsWith('/review')
+                ? reviewDisplay
+                : '/review $reviewPrompt',
+          );
+        }
+        return true;
       case CodexSlashSubmitKind.clearGoal:
       case CodexSlashSubmitKind.showGoal:
       case CodexSlashSubmitKind.none:
       case CodexSlashSubmitKind.openModelPicker:
       case CodexSlashSubmitKind.selectModel:
-      case CodexSlashSubmitKind.startReview:
       case CodexSlashSubmitKind.startInit:
       case CodexSlashSubmitKind.togglePlan:
       case CodexSlashSubmitKind.startPlan:
@@ -1166,9 +1200,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         await _selectCodexModel(intent.value ?? '');
         return true;
       case CodexSlashSubmitKind.startReview:
-        _messageController.clear();
-        _hideSlashCommandPanel();
-        await _startCodexReviewCommand();
+        // Bare panel/slash → RPC; `/review <prompt>` → turn so prompt reaches model.
+        final reviewPrompt = (intent.value ?? '').trim();
+        if (reviewPrompt.isEmpty) {
+          _messageController.clear();
+          _hideSlashCommandPanel();
+          await _startCodexReviewCommand();
+          return true;
+        }
+        await _startCodexTurnCommand(
+          displayText: trimmed,
+          actualText: trimmed.startsWith('/review')
+              ? trimmed
+              : '/review $reviewPrompt',
+        );
         return true;
       case CodexSlashSubmitKind.startInit:
         _messageController.clear();
@@ -1244,15 +1289,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           await _openCodexSkillsPanel();
           return true;
         }
-        _messageController.clear();
-        _hideSlashCommandPanel();
+        // S1: keep skill name + any trailing prompt on the wire.
+        // Prefer the raw `/skill …` text (includes prompt). Else rebuild
+        // `/skill <args>` so args (name + optional 附言) are never dropped.
+        final skillActual = trimmed.toLowerCase().startsWith('/skill')
+            ? trimmed
+            : '/skill $args';
         await _startCodexTurnCommand(
           displayText: trimmed,
-          actualText: trimmed.startsWith('/skill')
-              ? trimmed
-              : buildCodexSkillCommand(
-                  skillNames: args.split(RegExp(r'\s+')),
-                ),
+          actualText: skillActual,
         );
         return true;
       case CodexSlashSubmitKind.unsupported:
@@ -1470,29 +1515,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     try {
       await _ensureCodexConnectedForSlashCommand();
-      final response = await CodexAppServerService.getThreadGoal(
-        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
-        threadId: threadId.isEmpty ? null : threadId,
-      );
+      // G1: reuse refresh so empty goal also closes mode when local had goal.
+      await _refreshCodexActiveGoalText();
       if (!mounted) return;
-      final objective = _extractCodexGoalObjective(response);
-      if (objective == null || objective.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _codexActiveGoalText = null;
-          });
-        }
+      final objective = (_codexActiveGoalText ?? '').trim();
+      if (objective.isEmpty) {
         _showSnackBar(
           LegacyTextLocalizer.isEnglish
               ? 'No goal set for this thread'
               : '当前线程未设置 goal',
         );
         return;
-      }
-      if (mounted) {
-        setState(() {
-          _codexActiveGoalText = objective;
-        });
       }
       _showSnackBar(
         LegacyTextLocalizer.isEnglish
@@ -2039,6 +2072,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _autoDeactivateCodexPlanModeAfterTurn();
       }
       _activeCodexTurnId = null;
+      // G1: model may clear/complete goal mid-turn — resync text + mode.
+      unawaited(_refreshCodexActiveGoalText());
     }
     if (isVisibleConversation) {
       final runtime = _runtimeCoordinator.runtimeFor(

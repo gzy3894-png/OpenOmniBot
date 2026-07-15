@@ -51,6 +51,18 @@ CodexSlashSubmitIntent resolveCodexSlashSubmitIntent(String messageText) {
   if (normalized == '/review') {
     return const CodexSlashSubmitIntent(CodexSlashSubmitKind.startReview);
   }
+  // R1: `/review <prompt>` carries prompt in value (RPC has no prompt field;
+  // handler routes this to a model turn with the full slash text).
+  if (normalized.startsWith('/review ')) {
+    final prompt = trimmed.substring('/review'.length).trim();
+    if (prompt.isEmpty) {
+      return const CodexSlashSubmitIntent(CodexSlashSubmitKind.startReview);
+    }
+    return CodexSlashSubmitIntent(
+      CodexSlashSubmitKind.startReview,
+      value: prompt,
+    );
+  }
   if (normalized == '/init') {
     return const CodexSlashSubmitIntent(CodexSlashSubmitKind.startInit);
   }

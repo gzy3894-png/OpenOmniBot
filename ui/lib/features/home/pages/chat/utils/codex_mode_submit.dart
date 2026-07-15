@@ -2,18 +2,20 @@ import 'codex_skill_tokens.dart';
 import 'codex_slash_commands.dart';
 
 /// Fast-mode session tip (EN): shown when Fast is turned on.
-/// Short PO copy: ~1.5× speed; billing ~1.5–2×.
+/// Speed and billing are separate clauses (no ambiguous shared multiplier).
 const String kCodexFastModeHintOnEn =
-    'Fast on: ~1.5× speed; billing ~1.5–2×.';
+    'Fast on: ~1.5× faster replies; billing ~1.5–2× Standard.';
 
 /// Fast-mode session tip (ZH): shown when Fast is turned on.
-const String kCodexFastModeHintOnZh = '已开启 Fast：1.5× 速度；计费约 1.5–2×。';
+const String kCodexFastModeHintOnZh =
+    '已开启 Fast：响应更快（约 1.5×），计费约为标准的 1.5–2 倍。';
 
 /// Fast-mode session tip (EN): shown when Fast is turned off.
-const String kCodexFastModeHintOffEn = 'Fast off: standard speed and billing.';
+const String kCodexFastModeHintOffEn =
+    'Fast off: standard speed and standard billing.';
 
 /// Fast-mode session tip (ZH): shown when Fast is turned off.
-const String kCodexFastModeHintOffZh = '已关闭 Fast：恢复标准速度与计费。';
+const String kCodexFastModeHintOffZh = '已关闭 Fast：已恢复标准速度与标准计费。';
 
 /// Backward-compatible alias for [kCodexFastModeHintOnEn].
 const String kCodexFastModeHintEn = kCodexFastModeHintOnEn;
@@ -23,8 +25,8 @@ const String kCodexFastModeHintZh = kCodexFastModeHintOnZh;
 
 /// Localized Fast tip for transcript insertion.
 ///
-/// [enabled] true → on tip (~1.5× speed; billing ~1.5–2×);
-/// false → off tip (standard speed and billing).
+/// [enabled] true → on tip (faster replies + higher billing, separate clauses);
+/// false → off tip (standard speed and standard billing).
 /// Defaults to true so existing `codexFastModeHint(isEnglish: …)` call sites stay valid.
 String codexFastModeHint({required bool isEnglish, bool enabled = true}) {
   if (enabled) {
@@ -143,6 +145,23 @@ CodexComposerSubmit planCodexComposerSubmit(
   }
 
   if (trimmed.startsWith('/')) {
+    // R1 (plan layer): `/review <prompt>` keeps startReview + prompt value.
+    // Bare `/review` still comes from [resolveCodexSlashSubmitIntent].
+    // Full slash-table support for review args remains in codex_slash_commands
+    // (M4 / shared utils outside this module lock).
+    final reviewPrompt = _codexReviewPromptArg(trimmed);
+    if (reviewPrompt != null) {
+      return CodexComposerSubmit(
+        intent: CodexSlashSubmitIntent(
+          CodexSlashSubmitKind.startReview,
+          value: reviewPrompt,
+        ),
+        normalizedText: trimmed,
+        plainText: reviewPrompt,
+        handled: true,
+      );
+    }
+
     final intent = resolveCodexSlashSubmitIntent(trimmed);
     return CodexComposerSubmit(
       intent: intent,
@@ -240,4 +259,21 @@ String _skillCommandValue({
     return '';
   }
   return command.substring('/skill'.length).trim();
+}
+
+/// Returns non-empty prompt for `/review <prompt>`; null for bare `/review`
+/// or non-review text.
+String? _codexReviewPromptArg(String trimmed) {
+  final lower = trimmed.toLowerCase();
+  if (!lower.startsWith('/review')) {
+    return null;
+  }
+  if (lower == '/review') {
+    return null;
+  }
+  if (!lower.startsWith('/review ')) {
+    return null;
+  }
+  final prompt = trimmed.substring('/review'.length).trim();
+  return prompt.isEmpty ? null : prompt;
 }

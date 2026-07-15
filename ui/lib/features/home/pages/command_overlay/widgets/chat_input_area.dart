@@ -746,7 +746,11 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
         oldWidget.useLargeComposerStyle != widget.useLargeComposerStyle ||
         oldWidget.useFrostedGlass != widget.useFrostedGlass ||
         oldWidget.selectedModelOverrideId != widget.selectedModelOverrideId ||
-        oldWidget.modelPickerSettings != widget.modelPickerSettings) {
+        oldWidget.modelPickerSettings != widget.modelPickerSettings ||
+        // Goal 前缀 chip 显隐会改变 composer 高度，需重新上报并入 transcript inset。
+        oldWidget.codexGoalModeEnabled != widget.codexGoalModeEnabled ||
+        oldWidget.codexGoalText != widget.codexGoalText ||
+        oldWidget.codexGoalPrefixLabel != widget.codexGoalPrefixLabel) {
       _reportInputHeightAfterBuild();
     }
   }

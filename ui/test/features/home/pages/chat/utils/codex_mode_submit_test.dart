@@ -32,6 +32,58 @@ void main() {
       expect(parsed.skillNames, ['ship']);
       expect(parsed.plainText, 'it @unknown');
     });
+
+    // S1 regression: skill name + trailing prompt must both survive parse.
+    test('S1 keeps skillNames and plainText for @find-install-skills prompt', () {
+      final parsed = parseCodexSkillTokens(
+        '@find-install-skills 帮我安装 xxx',
+        knownSkillNames: const ['find-install-skills'],
+      );
+      expect(parsed.skillNames, ['find-install-skills']);
+      expect(parsed.plainText, '帮我安装 xxx');
+      expect(parsed.mentions, hasLength(1));
+      expect(parsed.mentions.single.raw, '@find-install-skills');
+    });
+
+    test('S1 multi @a @b keeps trailing prompt', () {
+      final parsed = parseCodexSkillTokens(
+        '@a @b 附言内容',
+        knownSkillNames: const ['a', 'b'],
+      );
+      expect(parsed.skillNames, ['a', 'b']);
+      expect(parsed.plainText, '附言内容');
+    });
+
+    test('S1 plain sentence without @ is not a skill parse', () {
+      final parsed = parseCodexSkillTokens(
+        '帮我安装 xxx',
+        knownSkillNames: const ['find-install-skills'],
+      );
+      expect(parsed.skillNames, isEmpty);
+      expect(parsed.plainText, '帮我安装 xxx');
+    });
+  });
+
+  group('buildCodexSkillCommand', () {
+    test('S1 command includes skill name and prompt', () {
+      expect(
+        buildCodexSkillCommand(
+          skillNames: const ['find-install-skills'],
+          prompt: '帮我安装 xxx',
+        ),
+        '/skill find-install-skills 帮我安装 xxx',
+      );
+    });
+
+    test('S1 multi-skill command keeps prompt', () {
+      expect(
+        buildCodexSkillCommand(
+          skillNames: const ['a', 'b'],
+          prompt: '附言内容',
+        ),
+        '/skill a b 附言内容',
+      );
+    });
   });
 
   group('planCodexComposerSubmit', () {
@@ -67,6 +119,45 @@ void main() {
       expect(plan.plainText, 'fix the flaky test');
     });
 
+    // S1 failure-reproduction / regression: name + prompt both retained.
+    test('S1 plan keeps skillNames plainText and normalized with prompt', () {
+      final plan = planCodexComposerSubmit(
+        '@find-install-skills 帮我安装 xxx',
+        goalModeEnabled: false,
+        skillNames: const ['find-install-skills'],
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.startSkill);
+      expect(plan.skillNames, ['find-install-skills']);
+      expect(plan.plainText, '帮我安装 xxx');
+      expect(plan.normalizedText, '/skill find-install-skills 帮我安装 xxx');
+      expect(plan.intent.value, 'find-install-skills 帮我安装 xxx');
+      expect(plan.handled, isTrue);
+    });
+
+    test('S1 multi @a @b prompt still planned as /skill', () {
+      final plan = planCodexComposerSubmit(
+        '@a @b 附言内容',
+        goalModeEnabled: false,
+        skillNames: const ['a', 'b'],
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.startSkill);
+      expect(plan.skillNames, ['a', 'b']);
+      expect(plan.plainText, '附言内容');
+      expect(plan.normalizedText, '/skill a b 附言内容');
+    });
+
+    test('S1 plain sentence without @ does not start skill', () {
+      final plan = planCodexComposerSubmit(
+        '帮我安装 xxx',
+        goalModeEnabled: false,
+        skillNames: const ['find-install-skills'],
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.none);
+      expect(plan.handled, isFalse);
+      expect(plan.skillNames, isEmpty);
+      expect(plan.normalizedText, '帮我安装 xxx');
+    });
+
     test('skill mentions win over goal mode', () {
       final plan = planCodexComposerSubmit(
         '@ship tomorrow',
@@ -86,25 +177,49 @@ void main() {
       expect(plan.handled, isFalse);
       expect(plan.normalizedText, 'hello');
     });
+
+    // R1 (plan-layer): bare vs prompted review.
+    test('R1 bare /review is startReview without value', () {
+      final plan = planCodexComposerSubmit(
+        '/review',
+        goalModeEnabled: false,
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.startReview);
+      expect(plan.intent.value, isNull);
+      expect(plan.normalizedText, '/review');
+      expect(plan.handled, isTrue);
+    });
+
+    test('R1 /review <prompt> keeps startReview and prompt value', () {
+      final plan = planCodexComposerSubmit(
+        '/review 帮我审查 app/src/...',
+        goalModeEnabled: false,
+      );
+      expect(plan.intent.kind, CodexSlashSubmitKind.startReview);
+      expect(plan.intent.value, '帮我审查 app/src/...');
+      expect(plan.plainText, '帮我审查 app/src/...');
+      expect(plan.normalizedText, '/review 帮我审查 app/src/...');
+      expect(plan.handled, isTrue);
+    });
   });
 
   group('codexFastModeHint', () {
-    test('exact short PO copy for on/off ZH/EN', () {
+    test('F1 smooth on/off copy ZH/EN separates speed and billing', () {
       expect(
         kCodexFastModeHintOnZh,
-        '已开启 Fast：1.5× 速度；计费约 1.5–2×。',
+        '已开启 Fast：响应更快（约 1.5×），计费约为标准的 1.5–2 倍。',
       );
       expect(
         kCodexFastModeHintOffZh,
-        '已关闭 Fast：恢复标准速度与计费。',
+        '已关闭 Fast：已恢复标准速度与标准计费。',
       );
       expect(
         kCodexFastModeHintOnEn,
-        'Fast on: ~1.5× speed; billing ~1.5–2×.',
+        'Fast on: ~1.5× faster replies; billing ~1.5–2× Standard.',
       );
       expect(
         kCodexFastModeHintOffEn,
-        'Fast off: standard speed and billing.',
+        'Fast off: standard speed and standard billing.',
       );
 
       expect(goalClearCommand, '/goal clear');
@@ -116,13 +231,18 @@ void main() {
       expect(codexFastModeHintOn(isEnglish: true), kCodexFastModeHintOnEn);
       expect(codexFastModeHintOff(isEnglish: false), kCodexFastModeHintOffZh);
 
-      // On tips: short PO copy — 1.5× speed + 1.5–2× billing (no priority-lane essay)
+      // On tips: speed + billing as separate clauses (not one shared multiplier).
       expect(kCodexFastModeHintOnEn, contains('1.5'));
       expect(kCodexFastModeHintOnEn.toLowerCase(), contains('billing'));
+      expect(kCodexFastModeHintOnEn.toLowerCase(), contains('faster'));
       expect(kCodexFastModeHintOnEn, isNot(contains('priority')));
       expect(kCodexFastModeHintOnZh, contains('1.5'));
       expect(kCodexFastModeHintOnZh, contains('计费'));
+      expect(kCodexFastModeHintOnZh, contains('响应更快'));
       expect(kCodexFastModeHintOnZh, isNot(contains('优先通道')));
+      // Ambiguous old short form must be gone.
+      expect(kCodexFastModeHintOnZh, isNot(contains('1.5× 速度；计费约')));
+      expect(kCodexFastModeHintOnEn, isNot(contains('~1.5× speed; billing')));
 
       // Off tips via enabled: false
       expect(
@@ -135,8 +255,9 @@ void main() {
       );
       expect(kCodexFastModeHintOffEn.toLowerCase(), contains('off'));
       expect(kCodexFastModeHintOffEn.toLowerCase(), contains('billing'));
+      expect(kCodexFastModeHintOffEn.toLowerCase(), contains('standard billing'));
       expect(kCodexFastModeHintOffZh, contains('关闭'));
-      expect(kCodexFastModeHintOffZh, contains('计费'));
+      expect(kCodexFastModeHintOffZh, contains('标准计费'));
     });
   });
 

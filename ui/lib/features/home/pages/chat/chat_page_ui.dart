@@ -20,9 +20,16 @@ enum _UserMessageQuickAction { copy, edit, retry }
 mixin _ChatPageUiMixin on _ChatPageStateBase {
   ChatPaneOverlayAnchorGeometry? _lastStableToolActivityAnchorGeometry;
   static const double _kChatInputWrapperTopPadding = 8.0;
+  /// ChatInputWrapper 在 topBanner 与 composer 之间的间距（见 chat_widgets）。
+  static const double _kChatInputTopBannerGap = 8.0;
   static const double _kChatInputFallbackHeight = 80.0;
   static const double _kHdPadPaneCollapseWidthRatio = 0.12;
   static const double _kHdPadPaneCollapseMinWidthFactor = 0.72;
+  /// Codex Goal bar 实测高度；mode 关 / bar 未挂载时按 0 计入 inset。
+  double _codexGoalBarHeight = 0;
+  /// 输入柱整柱实测高度（ChatInputWrapper 含 topBanner + composer + 顶 padding）。
+  /// 优先用于 transcript bottom inset，避免只量 ChatInputArea 漏掉 Goal bar。
+  double _inputPillarMeasuredHeight = 0;
   final Set<String> _pendingManualAgentRetryTaskIds = <String>{};
   final Set<String> _pendingManualAgentContinueTaskIds = <String>{};
   final Map<ChatPageMode, bool> _messageListInputFocusByMode = {
@@ -130,13 +137,101 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     if (!_isInputAreaVisible) {
       return 0.0;
     }
-    final measuredComposerHeight = _inputAreaHeight > 0.5
-        ? _inputAreaHeight + _kChatInputWrapperTopPadding
-        : _kChatInputFallbackHeight;
+    // 优先：整柱实测（含 Goal bar topBanner）。
+    // 回退：ChatInputArea 高度 + wrapper 顶 padding +（若可见）Goal bar 占用。
+    // Goal bar mode 关 → 不计入，避免空 bar 占位挡字。
+    final measuredComposerHeight = _inputPillarMeasuredHeight > 0.5
+        ? _inputPillarMeasuredHeight
+        : (_inputAreaHeight > 0.5
+              ? _inputAreaHeight +
+                    _kChatInputWrapperTopPadding +
+                    _resolveCodexGoalBarOccupancy()
+              : _kChatInputFallbackHeight);
     return measuredComposerHeight +
         inputBottomPadding +
         keyboardSpacer +
         _kChatMessageBottomSafeSpacing;
+  }
+
+  /// mode 开且 bar 可见时占用高度 = bar 实测 + banner/composer 间距；否则 0。
+  double _resolveCodexGoalBarOccupancy() {
+    if (!_isCodexGoalBarMounted) {
+      // topBanner 已卸下时清零 bar 缓存并重测整柱，避免残留 bar 高度挡字。
+      if (_codexGoalBarHeight > 0.5) {
+        _scheduleCodexGoalBarHeightClear();
+      }
+      return 0.0;
+    }
+    final barHeight = _codexGoalBarHeight.isFinite ? _codexGoalBarHeight : 0.0;
+    if (barHeight <= 0.5) {
+      return 0.0;
+    }
+    return barHeight + _kChatInputTopBannerGap;
+  }
+
+  bool get _isCodexGoalBarMounted =>
+      _activeMode == ChatPageMode.codex && _codexGoalModeEnabled;
+
+  void _scheduleCodexGoalBarHeightClear() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_isCodexGoalBarMounted) {
+        _scheduleInputPillarHeightSync();
+        return;
+      }
+      var changed = false;
+      if (_codexGoalBarHeight > 0.5) {
+        _codexGoalBarHeight = 0;
+        changed = true;
+      }
+      // mode 关后整柱高度也要重测，去掉 bar 占用。
+      if (changed) {
+        setState(() {});
+      }
+      _scheduleInputPillarHeightSync();
+    });
+  }
+
+  void _handleCodexGoalBarHeightChanged(double height) {
+    final normalized = height.isFinite ? height : 0.0;
+    if ((_codexGoalBarHeight - normalized).abs() < 0.5) {
+      _scheduleInputPillarHeightSync();
+      return;
+    }
+    if (!mounted) {
+      _codexGoalBarHeight = normalized;
+      return;
+    }
+    setState(() {
+      _codexGoalBarHeight = normalized;
+    });
+    _scheduleInputPillarHeightSync();
+  }
+
+  /// 测量 `_inputAreaKey` 整柱高度（含 topBanner Goal bar），写入 inset。
+  void _scheduleInputPillarHeightSync() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_isInputAreaVisible) {
+        if (_inputPillarMeasuredHeight > 0.5) {
+          setState(() {
+            _inputPillarMeasuredHeight = 0;
+          });
+        }
+        return;
+      }
+      final renderObject = _inputAreaKey.currentContext?.findRenderObject();
+      final height = (renderObject is RenderBox && renderObject.hasSize)
+          ? renderObject.size.height
+          : 0.0;
+      final normalized = height.isFinite ? height : 0.0;
+      if ((normalized - _inputPillarMeasuredHeight).abs() < 0.5) {
+        return;
+      }
+      setState(() {
+        _inputPillarMeasuredHeight = normalized;
+      });
+    });
   }
 
   double _resolveHdPadPaneCollapseThreshold({
@@ -872,16 +967,20 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
 
   void _handleInputAreaHeightChanged(double height) {
     final normalized = height.isFinite ? height : 0.0;
-    if ((_inputAreaHeight - normalized).abs() < 0.5) {
-      return;
-    }
+    final unchanged = (_inputAreaHeight - normalized).abs() < 0.5;
     if (!mounted) {
-      _inputAreaHeightByMode[_activeMode] = normalized;
+      if (!unchanged) {
+        _inputAreaHeightByMode[_activeMode] = normalized;
+      }
       return;
     }
-    setState(() {
-      _inputAreaHeightByMode[_activeMode] = normalized;
-    });
+    if (!unchanged) {
+      setState(() {
+        _inputAreaHeightByMode[_activeMode] = normalized;
+      });
+    }
+    // composer 高度变化时同步整柱（含 Goal bar），保证 transcript inset 跟上。
+    _scheduleInputPillarHeightSync();
   }
 
   Widget _buildNormalSurfaceTransition({
@@ -1497,16 +1596,15 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       onTriggerSlashCommand: _triggerSlashCommandPanel,
                       attachments: _pendingAttachments,
                       onRemoveAttachment: _removePendingAttachment,
-                      // Goal mode chrome: bar above composer when mode is on
-                      // or an active goal text exists (M4 owns set/toggle).
+                      // Goal bar = topBanner of input column. mode 关则 null
+                      //（高度 0，不占位挡字）。高度并入 composerReservedInset。
                       topBanner: _activeMode == ChatPageMode.codex &&
-                              (_codexGoalModeEnabled ||
-                                  (_codexActiveGoalText ?? '')
-                                      .trim()
-                                      .isNotEmpty)
+                              _codexGoalModeEnabled
                           ? CodexGoalModeBar(
                               goalText: _codexActiveGoalText,
-                              showWhenEmpty: _codexGoalModeEnabled,
+                              showWhenEmpty: true,
+                              visible: true,
+                              onHeightChanged: _handleCodexGoalBarHeightChanged,
                               onClear: () {
                                 // Cross-mixin: use base abstract API (Codex
                                 // mixin private _executeCodexClearGoalCommand

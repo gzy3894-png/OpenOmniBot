@@ -459,4 +459,45 @@ void main() {
       expect(find.textContaining('|:---'), findsNothing);
     },
   );
+
+  group('inline code compact tokens (L1 gray chip)', () {
+    test('omnibotIsCompactInlineCodeToken matches short single-line tokens', () {
+      expect(omnibotIsCompactInlineCodeToken('complete'), isTrue);
+      expect(omnibotIsCompactInlineCodeToken('/workspace'), isTrue);
+      expect(omnibotIsCompactInlineCodeToken('completed'), isTrue);
+      expect(omnibotIsCompactInlineCodeToken('a' * 48), isTrue);
+      expect(omnibotIsCompactInlineCodeToken('a' * 49), isFalse);
+      expect(omnibotIsCompactInlineCodeToken('line\nbreak'), isFalse);
+      expect(omnibotIsCompactInlineCodeToken(''), isFalse);
+    });
+
+    testWidgets(
+      'status line with short inline code keeps 状态 and complete readable',
+      (tester) async {
+        const data = '目标内容：清理缓存\n状态: `complete`\n耗时: 12s\n路径: `/workspace`';
+
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: Padding(
+                padding: EdgeInsets.all(12),
+                child: StreamingText(
+                  enableMarkdown: true,
+                  fullText: data,
+                  style: TextStyle(fontSize: 14, height: 1.57),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+        expect(find.textContaining('状态:'), findsWidgets);
+        expect(find.text('complete'), findsOneWidget);
+        expect(find.text('/workspace'), findsOneWidget);
+        expect(find.textContaining('耗时'), findsWidgets);
+      },
+    );
+  });
 }

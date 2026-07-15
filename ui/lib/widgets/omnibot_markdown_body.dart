@@ -1396,6 +1396,17 @@ class OmnibotCodeTapHandler {
   }
 }
 
+/// 短单行 inline code（如 `complete`、`/workspace`、状态枚举）用轻量样式，
+/// 避免灰底大 chip 把中文「状态:」等标签挤乱。
+@visibleForTesting
+bool omnibotIsCompactInlineCodeToken(String code) {
+  if (code.isEmpty || code.contains('\n') || code.contains('\r')) {
+    return false;
+  }
+  // 路径 / 状态词 / 短标识：过长的行内代码仍用略强调的 chip。
+  return code.length <= 48;
+}
+
 class OmnibotInlineCodeBuilder extends MarkdownElementBuilder {
   OmnibotInlineCodeBuilder({required this.onCopy});
 
@@ -1413,36 +1424,51 @@ class OmnibotInlineCodeBuilder extends MarkdownElementBuilder {
       return const SizedBox.shrink();
     }
     final theme = Theme.of(context);
-    final borderRadius = BorderRadius.circular(8);
-    final codeStyle = (preferredStyle ?? parentStyle ?? const TextStyle())
-        .copyWith(
-          fontFamily: 'monospace',
-          backgroundColor: Colors.transparent,
-          color: theme.colorScheme.onSurfaceVariant,
-          fontSize:
-              ((preferredStyle?.fontSize ?? parentStyle?.fontSize ?? 14) * 0.92)
-                  .toDouble(),
-          height: 1.2,
-        );
+    final base = preferredStyle ?? parentStyle ?? const TextStyle();
+    final compact = omnibotIsCompactInlineCodeToken(code);
+    // 短 token 继承段落行高 + 近零垂直 padding，避免灰底 chip 把「状态:」挤飞。
+    final codeStyle = base.copyWith(
+      fontFamily: 'monospace',
+      backgroundColor: Colors.transparent,
+      color: theme.colorScheme.onSurfaceVariant,
+      fontSize: ((base.fontSize ?? 14) * 0.92).toDouble(),
+      height: compact ? (base.height ?? 1.5) : 1.2,
+    );
+
+    final borderRadius = BorderRadius.circular(compact ? 4 : 8);
+    final horizontalPad = compact ? 3.0 : 7.0;
+    final verticalPad = compact ? 0.0 : 3.0;
+    final outerVerticalPad = compact ? 0.0 : 1.0;
+    final bgAlpha = compact ? 0.38 : 0.72;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 0.5 : 1.0,
+        vertical: outerVerticalPad,
+      ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: borderRadius,
           onTap: () => onCopy(code),
           child: Ink(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            padding: EdgeInsets.symmetric(
+              horizontal: horizontalPad,
+              vertical: verticalPad,
+            ),
             decoration: BoxDecoration(
               color: theme.colorScheme.surfaceContainerHighest.withValues(
-                alpha: 0.72,
+                alpha: bgAlpha,
               ),
               borderRadius: borderRadius,
-              border: Border.all(
-                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.45),
-                width: 0.8,
-              ),
+              border: compact
+                  ? null
+                  : Border.all(
+                      color: theme.colorScheme.outlineVariant.withValues(
+                        alpha: 0.45,
+                      ),
+                      width: 0.8,
+                    ),
             ),
             child: Text(code, style: codeStyle),
           ),
