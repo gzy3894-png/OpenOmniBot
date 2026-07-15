@@ -107,4 +107,14 @@ void main() {
       CodexSlashSubmitKind.unsupported,
     );
   });
+
+  test('routes /skill command intents', () {
+    final bare = resolveCodexSlashSubmitIntent('/skill');
+    expect(bare.kind, CodexSlashSubmitKind.startSkill);
+    expect(bare.value, '');
+
+    final withArgs = resolveCodexSlashSubmitIntent('/skill review-pr fix tests');
+    expect(withArgs.kind, CodexSlashSubmitKind.startSkill);
+    expect(withArgs.value, 'review-pr fix tests');
+  });
 }

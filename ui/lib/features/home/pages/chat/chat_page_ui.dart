@@ -268,179 +268,266 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     if (route == _SlashCommandPanelRoute.codexModel) {
       return _buildCodexModelCards();
     }
+    // M4 caches skill cards after open/list; M6 only renders the skills route.
+    if (route == _SlashCommandPanelRoute.skills) {
+      if (_codexSkillPanelCards.isNotEmpty) {
+        return _codexSkillPanelCards;
+      }
+      return buildCodexSkillPanelStateCards(
+        isLoading: _codexSkillPanelLoading,
+        error: _codexSkillPanelError,
+        query: _slashCommandRouteQuery(route),
+        isEnglish: LegacyTextLocalizer.isEnglish,
+      );
+    }
     return _buildCodexRootCommandCards();
   }
 
   List<Map<String, dynamic>> _buildCodexRootCommandCards() {
     final query = _messageController.text.trimLeft().toLowerCase();
     final planModeEnabled = _isCodexPlanMode(_activeCodexCollaborationMode);
-    // Model + permission live on dedicated composer buttons, so the `/`
-    // list only surfaces Codex-native workflow commands.
+    // Session flag declared on base (default false). Toggle handlers: M4.
+    final goalModeEnabled = _codexGoalModeEnabled;
+    final fastModeEnabled = _activeCodexFastEnabled;
+    final isEnglish = LegacyTextLocalizer.isEnglish;
+    // Work-mode catalog: mode toggles + skills nav first, then one-shot
+    // actions. Model/permission stay on dedicated composer buttons.
     final commands = <Map<String, dynamic>>[
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-goal-mode',
+        toolTitle: '/goal-mode',
+        displayName: isEnglish ? 'Goal mode' : '目标模式',
+        toolTypeLabel: isEnglish ? 'Goal' : '目标',
+        status: goalModeEnabled ? 'success' : 'running',
+        statusLabel: goalModeEnabled
+            ? (isEnglish ? 'On' : '开启')
+            : (isEnglish ? 'Off' : '关闭'),
+        summary: goalModeEnabled
+            ? (isEnglish
+                  ? 'On: type an objective and send to set goal'
+                  : '开启后输入目标并发送')
+            : (isEnglish
+                  ? 'Off: clear goal mode and thread goal'
+                  : '关闭清除目标模式与线程 goal'),
+        progress: goalModeEnabled
+            ? (isEnglish
+                  ? ((_codexActiveGoalText ?? '').trim().isEmpty
+                        ? 'Goal mode on; no active goal text yet'
+                        : 'Active goal: ${_codexActiveGoalText!.trim()}')
+                  : ((_codexActiveGoalText ?? '').trim().isEmpty
+                        ? '目标模式已开；尚未设置目标正文'
+                        : '当前目标：${_codexActiveGoalText!.trim()}'))
+            : (isEnglish
+                  ? 'Toggles _codexGoalModeEnabled (handlers: M4)'
+                  : '切换 _codexGoalModeEnabled（开关逻辑：M4）'),
+        isToggle: true,
+        toggleValue: goalModeEnabled,
+        controlType: 'toggle',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-fast-mode',
+        toolTitle: '/fast',
+        displayName: isEnglish ? 'Fast mode' : 'Fast 模式',
+        toolTypeLabel: 'Fast',
+        status: fastModeEnabled ? 'success' : 'running',
+        statusLabel: fastModeEnabled
+            ? (isEnglish ? 'On' : '开启')
+            : (isEnglish ? 'Off' : '关闭'),
+        summary: fastModeEnabled
+            ? (isEnglish
+                  ? 'Fast is on for this session'
+                  : '本会话已开启 Fast')
+            : (isEnglish
+                  ? 'Turn on lower-latency Fast for this session'
+                  : '为本会话开启低延迟 Fast'),
+        progress: isEnglish
+            ? 'Toggles _activeCodexFastEnabled / serviceTier=fast'
+            : '切换 _activeCodexFastEnabled / serviceTier=fast',
+        isToggle: true,
+        toggleValue: fastModeEnabled,
+        controlType: 'toggle',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-skills',
+        toolTitle: '/skills',
+        displayName: isEnglish ? 'Skills' : '技能',
+        toolTypeLabel: isEnglish ? 'Skill' : '技能',
+        status: 'running',
+        statusLabel: isEnglish ? 'Browse' : '浏览',
+        summary: isEnglish
+            ? 'Browse and insert skills with @name'
+            : '浏览技能并以 @名称 插入',
+        progress: isEnglish
+            ? 'Opens skills sub-panel (same source as @)'
+            : '打开技能子列表（与 @ 同源）',
+        controlType: 'nav',
+        nav: 'skills',
+      ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-review',
         toolTitle: '/review',
         displayName: '/review',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Review' : '审查',
+        toolTypeLabel: isEnglish ? 'Review' : '审查',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Review changes in the current workspace'
             : '审查当前工作区改动',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Runs Codex review on the active thread'
             : '在当前线程中启动 Codex review',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-init',
-        toolTitle: '/init',
-        displayName: '/init',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Init' : '初始化',
-        status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
-            ? 'Generate or update AGENTS.md'
-            : '生成或更新 AGENTS.md',
-        progress: LegacyTextLocalizer.isEnglish
-            ? 'Creates Codex initialization guidance'
-            : '生成 Codex 初始化指引',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-plan',
         toolTitle: '/plan',
         displayName: '/plan',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Plan' : '计划',
+        toolTypeLabel: isEnglish ? 'Plan' : '计划',
         status: planModeEnabled ? 'success' : 'running',
         statusLabel: planModeEnabled
-            ? (LegacyTextLocalizer.isEnglish ? 'Selected' : '已选')
-            : (LegacyTextLocalizer.isEnglish ? 'Off' : '关闭'),
+            ? (isEnglish ? 'Selected' : '已选')
+            : (isEnglish ? 'Off' : '关闭'),
         summary: planModeEnabled
-            ? (LegacyTextLocalizer.isEnglish
-                  ? 'Plan mode is active'
-                  : '当前已启用 Plan 模式')
-            : (LegacyTextLocalizer.isEnglish
-                  ? 'Plan mode is off'
-                  : '当前未启用 Plan 模式'),
+            ? (isEnglish ? 'Plan mode is active' : '当前已启用 Plan 模式')
+            : (isEnglish ? 'Plan mode is off' : '当前未启用 Plan 模式'),
         progress: _codexCollaborationModeListError != null
             ? _codexCollaborationModeListError!
             : _isCodexCollaborationModeListLoading
-            ? (LegacyTextLocalizer.isEnglish ? 'Loading modes' : '加载模式中')
+            ? (isEnglish ? 'Loading modes' : '加载模式中')
             : (_codexCollaborationModes.isEmpty
-                  ? (LegacyTextLocalizer.isEnglish
-                        ? 'Tap to load modes'
-                        : '点击加载模式')
+                  ? (isEnglish ? 'Tap to load modes' : '点击加载模式')
                   : (_codexCollaborationModes.length == 1
                         ? '1 mode'
                         : '${_codexCollaborationModes.length} modes')),
         isToggle: true,
         toggleValue: planModeEnabled,
+        controlType: 'toggle',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-init',
+        toolTitle: '/init',
+        displayName: '/init',
+        toolTypeLabel: isEnglish ? 'Init' : '初始化',
+        status: 'running',
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
+            ? 'Generate or update AGENTS.md'
+            : '生成或更新 AGENTS.md',
+        progress: isEnglish
+            ? 'Creates Codex initialization guidance'
+            : '生成 Codex 初始化指引',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-compact',
         toolTitle: '/compact',
         displayName: '/compact',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Compact' : '压缩',
+        toolTypeLabel: isEnglish ? 'Compact' : '压缩',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Compact the current thread context'
             : '压缩当前线程上下文',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Calls thread compact on the active Codex thread'
             : '对当前 Codex 线程执行上下文压缩',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-status',
         toolTitle: '/status',
         displayName: '/status',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Status' : '状态',
+        toolTypeLabel: isEnglish ? 'Status' : '状态',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Show local Codex status snapshot'
             : '查看本地 Codex 状态摘要',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Model, effort, fast, permission, thread, ready'
             : '模型、思考、Fast、权限、线程、就绪状态',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-diff',
         toolTitle: '/diff',
         displayName: '/diff',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Diff' : '差异',
+        toolTypeLabel: isEnglish ? 'Diff' : '差异',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Show the latest known diff summary'
             : '展示最近可用的 diff 摘要',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Uses tool results already present in chat'
             : '仅使用聊天中已有的工具结果',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-stop',
         toolTitle: '/stop',
         displayName: '/stop',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Stop' : '停止',
+        toolTypeLabel: isEnglish ? 'Stop' : '停止',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Interrupt the current Codex turn'
             : '中断当前 Codex 回合',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Sends turn interrupt for the active thread'
             : '对当前线程发送 turn interrupt',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-new',
         toolTitle: '/new',
         displayName: '/new',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'New' : '新建',
+        toolTypeLabel: isEnglish ? 'New' : '新建',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Start a fresh conversation'
             : '开始新的对话',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Clears the current chat surface and thread binding'
             : '清空当前聊天面并解除线程绑定',
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-resume',
         toolTitle: '/resume',
         displayName: '/resume',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Resume' : '恢复',
+        toolTypeLabel: isEnglish ? 'Resume' : '恢复',
         status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
+        statusLabel: isEnglish ? 'Command' : '命令',
+        summary: isEnglish
             ? 'Resume a Codex thread by id'
             : '按 threadId 恢复 Codex 线程',
-        progress: LegacyTextLocalizer.isEnglish
+        progress: isEnglish
             ? 'Tap then enter /resume <threadId>'
             : '点击后填写 /resume <threadId>',
-      ),
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-goal',
-        toolTitle: '/goal',
-        displayName: '/goal',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Goal' : '目标',
-        status: 'running',
-        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
-        summary: LegacyTextLocalizer.isEnglish
-            ? 'Show the current thread goal'
-            : '查看当前线程 goal',
-        progress: LegacyTextLocalizer.isEnglish
-            ? 'Use /goal <text> or /goal clear in composer'
-            : '输入框可用 /goal <文本> 或 /goal clear',
+        controlType: 'action',
       ),
     ];
-    if (query.isEmpty) {
+    // Bare `/` (panel open) shows the full work-mode list; further typing
+    // filters by title / display / label / cardId.
+    final showAll = query.isEmpty || query == '/';
+    if (showAll) {
       return commands;
     }
+    final bare = query.startsWith('/') ? query.substring(1) : query;
     return commands
         .where((card) {
           final title = (card['toolTitle'] ?? '').toString().toLowerCase();
-          return title.startsWith(query);
+          final display = (card['displayName'] ?? '').toString().toLowerCase();
+          final label = (card['toolTypeLabel'] ?? '').toString().toLowerCase();
+          final cardId = (card['cardId'] ?? '').toString().toLowerCase();
+          return title.startsWith(query) ||
+              title.contains(query) ||
+              display.contains(query) ||
+              display.contains(bare) ||
+              label.contains(bare) ||
+              cardId.contains(bare);
         })
         .toList(growable: false);
   }
@@ -528,7 +615,10 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     required String progress,
     bool isToggle = false,
     bool toggleValue = false,
+    String controlType = 'action',
+    String? nav,
   }) {
+    final resolvedControlType = isToggle ? 'toggle' : controlType;
     return <String, dynamic>{
       'cardId': cardId,
       'toolName': toolTitle,
@@ -540,6 +630,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       'statusLabel': statusLabel,
       'summary': summary,
       'progress': progress,
+      'controlType': resolvedControlType,
+      if (nav != null) 'nav': nav,
       if (isToggle) ...<String, dynamic>{
         'isToggle': true,
         'toggleValue': toggleValue,
@@ -1405,6 +1497,27 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       onTriggerSlashCommand: _triggerSlashCommandPanel,
                       attachments: _pendingAttachments,
                       onRemoveAttachment: _removePendingAttachment,
+                      // Goal mode chrome: bar above composer when mode is on
+                      // or an active goal text exists (M4 owns set/toggle).
+                      topBanner: _activeMode == ChatPageMode.codex &&
+                              (_codexGoalModeEnabled ||
+                                  (_codexActiveGoalText ?? '')
+                                      .trim()
+                                      .isNotEmpty)
+                          ? CodexGoalModeBar(
+                              goalText: _codexActiveGoalText,
+                              showWhenEmpty: _codexGoalModeEnabled,
+                              onClear: () {
+                                // Local chrome reset + existing clear RPC.
+                                // Full goal-mode lifecycle still owned by M4.
+                                setState(() {
+                                  _codexGoalModeEnabled = false;
+                                  _codexActiveGoalText = null;
+                                });
+                                unawaited(_executeCodexClearGoalCommand());
+                              },
+                            )
+                          : null,
                       selectedModelOverrideId:
                           _activeMode == ChatPageMode.normal &&
                               _showConversationModelMentionChip
@@ -1486,6 +1599,11 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                                 _codexPermissionMode = mode;
                               });
                             }
+                          : null,
+                      codexGoalModeEnabled: _activeMode == ChatPageMode.codex &&
+                          _codexGoalModeEnabled,
+                      codexGoalText: _activeMode == ChatPageMode.codex
+                          ? _codexActiveGoalText
                           : null,
                       onInputHeightChanged: _handleInputAreaHeightChanged,
                       onClearSelectedModelOverride:

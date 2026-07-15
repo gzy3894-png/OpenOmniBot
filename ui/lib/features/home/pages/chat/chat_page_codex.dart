@@ -548,6 +548,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (_activeCodexFastEnabled == enabled) {
       return;
     }
+    final turningOn = enabled && !_activeCodexFastEnabled;
     if (!mounted) return;
     setState(() {
       _activeCodexFastEnabled = enabled;
@@ -557,6 +558,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _kCodexServiceTierPreferenceKey,
         _kCodexFastServiceTier,
       );
+      // Local transcript tip only — never send as a model turn.
+      if (turningOn) {
+        await _appendCodexLocalSystemTip(
+          codexFastModeHint(isEnglish: LegacyTextLocalizer.isEnglish),
+        );
+      }
     } else {
       // Explicit off so refresh won't fall back to local-config default Fast.
       await _writeCodexPreference(
@@ -564,6 +571,337 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _kCodexOffServiceTier,
       );
     }
+  }
+
+  Future<void> _appendCodexLocalSystemTip(String text) async {
+    final tip = text.trim();
+    if (tip.isEmpty || !mounted) {
+      return;
+    }
+    final createdAt = DateTime.now();
+    final messageId =
+        '${createdAt.millisecondsSinceEpoch}-codex-fast-tip';
+    final message = ChatMessageModel(
+      id: messageId,
+      type: 1,
+      user: 3,
+      content: <String, dynamic>{'text': tip, 'id': messageId},
+      createAt: createdAt,
+    );
+    setState(() {
+      _messages.insert(0, message);
+    });
+    if (_isRemoteCodexConfigured()) {
+      return;
+    }
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    if (conversationId == null) {
+      return;
+    }
+    try {
+      await ConversationHistoryService.saveConversationMessages(
+        conversationId,
+        List<ChatMessageModel>.from(_messages),
+        mode: ConversationMode.codex,
+      );
+    } catch (error) {
+      debugPrint('Persist Codex Fast tip failed: $error');
+    }
+  }
+
+  List<String> get _codexKnownSkillNames {
+    final names = <String>[];
+    final seen = <String>{};
+    for (final skill in _codexSkillCatalog) {
+      final name = skill.name.trim();
+      if (name.isEmpty) {
+        continue;
+      }
+      if (seen.add(name.toLowerCase())) {
+        names.add(name);
+      }
+    }
+    return names;
+  }
+
+  Future<void> _ensureCodexSkillCatalogLoaded() async {
+    if (_codexSkillCatalog.isNotEmpty || _codexSkillPanelLoading) {
+      return;
+    }
+    try {
+      final skills = await AgentSkillStoreService.listSkills();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _codexSkillCatalog = skills;
+      });
+    } catch (error) {
+      debugPrint('Load Codex skill catalog failed: $error');
+    }
+  }
+
+  @override
+  Future<void> _openCodexSkillsPanel({String query = ''}) async {
+    if (!mounted) {
+      return;
+    }
+    final normalizedQuery = query.trim();
+    setState(() {
+      _codexSkillsPanelVisible = true;
+      _codexSkillPanelQuery = normalizedQuery;
+      _codexSkillPanelLoading = true;
+      _codexSkillPanelError = null;
+      _codexSkillPanelCards = buildCodexSkillPanelStateCards(
+        isLoading: true,
+        query: normalizedQuery,
+        isEnglish: LegacyTextLocalizer.isEnglish,
+      );
+      _showSlashCommandPanel = true;
+      _showModelMentionPanel = false;
+      _activeModelMentionToken = null;
+      _openClawPanelExpanded = false;
+    });
+    try {
+      final skills = await AgentSkillStoreService.listSkills();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _codexSkillCatalog = skills;
+        _codexSkillPanelLoading = false;
+        _codexSkillPanelError = null;
+        _codexSkillPanelCards = buildCodexSkillPanelCards(
+          skills,
+          query: normalizedQuery,
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        );
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      final detail = error.toString();
+      setState(() {
+        _codexSkillPanelLoading = false;
+        _codexSkillPanelError = detail;
+        _codexSkillPanelCards = buildCodexSkillPanelStateCards(
+          isLoading: false,
+          error: detail,
+          query: normalizedQuery,
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        );
+      });
+    }
+  }
+
+  void _closeCodexSkillsPanel({bool hideSlashPanel = false}) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _codexSkillsPanelVisible = false;
+      _codexSkillPanelQuery = '';
+      if (hideSlashPanel) {
+        _showSlashCommandPanel = false;
+        _showModelMentionPanel = false;
+        _openClawPanelExpanded = false;
+        _slashCommandExpandedByMode[_activeMode] = false;
+      }
+    });
+  }
+
+  Future<void> _setCodexGoalModeEnabled(bool enabled) async {
+    if (enabled) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _codexGoalModeEnabled = true;
+      });
+      await _refreshCodexActiveGoalText();
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _codexGoalModeEnabled = false;
+      _codexActiveGoalText = null;
+    });
+    await _executeCodexClearGoalCommand();
+  }
+
+  Future<void> _refreshCodexActiveGoalText() async {
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if ((conversationId == null || _isRemoteCodexConfigured()) &&
+        threadId.isEmpty) {
+      return;
+    }
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+      final response = await CodexAppServerService.getThreadGoal(
+        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+        threadId: threadId.isEmpty ? null : threadId,
+      );
+      if (!mounted) {
+        return;
+      }
+      final objective = _extractCodexGoalObjective(response);
+      setState(() {
+        _codexActiveGoalText =
+            (objective == null || objective.trim().isEmpty)
+            ? null
+            : objective.trim();
+      });
+    } catch (error) {
+      debugPrint('Refresh Codex goal text failed: $error');
+    }
+  }
+
+  /// Codex composer submit planner entry: slash + goal-mode + `@skill`.
+  @override
+  Future<bool> _tryHandleCodexComposerSubmit(String messageText) async {
+    final trimmed = messageText.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    if (trimmed.contains('@')) {
+      await _ensureCodexSkillCatalogLoaded();
+    }
+    final plan = planCodexComposerSubmit(
+      trimmed,
+      goalModeEnabled: _codexGoalModeEnabled,
+      skillNames: _codexKnownSkillNames,
+    );
+    if (!plan.handled) {
+      // Non-slash plain text outside goal/skill → normal turn.
+      if (!trimmed.startsWith('/')) {
+        return false;
+      }
+      return _tryHandleCodexSlashCommand(trimmed);
+    }
+    return _dispatchCodexComposerSubmit(plan, rawText: trimmed);
+  }
+
+  Future<bool> _dispatchCodexComposerSubmit(
+    CodexComposerSubmit plan, {
+    required String rawText,
+  }) async {
+    switch (plan.intent.kind) {
+      case CodexSlashSubmitKind.startSkill:
+        final args = (plan.intent.value ?? '').trim();
+        final normalized = plan.normalizedText.trim();
+        if (args.isEmpty &&
+            (normalized.isEmpty || normalized == '/skill')) {
+          await _openCodexSkillsPanel();
+          return true;
+        }
+        await _startCodexTurnCommand(
+          displayText: rawText,
+          actualText: normalized.isEmpty
+              ? buildCodexSkillCommand(
+                  skillNames: plan.skillNames,
+                  prompt: plan.plainText,
+                )
+              : normalized,
+        );
+        return true;
+      case CodexSlashSubmitKind.setGoal:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexSetGoalCommand(
+          plan.intent.value ?? plan.plainText,
+        );
+        return true;
+      case CodexSlashSubmitKind.clearGoal:
+      case CodexSlashSubmitKind.showGoal:
+      case CodexSlashSubmitKind.none:
+      case CodexSlashSubmitKind.openModelPicker:
+      case CodexSlashSubmitKind.selectModel:
+      case CodexSlashSubmitKind.startReview:
+      case CodexSlashSubmitKind.startInit:
+      case CodexSlashSubmitKind.togglePlan:
+      case CodexSlashSubmitKind.startPlan:
+      case CodexSlashSubmitKind.startCompact:
+      case CodexSlashSubmitKind.showStatus:
+      case CodexSlashSubmitKind.showDiff:
+      case CodexSlashSubmitKind.stopTurn:
+      case CodexSlashSubmitKind.startNew:
+      case CodexSlashSubmitKind.resumeThread:
+      case CodexSlashSubmitKind.unsupported:
+        return _tryHandleCodexSlashCommand(plan.normalizedText);
+    }
+  }
+
+  void _insertCodexSkillMentionToken(String rawToken) {
+    final token = formatCodexSkillMentionToken(
+      rawToken.startsWith('@') ? rawToken.substring(1) : rawToken,
+    );
+    if (token.isEmpty) {
+      return;
+    }
+    final insert = token.endsWith(' ') ? token : '$token ';
+    final value = _messageController.value;
+    final text = value.text;
+    final cursor = value.selection.baseOffset.clamp(0, text.length);
+    final range = _findCodexSkillAtTokenRange(text, cursor);
+    final start = range?.$1 ?? cursor;
+    final end = range?.$2 ?? cursor;
+    final nextText = text.replaceRange(start, end, insert);
+    _messageController.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: start + insert.length),
+    );
+    _closeCodexSkillsPanel(hideSlashPanel: true);
+    _requestComposerFocus();
+  }
+
+  (int, int)? _findCodexSkillAtTokenRange(String text, int cursor) {
+    if (text.isEmpty) {
+      return null;
+    }
+    final safeCursor = cursor.clamp(0, text.length);
+    var i = safeCursor - 1;
+    while (i >= 0 && !RegExp(r'\s').hasMatch(text[i])) {
+      i -= 1;
+    }
+    final tokenStart = i + 1;
+    if (tokenStart >= text.length || text[tokenStart] != '@') {
+      return null;
+    }
+    if (tokenStart > 0 && !RegExp(r'\s').hasMatch(text[tokenStart - 1])) {
+      return null;
+    }
+    var tokenEnd = tokenStart + 1;
+    while (tokenEnd < text.length && !RegExp(r'\s').hasMatch(text[tokenEnd])) {
+      tokenEnd += 1;
+    }
+    if (safeCursor < tokenStart || safeCursor > tokenEnd) {
+      return null;
+    }
+    return (tokenStart, tokenEnd);
+  }
+
+  /// Returns skill `@` query when composer is in Codex skill-mention mode.
+  /// Empty string means bare `@`; null means not a skill `@` context.
+  @override
+  String? _parseCodexSkillAtQuery(TextEditingValue value) {
+    final text = value.text;
+    if (text.trimLeft().startsWith('/')) {
+      return null;
+    }
+    final cursor = value.selection.baseOffset.clamp(0, text.length);
+    final range = _findCodexSkillAtTokenRange(text, cursor);
+    if (range == null) {
+      return null;
+    }
+    final raw = text.substring(range.$1, range.$2);
+    if (!raw.startsWith('@')) {
+      return null;
+    }
+    return raw.substring(1);
   }
 
   bool _isCodexFastServiceTier(String? serviceTier) {
@@ -611,13 +949,56 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   Future<void> _handleCodexSlashCommandCardSelected(
     Map<String, dynamic> cardData,
   ) async {
+    final cardId = (cardData['cardId'] ?? '').toString().trim();
     final command = (cardData['toolTitle'] ?? cardData['displayName'] ?? '')
         .toString()
         .trim();
+    final nav = (cardData['nav'] ?? '').toString().trim().toLowerCase();
+    final controlType =
+        (cardData['controlType'] ?? '').toString().trim().toLowerCase();
+
+    // Placeholder skill/empty/loading cards are non-interactive.
+    if (cardData['isPlaceholder'] == true || controlType == 'placeholder') {
+      return;
+    }
+
+    // Skill selection → insert `@技能名` into composer.
+    if (isCodexSkillSelectionCard(cardData)) {
+      final mention =
+          (cardData['mentionToken'] ??
+                  cardData['skillName'] ??
+                  cardData['toolTitle'] ??
+                  '')
+              .toString()
+              .trim();
+      if (mention.isEmpty) {
+        return;
+      }
+      _insertCodexSkillMentionToken(mention);
+      return;
+    }
+
+    // Work-mode toggles / skills nav (M3 cardIds).
+    if (cardId == 'slash-command-codex-goal-mode' || command == '/goal-mode') {
+      await _setCodexGoalModeEnabled(!_codexGoalModeEnabled);
+      return;
+    }
+    if (cardId == 'slash-command-codex-fast-mode' || command == '/fast') {
+      await _setCodexFastEnabled(!_activeCodexFastEnabled);
+      return;
+    }
+    if (cardId == 'slash-command-codex-skills' ||
+        command == '/skills' ||
+        nav == kCodexSkillPanelRouteName) {
+      await _openCodexSkillsPanel();
+      return;
+    }
+
     if (command.isEmpty) {
       return;
     }
     if (command == '/model') {
+      _closeCodexSkillsPanel();
       _messageController.value = const TextEditingValue(
         text: '/model ',
         selection: TextSelection.collapsed(offset: 7),
@@ -760,6 +1141,23 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _messageController.clear();
         _hideSlashCommandPanel();
         await _executeCodexShowGoalCommand();
+        return true;
+      case CodexSlashSubmitKind.startSkill:
+        final args = (intent.value ?? '').trim();
+        if (args.isEmpty) {
+          await _openCodexSkillsPanel();
+          return true;
+        }
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _startCodexTurnCommand(
+          displayText: trimmed,
+          actualText: trimmed.startsWith('/skill')
+              ? trimmed
+              : buildCodexSkillCommand(
+                  skillNames: args.split(RegExp(r'\s+')),
+                ),
+        );
         return true;
       case CodexSlashSubmitKind.unsupported:
         _messageController.clear();
@@ -983,12 +1381,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       if (!mounted) return;
       final objective = _extractCodexGoalObjective(response);
       if (objective == null || objective.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _codexActiveGoalText = null;
+          });
+        }
         _showSnackBar(
           LegacyTextLocalizer.isEnglish
               ? 'No goal set for this thread'
               : '当前线程未设置 goal',
         );
         return;
+      }
+      if (mounted) {
+        setState(() {
+          _codexActiveGoalText = objective;
+        });
       }
       _showSnackBar(
         LegacyTextLocalizer.isEnglish
@@ -1035,6 +1443,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         objective: normalized,
       );
       if (!mounted) return;
+      setState(() {
+        _codexGoalModeEnabled = true;
+        _codexActiveGoalText = normalized;
+      });
       showToast(
         LegacyTextLocalizer.isEnglish
             ? 'Goal updated'
@@ -1057,6 +1469,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final threadId = (_activeCodexThreadId ?? '').trim();
     if ((conversationId == null || _isRemoteCodexConfigured()) &&
         threadId.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _codexGoalModeEnabled = false;
+          _codexActiveGoalText = null;
+        });
+      }
       _showSnackBar(
         LegacyTextLocalizer.isEnglish
             ? 'No active Codex thread for goal'
@@ -1071,6 +1489,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         threadId: threadId.isEmpty ? null : threadId,
       );
       if (!mounted) return;
+      setState(() {
+        _codexGoalModeEnabled = false;
+        _codexActiveGoalText = null;
+      });
       showToast(
         LegacyTextLocalizer.isEnglish
             ? 'Goal cleared'

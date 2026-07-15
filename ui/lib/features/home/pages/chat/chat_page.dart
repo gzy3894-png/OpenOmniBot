@@ -58,8 +58,13 @@ import 'package:ui/models/chat_startup_behavior.dart';
 import 'package:ui/features/home/pages/chat/utils/agent_run_timeline.dart';
 import 'package:ui/features/home/pages/chat/utils/agent_runtime_attachment_payload.dart';
 import 'package:ui/features/home/pages/chat/utils/agent_thinking_card_locator.dart';
+import 'package:ui/features/home/pages/chat/utils/codex_mode_submit.dart';
+import 'package:ui/features/home/pages/chat/utils/codex_skill_panel.dart';
+import 'package:ui/features/home/pages/chat/utils/codex_skill_tokens.dart';
 import 'package:ui/features/home/pages/chat/utils/codex_slash_commands.dart';
 import 'package:ui/features/home/pages/chat/utils/deep_thinking_persistence.dart';
+import 'package:ui/models/agent_skill_item.dart';
+import 'package:ui/services/agent_skill_store_service.dart';
 import 'package:ui/features/home/pages/chat/utils/composer_lift_intent_tracker.dart';
 import 'package:ui/features/home/pages/chat/utils/composer_keyboard_metrics_tracker.dart';
 import 'package:ui/features/home/pages/chat/utils/keyboard_inset_motion_tracker.dart';
@@ -78,6 +83,7 @@ import 'mixins/conversation_manager.dart';
 import 'chat_page_models.dart';
 import 'tool_activity_utils.dart';
 import 'widgets/chat_widgets.dart';
+import 'widgets/codex_goal_mode_bar.dart';
 import 'widgets/chat_browser_overlay.dart';
 import 'widgets/chat_message_anchor_bar.dart';
 import 'widgets/chat_tool_activity_strip.dart';
@@ -98,7 +104,7 @@ part 'chat_page_ui.dart';
 
 enum ChatPageMode { normal, openclaw, codex }
 
-enum _SlashCommandPanelRoute { root, effort, codexModel }
+enum _SlashCommandPanelRoute { root, effort, codexModel, skills }
 
 class ChatPage extends StatefulWidget {
   final ConversationThreadTarget? threadTarget;
@@ -419,6 +425,16 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   String? _activeCodexReasoningEffort;
   String? _activeCodexCollaborationMode;
   bool _activeCodexFastEnabled = false;
+  // Goal-mode session chrome (UI defaults). Handlers/RPC ownership: M4.
+  bool _codexGoalModeEnabled = false;
+  String? _codexActiveGoalText;
+  // Codex skills panel session cache (M4). M6 reads cards when route==skills.
+  bool _codexSkillsPanelVisible = false;
+  bool _codexSkillPanelLoading = false;
+  String? _codexSkillPanelError;
+  String _codexSkillPanelQuery = '';
+  List<AgentSkillItem> _codexSkillCatalog = const <AgentSkillItem>[];
+  List<Map<String, dynamic>> _codexSkillPanelCards = const <Map<String, dynamic>>[];
   final Set<String> _codexPlanTurnIds = <String>{};
   bool _isCodexModelListLoading = false;
   bool _isCodexCollaborationModeListLoading = false;
@@ -1040,6 +1056,10 @@ abstract class _ChatPageStateBase extends State<ChatPage>
       _activeMode == ChatPageMode.normal && !_isOpenClawSurface;
 
   _SlashCommandPanelRoute _resolveSlashCommandPanelRoute(String text) {
+    // Skills sub-panel is session-flag driven (panel entry / `@` / `/skill`).
+    if (_activeMode == ChatPageMode.codex && _codexSkillsPanelVisible) {
+      return _SlashCommandPanelRoute.skills;
+    }
     final trimmed = text.trimLeft();
     if (!trimmed.startsWith('/')) {
       return _SlashCommandPanelRoute.root;
@@ -1048,6 +1068,12 @@ abstract class _ChatPageStateBase extends State<ChatPage>
     if (_activeMode == ChatPageMode.codex &&
         (normalized == '/model' || normalized.startsWith('/model '))) {
       return _SlashCommandPanelRoute.codexModel;
+    }
+    if (_activeMode == ChatPageMode.codex &&
+        (normalized == '/skills' ||
+            normalized == '/skill' ||
+            normalized.startsWith('/skill '))) {
+      return _SlashCommandPanelRoute.skills;
     }
     if (normalized == '/effort' || normalized.startsWith('/effort ')) {
       return _SlashCommandPanelRoute.effort;
@@ -1065,6 +1091,7 @@ abstract class _ChatPageStateBase extends State<ChatPage>
         source.length <= 6 ? '' : source.substring(6).trimLeft(),
       _SlashCommandPanelRoute.effort =>
         source.length <= 7 ? '' : source.substring(7).trimLeft(),
+      _SlashCommandPanelRoute.skills => _codexSkillPanelQuery,
       _SlashCommandPanelRoute.root => '',
     };
   }
@@ -1778,6 +1805,14 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   );
 
   Future<bool> _tryHandleCodexSlashCommand(String messageText);
+
+  /// Codex send path: slash + goal-mode + `@skill` normalization (M4).
+  Future<bool> _tryHandleCodexComposerSubmit(String messageText);
+
+  Future<void> _openCodexSkillsPanel({String query = ''});
+
+  /// Null = not in skill-@ context; empty = bare `@`.
+  String? _parseCodexSkillAtQuery(TextEditingValue value);
 
   Future<void> _executeCodexInitCommand();
 

@@ -15,6 +15,8 @@ enum CodexSlashSubmitKind {
   setGoal,
   clearGoal,
   showGoal,
+  /// Invoke one or more skills: `/skill <name>[ <prompt>]`.
+  startSkill,
   unsupported,
 }
 
@@ -108,6 +110,20 @@ CodexSlashSubmitIntent resolveCodexSlashSubmitIntent(String messageText) {
     return CodexSlashSubmitIntent(
       CodexSlashSubmitKind.setGoal,
       value: objective,
+    );
+  }
+
+  if (normalized == '/skill') {
+    return const CodexSlashSubmitIntent(
+      CodexSlashSubmitKind.startSkill,
+      value: '',
+    );
+  }
+  if (normalized.startsWith('/skill ')) {
+    final args = trimmed.substring('/skill'.length).trim();
+    return CodexSlashSubmitIntent(
+      CodexSlashSubmitKind.startSkill,
+      value: args,
     );
   }
 

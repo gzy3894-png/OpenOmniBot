@@ -71,6 +71,45 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
   void _handleSlashCommandInput() {
     final value = _messageController.value;
     final shouldShowSlash = value.text.trimLeft().startsWith('/');
+
+    // Codex: `@` opens the skills panel (same catalog as /skills), not model mention.
+    if (_activeMode == ChatPageMode.codex && !shouldShowSlash) {
+      final skillQuery = _parseCodexSkillAtQuery(value);
+      if (skillQuery != null) {
+        if (!mounted) return;
+        final alreadyOpen =
+            _codexSkillsPanelVisible && _showSlashCommandPanel;
+        final hasCatalog = _codexSkillCatalog.isNotEmpty;
+        setState(() {
+          _showSlashCommandPanel = true;
+          _showModelMentionPanel = false;
+          _activeModelMentionToken = null;
+          _openClawPanelExpanded = false;
+          _slashCommandExpandedByMode[_activeMode] = false;
+          _codexSkillsPanelVisible = true;
+          _codexSkillPanelQuery = skillQuery;
+          if (alreadyOpen && hasCatalog) {
+            _codexSkillPanelCards = buildCodexSkillPanelCards(
+              _codexSkillCatalog,
+              query: skillQuery,
+              isEnglish: LegacyTextLocalizer.isEnglish,
+            );
+          }
+        });
+        if (!alreadyOpen || !hasCatalog) {
+          unawaited(_openCodexSkillsPanel(query: skillQuery));
+        }
+        return;
+      }
+      // Leaving `@` context while skills panel was open from mention.
+      if (_codexSkillsPanelVisible && mounted) {
+        setState(() {
+          _codexSkillsPanelVisible = false;
+          _codexSkillPanelQuery = '';
+        });
+      }
+    }
+
     final nextMentionToken = shouldShowSlash
         ? null
         : _parseActiveModelMentionToken(value);
@@ -79,8 +118,12 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
     final nextOpenClawPanelExpanded = shouldCollapsePanels
         ? false
         : _openClawPanelExpanded;
-    final nextSlashPanelVisible =
-        shouldShowSlash || shouldShowModelMention || nextOpenClawPanelExpanded;
+    final keepCodexSkills =
+        _activeMode == ChatPageMode.codex && _codexSkillsPanelVisible;
+    final nextSlashPanelVisible = shouldShowSlash ||
+        shouldShowModelMention ||
+        nextOpenClawPanelExpanded ||
+        keepCodexSkills;
 
     if (!mounted) return;
 
@@ -131,6 +174,8 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
       _showModelMentionPanel = false;
       _openClawPanelExpanded = false;
       _slashCommandExpandedByMode[_activeMode] = false;
+      _codexSkillsPanelVisible = false;
+      _codexSkillPanelQuery = '';
     });
   }
 
@@ -234,10 +279,11 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
   @override
   Future<bool> _tryHandleSlashCommand(String messageText) async {
     final trimmed = messageText.trim();
-    if (!trimmed.startsWith('/')) return false;
+    // Codex path: plan slash / goal-mode / @skill before generic `/` gate.
     if (_activeMode == ChatPageMode.codex) {
-      return _tryHandleCodexSlashCommand(trimmed);
+      return _tryHandleCodexComposerSubmit(trimmed);
     }
+    if (!trimmed.startsWith('/')) return false;
 
     if (trimmed == '/compact' || trimmed.startsWith('/compact ')) {
       await _executeManualContextCompactionCommand();

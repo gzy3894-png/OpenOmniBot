@@ -2645,6 +2645,11 @@ class ChatInputWrapper extends StatelessWidget {
   final bool useIndependentSendButton;
   final bool translucent;
 
+  /// Codex 目标模式前缀态（透传 [ChatInputArea]；常显条由外层挂 [CodexGoalModeBar]）。
+  final bool codexGoalModeEnabled;
+  final String? codexGoalPrefixLabel;
+  final String? codexGoalText;
+
   const ChatInputWrapper({
     super.key,
     required this.inputAreaKey,
@@ -2682,6 +2687,9 @@ class ChatInputWrapper extends StatelessWidget {
     this.onCodexPermissionModeChanged,
     this.useIndependentSendButton = true,
     this.translucent = false,
+    this.codexGoalModeEnabled = false,
+    this.codexGoalPrefixLabel,
+    this.codexGoalText,
   });
 
   @override
@@ -2728,6 +2736,9 @@ class ChatInputWrapper extends StatelessWidget {
             onCodexPermissionModeChanged: onCodexPermissionModeChanged,
             onInputHeightChanged: onInputHeightChanged,
             useIndependentSendButton: useIndependentSendButton,
+            codexGoalModeEnabled: codexGoalModeEnabled,
+            codexGoalPrefixLabel: codexGoalPrefixLabel,
+            codexGoalText: codexGoalText,
           ),
         ],
       ),
