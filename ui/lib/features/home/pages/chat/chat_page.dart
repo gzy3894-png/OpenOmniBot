@@ -1793,6 +1793,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
 
   Future<void> _setCodexFastEnabled(bool enabled);
 
+  /// Session permission mode change (local tip only; not a model turn).
+  Future<void> _setCodexPermissionMode(CodexPermissionMode mode);
+
   /// Goal-mode session toggle (composer prefix + bar + clearGoal on off).
   Future<void> _setCodexGoalModeEnabled(bool enabled);
 

@@ -1592,9 +1592,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       onCodexPermissionModeChanged:
                           _activeMode == ChatPageMode.codex
                           ? (mode) {
-                              setState(() {
-                                _codexPermissionMode = mode;
-                              });
+                              unawaited(_setCodexPermissionMode(mode));
                             }
                           : null,
                       codexGoalModeEnabled: _activeMode == ChatPageMode.codex &&

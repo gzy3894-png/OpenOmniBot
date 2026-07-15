@@ -472,6 +472,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (normalized.isEmpty || normalized.startsWith('/')) {
       return;
     }
+    final previous = (_activeCodexModelId ?? '').trim();
+    final changed = previous != normalized;
     if (!mounted) return;
     setState(() {
       _activeCodexModelId = normalized;
@@ -481,6 +483,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _messageController.clear();
       _hideSlashCommandPanel();
     }
+    // Local transcript tip only — never send as a model turn.
+    if (changed) {
+      await _appendCodexLocalSystemTip(
+        codexSessionTipModel(
+          normalized,
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        ),
+      );
+    }
   }
 
   @override
@@ -489,6 +500,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (normalized == null) {
       return;
     }
+    final previous = (_activeCodexReasoningEffort ?? '').trim();
+    final changed = previous != normalized;
     if (!mounted) return;
     setState(() {
       _activeCodexReasoningEffort = normalized;
@@ -501,6 +514,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _kCodexReasoningEffortPreferenceKey,
       normalized,
     );
+    // Local transcript tip only — never send as a model turn.
+    if (changed) {
+      await _appendCodexLocalSystemTip(
+        codexSessionTipEffort(
+          normalized,
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        ),
+      );
+    }
   }
 
   @override
@@ -510,6 +532,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   }) async {
     await _loadCodexCollaborationModes();
     final planMode = _resolveCodexPlanMode(_codexCollaborationModes);
+    final alreadyOn = _isCodexPlanMode(_activeCodexCollaborationMode);
     if (!mounted) return;
     setState(() {
       _activeCodexCollaborationMode = planMode;
@@ -522,10 +545,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _messageController.clear();
       _hideSlashCommandPanel();
     }
+    // Local transcript tip only — never send as a model turn.
+    if (!alreadyOn) {
+      await _appendCodexLocalSystemTip(
+        codexSessionTipPlan(
+          enabled: true,
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        ),
+      );
+    }
   }
 
   @override
   Future<void> _deactivateCodexPlanMode({bool dismissPanel = true}) async {
+    final wasOn = _isCodexPlanMode(_activeCodexCollaborationMode);
     if (!mounted) return;
     setState(() {
       _activeCodexCollaborationMode = null;
@@ -535,6 +568,33 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _messageController.clear();
       _hideSlashCommandPanel();
     }
+    // Local transcript tip only — never send as a model turn.
+    if (wasOn) {
+      await _appendCodexLocalSystemTip(
+        codexSessionTipPlan(
+          enabled: false,
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        ),
+      );
+    }
+  }
+
+  @override
+  Future<void> _setCodexPermissionMode(CodexPermissionMode mode) async {
+    if (_codexPermissionMode == mode) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _codexPermissionMode = mode;
+    });
+    // Local transcript tip only — never send as a model turn.
+    await _appendCodexLocalSystemTip(
+      codexSessionTipPermission(
+        _codexPermissionModeLabel(mode),
+        isEnglish: LegacyTextLocalizer.isEnglish,
+      ),
+    );
   }
 
   Future<void> _toggleCodexPlanMode({bool dismissPanel = true}) {
@@ -593,12 +653,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     final createdAt = DateTime.now();
     final messageId =
-        '${createdAt.millisecondsSinceEpoch}-codex-fast-tip';
+        '${createdAt.millisecondsSinceEpoch}-codex-system-tip';
     final message = ChatMessageModel(
       id: messageId,
       type: 1,
       user: 3,
-      content: <String, dynamic>{'text': tip, 'id': messageId},
+      content: <String, dynamic>{
+        'text': tip,
+        'id': messageId,
+        'localSystemTip': true,
+        'kind': 'local_system_tip',
+      },
       createAt: createdAt,
     );
     setState(() {
@@ -618,7 +683,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         mode: ConversationMode.codex,
       );
     } catch (error) {
-      debugPrint('Persist Codex Fast tip failed: $error');
+      debugPrint('Persist Codex system tip failed: $error');
     }
   }
 
@@ -874,6 +939,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     );
     _closeCodexSkillsPanel(hideSlashPanel: true);
     _requestComposerFocus();
+    // Local transcript tip only — never send as a model turn.
+    unawaited(
+      _appendCodexLocalSystemTip(
+        codexSessionTipSkillInserted(
+          token.trim(),
+          isEnglish: LegacyTextLocalizer.isEnglish,
+        ),
+      ),
+    );
   }
 
   (int, int)? _findCodexSkillAtTokenRange(String text, int cursor) {
@@ -1693,6 +1767,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     _messageController.clear();
     _hideSlashCommandPanel();
     final messageIds = addUserMessage('/review');
+    // Local transcript tip only — never send as a model turn.
+    await _appendCodexLocalSystemTip(
+      codexSessionTipReviewStarted(
+        isEnglish: LegacyTextLocalizer.isEnglish,
+      ),
+    );
     final remoteCodex = _isRemoteCodexConfigured();
     int? conversationId;
     if (remoteCodex) {

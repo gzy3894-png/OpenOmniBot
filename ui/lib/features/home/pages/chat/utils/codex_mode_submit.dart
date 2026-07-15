@@ -41,6 +41,43 @@ String codexFastModeHintOn({required bool isEnglish}) =>
 String codexFastModeHintOff({required bool isEnglish}) =>
     codexFastModeHint(isEnglish: isEnglish, enabled: false);
 
+/// Session tip: model switch.
+String codexSessionTipModel(String modelId, {required bool isEnglish}) {
+  final id = modelId.trim();
+  return isEnglish ? 'Model: $id' : '已切换模型：$id';
+}
+
+/// Session tip: reasoning / effort level switch.
+String codexSessionTipEffort(String effort, {required bool isEnglish}) {
+  final level = effort.trim();
+  return isEnglish ? 'Reasoning: $level' : '已切换思考等级：$level';
+}
+
+/// Session tip: review started.
+String codexSessionTipReviewStarted({required bool isEnglish}) =>
+    isEnglish ? 'Review started' : '已开始审查';
+
+/// Session tip: skill inserted into composer (e.g. from @ panel).
+String codexSessionTipSkillInserted(String skillName, {required bool isEnglish}) {
+  final name = skillName.trim();
+  final token = name.startsWith('@') ? name : '@$name';
+  return isEnglish ? 'Skill inserted: $token' : '已插入技能：$token';
+}
+
+/// Session tip: Plan mode on/off.
+String codexSessionTipPlan({required bool enabled, required bool isEnglish}) {
+  if (enabled) {
+    return isEnglish ? 'Plan on' : '已开启 Plan';
+  }
+  return isEnglish ? 'Plan off' : '已关闭 Plan';
+}
+
+/// Session tip: permission mode change.
+String codexSessionTipPermission(String label, {required bool isEnglish}) {
+  final value = label.trim();
+  return isEnglish ? 'Permission: $value' : '权限：$value';
+}
+
 /// Display form for a goal objective (e.g. transcript / chrome).
 /// Planning semantics for setGoal remain in [planCodexComposerSubmit].
 String formatCodexGoalCommand(String objective) {

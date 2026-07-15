@@ -215,11 +215,66 @@ class MessageBubble extends StatelessWidget {
     }
   }
 
+  /// Local system tip (Codex Fast / mode switches): not AI body, not user bubble.
+  bool _isLocalSystemTip() {
+    if (message.user != 3 || message.type != 1) {
+      return false;
+    }
+    final content = message.content;
+    if (content?['localSystemTip'] == true) {
+      return true;
+    }
+    final kind = content?['kind']?.toString();
+    if (kind == 'local_system_tip') {
+      return true;
+    }
+    final id = message.id;
+    return id.contains('codex-fast-tip') || id.contains('codex-system-tip');
+  }
+
+  /// Compact secondary tip with thin top/bottom dividers (no markdown/voice/usage).
+  Widget _buildLocalSystemTip(BuildContext context, String text) {
+    final tipText = text.trim();
+    final color = _resolvedAiSecondaryTextColor(context);
+    final dividerColor = color.withValues(alpha: 0.28);
+    final fontSize = _chatTextSize * 0.86;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Divider(height: 1, thickness: 0.5, color: dividerColor),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              tipText.isEmpty ? text : tipText,
+              textAlign: TextAlign.left,
+              style: TextStyle(
+                color: color,
+                fontSize: fontSize,
+                fontFamily: 'PingFang SC',
+                fontWeight: FontWeight.w400,
+                height: 1.4,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+        ),
+        Divider(height: 1, thickness: 0.5, color: dividerColor),
+      ],
+    );
+  }
+
   /// 构建文本消息
   Widget _buildTextMessage(BuildContext context, bool isUserMessage) {
     final text = message.text ?? '';
     final attachments = _extractAttachments();
     final linkPreviews = message.linkPreviews;
+
+    if (_isLocalSystemTip()) {
+      return _buildLocalSystemTip(context, text);
+    }
 
     if (isUserMessage) {
       // 用户消息：整块气泡长按触发快捷操作。

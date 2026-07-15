@@ -88,34 +88,131 @@ void main() {
     });
   });
 
-  test('goal clear and fast hint constants', () {
-    expect(goalClearCommand, '/goal clear');
-    expect(kCodexGoalClearCommand, '/goal clear');
-    expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintEn);
-    expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintZh);
-    expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintOnEn);
-    expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintOnZh);
+  group('codexFastModeHint', () {
+    test('exact short PO copy for on/off ZH/EN', () {
+      expect(
+        kCodexFastModeHintOnZh,
+        '已开启 Fast：1.5× 速度；计费约 1.5–2×。',
+      );
+      expect(
+        kCodexFastModeHintOffZh,
+        '已关闭 Fast：恢复标准速度与计费。',
+      );
+      expect(
+        kCodexFastModeHintOnEn,
+        'Fast on: ~1.5× speed; billing ~1.5–2×.',
+      );
+      expect(
+        kCodexFastModeHintOffEn,
+        'Fast off: standard speed and billing.',
+      );
 
-    // On tips: short PO copy — 1.5× speed + 1.5–2× billing (no priority-lane essay)
-    expect(kCodexFastModeHintOnEn, contains('1.5'));
-    expect(kCodexFastModeHintOnEn.toLowerCase(), contains('billing'));
-    expect(kCodexFastModeHintOnEn, isNot(contains('priority')));
-    expect(kCodexFastModeHintOnZh, contains('1.5'));
-    expect(kCodexFastModeHintOnZh, contains('计费'));
-    expect(kCodexFastModeHintOnZh, isNot(contains('优先通道')));
+      expect(goalClearCommand, '/goal clear');
+      expect(kCodexGoalClearCommand, '/goal clear');
+      expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintEn);
+      expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintZh);
+      expect(codexFastModeHint(isEnglish: true), kCodexFastModeHintOnEn);
+      expect(codexFastModeHint(isEnglish: false), kCodexFastModeHintOnZh);
+      expect(codexFastModeHintOn(isEnglish: true), kCodexFastModeHintOnEn);
+      expect(codexFastModeHintOff(isEnglish: false), kCodexFastModeHintOffZh);
 
-    // Off tips via enabled: false
-    expect(
-      codexFastModeHint(isEnglish: true, enabled: false),
-      kCodexFastModeHintOffEn,
-    );
-    expect(
-      codexFastModeHint(isEnglish: false, enabled: false),
-      kCodexFastModeHintOffZh,
-    );
-    expect(kCodexFastModeHintOffEn.toLowerCase(), contains('off'));
-    expect(kCodexFastModeHintOffEn.toLowerCase(), contains('billing'));
-    expect(kCodexFastModeHintOffZh, contains('关闭'));
-    expect(kCodexFastModeHintOffZh, contains('计费'));
+      // On tips: short PO copy — 1.5× speed + 1.5–2× billing (no priority-lane essay)
+      expect(kCodexFastModeHintOnEn, contains('1.5'));
+      expect(kCodexFastModeHintOnEn.toLowerCase(), contains('billing'));
+      expect(kCodexFastModeHintOnEn, isNot(contains('priority')));
+      expect(kCodexFastModeHintOnZh, contains('1.5'));
+      expect(kCodexFastModeHintOnZh, contains('计费'));
+      expect(kCodexFastModeHintOnZh, isNot(contains('优先通道')));
+
+      // Off tips via enabled: false
+      expect(
+        codexFastModeHint(isEnglish: true, enabled: false),
+        kCodexFastModeHintOffEn,
+      );
+      expect(
+        codexFastModeHint(isEnglish: false, enabled: false),
+        kCodexFastModeHintOffZh,
+      );
+      expect(kCodexFastModeHintOffEn.toLowerCase(), contains('off'));
+      expect(kCodexFastModeHintOffEn.toLowerCase(), contains('billing'));
+      expect(kCodexFastModeHintOffZh, contains('关闭'));
+      expect(kCodexFastModeHintOffZh, contains('计费'));
+    });
+  });
+
+  group('codexSessionTip helpers', () {
+    test('model', () {
+      expect(
+        codexSessionTipModel('gpt-5.1', isEnglish: false),
+        '已切换模型：gpt-5.1',
+      );
+      expect(
+        codexSessionTipModel('gpt-5.1', isEnglish: true),
+        'Model: gpt-5.1',
+      );
+    });
+
+    test('effort', () {
+      expect(
+        codexSessionTipEffort('xhigh', isEnglish: false),
+        '已切换思考等级：xhigh',
+      );
+      expect(
+        codexSessionTipEffort('medium', isEnglish: true),
+        'Reasoning: medium',
+      );
+    });
+
+    test('review started', () {
+      expect(
+        codexSessionTipReviewStarted(isEnglish: false),
+        '已开始审查',
+      );
+      expect(
+        codexSessionTipReviewStarted(isEnglish: true),
+        'Review started',
+      );
+    });
+
+    test('skill inserted adds @ when missing', () {
+      expect(
+        codexSessionTipSkillInserted('review-pr', isEnglish: false),
+        '已插入技能：@review-pr',
+      );
+      expect(
+        codexSessionTipSkillInserted('@ship', isEnglish: true),
+        'Skill inserted: @ship',
+      );
+    });
+
+    test('plan on/off', () {
+      expect(
+        codexSessionTipPlan(enabled: true, isEnglish: false),
+        '已开启 Plan',
+      );
+      expect(
+        codexSessionTipPlan(enabled: false, isEnglish: false),
+        '已关闭 Plan',
+      );
+      expect(
+        codexSessionTipPlan(enabled: true, isEnglish: true),
+        'Plan on',
+      );
+      expect(
+        codexSessionTipPlan(enabled: false, isEnglish: true),
+        'Plan off',
+      );
+    });
+
+    test('permission', () {
+      expect(
+        codexSessionTipPermission('完整访问', isEnglish: false),
+        '权限：完整访问',
+      );
+      expect(
+        codexSessionTipPermission('Full Access', isEnglish: true),
+        'Permission: Full Access',
+      );
+    });
   });
 }
