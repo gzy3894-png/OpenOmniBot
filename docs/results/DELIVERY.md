@@ -1,6 +1,6 @@
 # 当前交付单
 
-> 更新：2026-07-15 · Stage **Codex modes/skills 包（目标模式 / Fast 提示 / 技能 /@）**  
+> 更新：2026-07-15 · Stage **Codex modes/skills 包 READY（目标模式 / Fast 提示 / 技能 /@）**  
 > **你只做：装包 → 测 → 交报告（或只回 PASS/FAIL）**
 
 ---
@@ -16,23 +16,23 @@
 
 ---
 
-## 2. 当前包（SHIPPING → 填 GHA 后 READY）
+## 2. 当前包（READY）
 
 | 项 | 值 |
 |----|-----|
 | 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
-| 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-<commit>-standard-debug.apk` |
-| 状态 | **SHIPPING**（commit 后由 M7 填 READY + sha256） |
-| sha256 | _pending GHA_ |
-| 大小 | _pending_ |
+| 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-4a285f7-standard-debug.apk` |
+| 状态 | **READY** |
+| sha256 | `e82684ad3e3cff9d3b296778ab6ec98e933dd393e57a747f03b55013bd98358a` |
+| 大小 | ~350 MB（366149530 bytes） |
 | 变体 | `developStandardDebug` · `-Ptarget=lib/main_standard.dart` |
 | applicationId | `cn.com.omnimind.bot.debug` |
 | versionName | `0.5.6.4`（versionCode 1） |
-| commit | _pending_ · `feat(codex): goal mode bar, session Fast hint, @skills panel mapped to /skill` |
+| commit | `4a285f7` · `fix(codex): route goal bar clear via base _setCodexGoalModeEnabled`（功能主体 `0871898`） |
 | 基线 | 基于 `c388f54` 的 modes/skills 包 |
 | 分支 | `secondary/s1-baseline` |
 | fork | `gzy3894-png/OpenOmniBot` |
-| GHA | _pending_ `baseline-standard-debug` |
+| GHA | [Baseline Standard Debug #29394732847](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29394732847) · success |
 | 签名策略 | `stableDebug` + secrets `AWB_DEBUG_*`（与 AWB 内测 jks 同源） |
 | 期望证书 SHA256 | `6D:79:D3:52:E6:8F:C7:E1:95:6F:E1:4C:41:B6:AF:FA:D2:A1:40:3E:B2:2A:F9:E7:6B:4E:21:3F:A1:02:44:C6` |
 
@@ -87,7 +87,7 @@
 - [x] 固定 debug 签名 + 重出包 + stage  
 - [x] Codex Fast + slash + config + 图片包（`c388f54`）  
 - [x] modes/skills 实现静态核对（`reports/m7-static-verify.md`）  
-- [ ] modes/skills GHA 出包 + Download stage  
+- [x] modes/skills GHA 出包 + Download stage（`4a285f7` / run 29394732847）  
 - [ ] 等你的冒烟结果  
 
 ---
@@ -100,4 +100,5 @@
 | 2026-07-15 | GHA 29379975277 success；临时签 APK staged（已废弃深测） |
 | 2026-07-15 | 接入 `stableDebug` + `AWB_DEBUG_*` |
 | 2026-07-15 | `c388f54` Fast/slash/config/image 推 fork；GHA 29386637049 success；sha256 `2278ba38…` staged Download |
-| 2026-07-15 | modes/skills 静态 PASS；测点改方案 §4；出包中 |
+| 2026-07-15 | modes/skills `0871898`；首轮 GHA 29394428147 fail（UI mixin 调私有 clearGoal） |
+| 2026-07-15 | fix `4a285f7`；GHA 29394732847 success；sha256 `e82684ad…` staged Download |
