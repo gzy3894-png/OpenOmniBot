@@ -274,35 +274,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   List<Map<String, dynamic>> _buildCodexRootCommandCards() {
     final query = _messageController.text.trimLeft().toLowerCase();
     final planModeEnabled = _isCodexPlanMode(_activeCodexCollaborationMode);
+    // Model + permission live on dedicated composer buttons, so the `/`
+    // list only surfaces Codex-native workflow commands.
     final commands = <Map<String, dynamic>>[
-      _buildCodexCommandCard(
-        cardId: 'slash-command-codex-model',
-        toolTitle: '/model',
-        displayName: '/model',
-        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Model' : '模型',
-        status: _activeCodexModelId == null ? 'running' : 'success',
-        statusLabel: _activeCodexModelId == null
-            ? (LegacyTextLocalizer.isEnglish ? 'Select' : '选择')
-            : (_activeCodexModelId!),
-        summary: _activeCodexModelId == null
-            ? (LegacyTextLocalizer.isEnglish
-                  ? 'Choose a Codex model'
-                  : '选择 Codex 模型')
-            : (LegacyTextLocalizer.isEnglish
-                  ? 'Current model: $_activeCodexModelId'
-                  : '当前模型：$_activeCodexModelId'),
-        progress: _codexModelListError != null
-            ? _codexModelListError!
-            : _isCodexModelListLoading
-            ? (LegacyTextLocalizer.isEnglish ? 'Loading models' : '加载模型中')
-            : (_codexModelOptions.isEmpty
-                  ? (LegacyTextLocalizer.isEnglish
-                        ? 'Tap to load models'
-                        : '点击加载模型')
-                  : (_codexModelOptions.length == 1
-                        ? '1 model'
-                        : '${_codexModelOptions.length} models')),
-      ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-review',
         toolTitle: '/review',
@@ -360,6 +334,104 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                         : '${_codexCollaborationModes.length} modes')),
         isToggle: true,
         toggleValue: planModeEnabled,
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-compact',
+        toolTitle: '/compact',
+        displayName: '/compact',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Compact' : '压缩',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Compact the current thread context'
+            : '压缩当前线程上下文',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Calls thread compact on the active Codex thread'
+            : '对当前 Codex 线程执行上下文压缩',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-status',
+        toolTitle: '/status',
+        displayName: '/status',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Status' : '状态',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Show local Codex status snapshot'
+            : '查看本地 Codex 状态摘要',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Model, effort, fast, permission, thread, ready'
+            : '模型、思考、Fast、权限、线程、就绪状态',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-diff',
+        toolTitle: '/diff',
+        displayName: '/diff',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Diff' : '差异',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Show the latest known diff summary'
+            : '展示最近可用的 diff 摘要',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Uses tool results already present in chat'
+            : '仅使用聊天中已有的工具结果',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-stop',
+        toolTitle: '/stop',
+        displayName: '/stop',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Stop' : '停止',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Interrupt the current Codex turn'
+            : '中断当前 Codex 回合',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Sends turn interrupt for the active thread'
+            : '对当前线程发送 turn interrupt',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-new',
+        toolTitle: '/new',
+        displayName: '/new',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'New' : '新建',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Start a fresh conversation'
+            : '开始新的对话',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Clears the current chat surface and thread binding'
+            : '清空当前聊天面并解除线程绑定',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-resume',
+        toolTitle: '/resume',
+        displayName: '/resume',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Resume' : '恢复',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Resume a Codex thread by id'
+            : '按 threadId 恢复 Codex 线程',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Tap then enter /resume <threadId>'
+            : '点击后填写 /resume <threadId>',
+      ),
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-goal',
+        toolTitle: '/goal',
+        displayName: '/goal',
+        toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Goal' : '目标',
+        status: 'running',
+        statusLabel: LegacyTextLocalizer.isEnglish ? 'Command' : '命令',
+        summary: LegacyTextLocalizer.isEnglish
+            ? 'Show the current thread goal'
+            : '查看当前线程 goal',
+        progress: LegacyTextLocalizer.isEnglish
+            ? 'Use /goal <text> or /goal clear in composer'
+            : '输入框可用 /goal <文本> 或 /goal clear',
       ),
     ];
     if (query.isEmpty) {
@@ -1393,6 +1465,15 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                                   _selectCodexReasoningEffort(reasoningEffort),
                                 );
                               }
+                            }
+                          : null,
+                      codexFastEnabled: _activeMode == ChatPageMode.codex
+                          ? _activeCodexFastEnabled
+                          : null,
+                      onCodexFastEnabledChanged:
+                          _activeMode == ChatPageMode.codex
+                          ? (enabled) {
+                              unawaited(_setCodexFastEnabled(enabled));
                             }
                           : null,
                       codexPermissionMode: _activeMode == ChatPageMode.codex

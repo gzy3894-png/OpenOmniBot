@@ -6,6 +6,15 @@ enum CodexSlashSubmitKind {
   startInit,
   togglePlan,
   startPlan,
+  startCompact,
+  showStatus,
+  showDiff,
+  stopTurn,
+  startNew,
+  resumeThread,
+  setGoal,
+  clearGoal,
+  showGoal,
   unsupported,
 }
 
@@ -54,6 +63,51 @@ CodexSlashSubmitIntent resolveCodexSlashSubmitIntent(String messageText) {
     return CodexSlashSubmitIntent(
       CodexSlashSubmitKind.startPlan,
       value: prompt,
+    );
+  }
+
+  if (normalized == '/compact') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.startCompact);
+  }
+  if (normalized == '/status') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.showStatus);
+  }
+  if (normalized == '/diff') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.showDiff);
+  }
+  if (normalized == '/stop' || normalized == '/clean') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.stopTurn);
+  }
+  if (normalized == '/new' || normalized == '/clear') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.startNew);
+  }
+  if (normalized == '/resume' || normalized.startsWith('/resume ')) {
+    final threadId = trimmed.length > '/resume'.length
+        ? trimmed.substring('/resume'.length).trim()
+        : '';
+    return CodexSlashSubmitIntent(
+      CodexSlashSubmitKind.resumeThread,
+      value: threadId.isEmpty ? null : threadId,
+    );
+  }
+  if (normalized == '/goal') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.showGoal);
+  }
+  if (normalized == '/goal clear' || normalized == '/goal --clear') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.clearGoal);
+  }
+  if (normalized.startsWith('/goal ')) {
+    final objective = trimmed.substring('/goal'.length).trim();
+    if (objective.isEmpty) {
+      return const CodexSlashSubmitIntent(CodexSlashSubmitKind.showGoal);
+    }
+    if (objective.toLowerCase() == 'clear' ||
+        objective.toLowerCase() == '--clear') {
+      return const CodexSlashSubmitIntent(CodexSlashSubmitKind.clearGoal);
+    }
+    return CodexSlashSubmitIntent(
+      CodexSlashSubmitKind.setGoal,
+      value: objective,
     );
   }
 

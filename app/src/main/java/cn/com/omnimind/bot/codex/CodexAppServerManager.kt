@@ -454,10 +454,17 @@ class CodexAppServerManager private constructor(
             "__OMNI_CODEX_AUTH_START__",
             "__OMNI_CODEX_AUTH_END__"
         )
+        val serviceTier = extractTomlString(configToml, "service_tier").orEmpty()
+        val modelReasoningEffort =
+            extractTomlString(configToml, "model_reasoning_effort").orEmpty()
+        val defaultGoal = extractTomlString(configToml, "omnimind_default_goal").orEmpty()
         return buildCodexLocalConfigPayload(
             model = extractTomlString(configToml, "model").orEmpty(),
             baseUrl = extractTomlString(configToml, "base_url").orEmpty(),
             apiKey = extractOpenAiApiKey(authJson).orEmpty(),
+            serviceTier = serviceTier,
+            modelReasoningEffort = modelReasoningEffort,
+            defaultGoal = defaultGoal,
             remoteConfig = remoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -467,6 +474,11 @@ class CodexAppServerManager private constructor(
         val baseUrl = args.stringValue("baseUrl").orEmpty()
         val model = args.stringValue("model").orEmpty()
         val apiKey = args.stringValue("apiKey").orEmpty()
+        val serviceTier = normalizeCodexServiceTier(args.stringValue("serviceTier"))
+        val modelReasoningEffort =
+            normalizeCodexReasoningEffort(args.stringValue("modelReasoningEffort"))
+                ?: "xhigh"
+        val defaultGoal = args.stringValue("defaultGoal").orEmpty().trim()
         val remoteConfig = CodexRemoteBridgeConfig(
             enabled = args["remoteEnabled"] == true,
             bridgeUrl = args.stringValue("remoteBridgeUrl").orEmpty(),
@@ -480,7 +492,13 @@ class CodexAppServerManager private constructor(
 
         val savedRemoteConfig = remoteConfigStore.write(remoteConfig)
         if (localComplete) {
-            val configToml = buildCodexConfigToml(baseUrl = baseUrl, model = model)
+            val configToml = buildCodexConfigToml(
+                baseUrl = baseUrl,
+                model = model,
+                serviceTier = serviceTier,
+                modelReasoningEffort = modelReasoningEffort,
+                defaultGoal = defaultGoal
+            )
             val authJson = JSONObject()
                 .put("OPENAI_API_KEY", apiKey)
                 .toString(4) + "\n"
@@ -516,6 +534,9 @@ class CodexAppServerManager private constructor(
             model = model,
             baseUrl = baseUrl,
             apiKey = apiKey,
+            serviceTier = serviceTier.orEmpty(),
+            modelReasoningEffort = modelReasoningEffort,
+            defaultGoal = defaultGoal,
             remoteConfig = savedRemoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -1131,6 +1152,9 @@ private fun buildCodexLocalConfigPayload(
     model: String,
     baseUrl: String,
     apiKey: String,
+    serviceTier: String = "",
+    modelReasoningEffort: String = "",
+    defaultGoal: String = "",
     remoteConfig: CodexRemoteBridgeConfig,
     runtime: String
 ): Map<String, Any?> {
@@ -1139,6 +1163,9 @@ private fun buildCodexLocalConfigPayload(
         "model" to model,
         "baseUrl" to baseUrl,
         "apiKey" to apiKey,
+        "serviceTier" to serviceTier,
+        "modelReasoningEffort" to modelReasoningEffort,
+        "defaultGoal" to defaultGoal,
         "remoteEnabled" to remoteConfig.enabled,
         "remoteBridgeUrl" to remoteConfig.bridgeUrl,
         "remoteBridgeToken" to remoteConfig.authToken,
@@ -1148,19 +1175,58 @@ private fun buildCodexLocalConfigPayload(
     )
 }
 
-private fun buildCodexConfigToml(baseUrl: String, model: String): String {
-    return """
-        model_provider = "omnimind"
-        model = ${tomlString(model)}
-        model_reasoning_effort = "xhigh"
-        disable_response_storage = true
+private fun buildCodexConfigToml(
+    baseUrl: String,
+    model: String,
+    serviceTier: String? = null,
+    modelReasoningEffort: String = "xhigh",
+    defaultGoal: String = ""
+): String {
+    val lines = mutableListOf(
+        "model_provider = \"omnimind\"",
+        "model = ${tomlString(model)}",
+        "model_reasoning_effort = ${tomlString(modelReasoningEffort.ifBlank { "xhigh" })}",
+        "disable_response_storage = true"
+    )
+    val normalizedServiceTier = normalizeCodexServiceTier(serviceTier)
+    if (!normalizedServiceTier.isNullOrBlank()) {
+        lines += "service_tier = ${tomlString(normalizedServiceTier)}"
+    }
+    if (defaultGoal.isNotBlank()) {
+        // Soft OmniMind preference used by the app; ignored by stock Codex.
+        lines += "omnimind_default_goal = ${tomlString(defaultGoal)}"
+    }
+    lines += listOf(
+        "",
+        "[model_providers.omnimind]",
+        "name = \"omnimind\"",
+        "base_url = ${tomlString(baseUrl)}",
+        "wire_api = \"responses\"",
+        "requires_openai_auth = true"
+    )
+    return lines.joinToString(separator = "\n", postfix = "\n")
+}
 
-        [model_providers.omnimind]
-        name = "omnimind"
-        base_url = ${tomlString(baseUrl)}
-        wire_api = "responses"
-        requires_openai_auth = true
-    """.trimIndent() + "\n"
+private fun normalizeCodexServiceTier(raw: String?): String? {
+    val normalized = raw?.trim()?.lowercase().orEmpty()
+    if (normalized.isEmpty() || normalized == "default" || normalized == "off" || normalized == "false") {
+        return null
+    }
+    return when (normalized) {
+        "fast", "priority", "true", "1", "on" -> "fast"
+        else -> normalized
+    }
+}
+
+private fun normalizeCodexReasoningEffort(raw: String?): String? {
+    val normalized = raw?.trim()?.lowercase().orEmpty()
+    if (normalized.isEmpty()) {
+        return null
+    }
+    return when (normalized) {
+        "low", "medium", "high", "xhigh" -> normalized
+        else -> null
+    }
 }
 
 private fun extractMarkedBlock(source: String, startMarker: String, endMarker: String): String {

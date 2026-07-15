@@ -3,8 +3,11 @@ part of 'chat_page.dart';
 const String _kCodexModelPreferenceKey = 'model';
 const String _kCodexReasoningEffortPreferenceKey = 'reasoning_effort';
 const String _kCodexCollaborationModePreferenceKey = 'collaboration_mode';
+const String _kCodexServiceTierPreferenceKey = 'service_tier';
 const String _kCodexPreferenceStoragePrefix = 'chat_codex_command_preference';
 const String _kDefaultCodexReasoningEffort = 'xhigh';
+const String _kCodexFastServiceTier = 'fast';
+const String _kCodexOffServiceTier = 'off';
 const Duration _remoteCodexExternalActiveGrace = Duration(seconds: 6);
 const List<String> _kCodexModelListResponseKeys = <String>[
   'models',
@@ -275,11 +278,26 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _kCodexCollaborationModePreferenceKey,
       conversationId: conversationId,
     );
+    final serviceTier = _readCodexPreference(
+      _kCodexServiceTierPreferenceKey,
+      conversationId: conversationId,
+    );
+    var fastEnabled = _isCodexFastServiceTier(serviceTier);
+    // Session/global preference wins; fall back to local config default.
+    if (serviceTier == null) {
+      try {
+        final localConfig = await CodexAppServerService.readLocalConfig();
+        fastEnabled = localConfig.isFastEnabled;
+      } catch (error) {
+        debugPrint('Read Codex local Fast default failed: $error');
+      }
+    }
     if (!mounted) return;
     setState(() {
       _activeCodexModelId = model;
       _activeCodexReasoningEffort = _normalizeCodexReasoningEffort(effort);
       _activeCodexCollaborationMode = collaborationMode;
+      _activeCodexFastEnabled = fastEnabled;
     });
     if (model == null || effort == null || _codexModelOptions.isEmpty) {
       unawaited(_loadCodexModelOptionsWhenReady());
@@ -525,6 +543,37 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         : _activateCodexPlanMode(dismissPanel: dismissPanel);
   }
 
+  @override
+  Future<void> _setCodexFastEnabled(bool enabled) async {
+    if (_activeCodexFastEnabled == enabled) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _activeCodexFastEnabled = enabled;
+    });
+    if (enabled) {
+      await _writeCodexPreference(
+        _kCodexServiceTierPreferenceKey,
+        _kCodexFastServiceTier,
+      );
+    } else {
+      // Explicit off so refresh won't fall back to local-config default Fast.
+      await _writeCodexPreference(
+        _kCodexServiceTierPreferenceKey,
+        _kCodexOffServiceTier,
+      );
+    }
+  }
+
+  bool _isCodexFastServiceTier(String? serviceTier) {
+    final normalized = serviceTier?.trim().toLowerCase() ?? '';
+    return normalized == _kCodexFastServiceTier || normalized == 'priority';
+  }
+
+  String? get _activeCodexServiceTierOrNull =>
+      _activeCodexFastEnabled ? _kCodexFastServiceTier : null;
+
   void _syncCodexCollaborationModeFromServer(String? mode) {
     final normalized = mode?.trim();
     if (normalized == null || normalized.isEmpty) {
@@ -590,6 +639,39 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       await _toggleCodexPlanMode(dismissPanel: false);
       return;
     }
+    if (command == '/compact') {
+      await _executeCodexCompactCommand();
+      return;
+    }
+    if (command == '/status') {
+      await _executeCodexStatusCommand();
+      return;
+    }
+    if (command == '/diff') {
+      await _executeCodexDiffCommand();
+      return;
+    }
+    if (command == '/stop') {
+      await _executeCodexStopCommand();
+      return;
+    }
+    if (command == '/new') {
+      await _executeCodexNewCommand();
+      return;
+    }
+    if (command == '/resume') {
+      _messageController.value = const TextEditingValue(
+        text: '/resume ',
+        selection: TextSelection.collapsed(offset: 8),
+      );
+      _requestComposerFocus();
+      _handleSlashCommandInput();
+      return;
+    }
+    if (command == '/goal') {
+      await _executeCodexShowGoalCommand();
+      return;
+    }
     if (_resolveSlashCommandPanelRoute(_messageController.text) ==
         _SlashCommandPanelRoute.codexModel) {
       await _selectCodexModel(command);
@@ -634,6 +716,51 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
               _activeCodexCollaborationMode ?? _resolveCodexPlanMode(const []),
         );
         return true;
+      case CodexSlashSubmitKind.startCompact:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexCompactCommand();
+        return true;
+      case CodexSlashSubmitKind.showStatus:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexStatusCommand();
+        return true;
+      case CodexSlashSubmitKind.showDiff:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexDiffCommand();
+        return true;
+      case CodexSlashSubmitKind.stopTurn:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexStopCommand();
+        return true;
+      case CodexSlashSubmitKind.startNew:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexNewCommand();
+        return true;
+      case CodexSlashSubmitKind.resumeThread:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexResumeCommand(intent.value);
+        return true;
+      case CodexSlashSubmitKind.setGoal:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexSetGoalCommand(intent.value ?? '');
+        return true;
+      case CodexSlashSubmitKind.clearGoal:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexClearGoalCommand();
+        return true;
+      case CodexSlashSubmitKind.showGoal:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        await _executeCodexShowGoalCommand();
+        return true;
       case CodexSlashSubmitKind.unsupported:
         _messageController.clear();
         _hideSlashCommandPanel();
@@ -644,6 +771,450 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
         return true;
     }
+  }
+
+  Future<void> _executeCodexCompactCommand() async {
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    final threadId = _activeCodexThreadId?.trim();
+    if ((conversationId == null || _isRemoteCodexConfigured()) &&
+        (threadId == null || threadId.isEmpty)) {
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'No active Codex thread to compact'
+            : '当前没有可压缩的 Codex 线程',
+      );
+      return;
+    }
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+      await CodexAppServerService.startCompact(
+        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+        threadId: threadId?.isEmpty == true ? null : threadId,
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Context compact started'
+            : '已开始压缩上下文',
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Compact failed: $error'
+            : '压缩失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _executeCodexStatusCommand() async {
+    try {
+      await _refreshCodexStatus();
+    } catch (_) {
+      // Local snapshot is still useful even if refresh fails.
+    }
+    if (!mounted) return;
+    final model = (_activeCodexModelId ?? '').trim();
+    final effort = (_activeCodexReasoningEffort ?? '').trim();
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    final permission = _codexPermissionModeLabel(_codexPermissionMode);
+    final fastLabel = _activeCodexFastEnabled
+        ? (LegacyTextLocalizer.isEnglish ? 'on' : '开')
+        : (LegacyTextLocalizer.isEnglish ? 'off' : '关');
+    final readyLabel = _codexStatus.ready
+        ? (LegacyTextLocalizer.isEnglish ? 'ready' : '可用')
+        : (LegacyTextLocalizer.isEnglish ? 'not ready' : '不可用');
+    final connectedLabel = _codexStatus.connected
+        ? (LegacyTextLocalizer.isEnglish ? 'connected' : '已连接')
+        : (LegacyTextLocalizer.isEnglish ? 'disconnected' : '未连接');
+    final summary = LegacyTextLocalizer.isEnglish
+        ? 'Codex status\n'
+              'model: ${model.isEmpty ? '(unset)' : model}\n'
+              'effort: ${effort.isEmpty ? '(unset)' : effort}\n'
+              'fast: $fastLabel\n'
+              'permission: $permission\n'
+              'threadId: ${threadId.isEmpty ? '(none)' : threadId}\n'
+              'codex: $readyLabel / $connectedLabel'
+        : 'Codex 状态\n'
+              '模型：${model.isEmpty ? '（未设置）' : model}\n'
+              '思考：${effort.isEmpty ? '（未设置）' : effort}\n'
+              'Fast：$fastLabel\n'
+              '权限：$permission\n'
+              'threadId：${threadId.isEmpty ? '（无）' : threadId}\n'
+              'Codex：$readyLabel / $connectedLabel';
+    _showSnackBar(summary);
+  }
+
+  Future<void> _executeCodexDiffCommand() async {
+    final summary = _findLatestCodexDiffSummary();
+    if (summary == null || summary.isEmpty) {
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'No diff available yet'
+            : '暂无 diff',
+        type: ToastType.warning,
+      );
+      return;
+    }
+    _showSnackBar(summary);
+  }
+
+  Future<void> _executeCodexStopCommand() async {
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if (conversationId == null && threadId.isEmpty) {
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Nothing to stop'
+            : '当前没有可停止的任务',
+        type: ToastType.warning,
+      );
+      return;
+    }
+    try {
+      await _interruptCodexTurn();
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish ? 'Stop requested' : '已请求停止',
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Stop failed: $error'
+            : '停止失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _executeCodexNewCommand() async {
+    try {
+      await createNewConversation();
+      if (!mounted) return;
+      setState(() {
+        _activeCodexThreadId = null;
+        _activeCodexTurnId = null;
+      });
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Started a new conversation'
+            : '已新建对话',
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Failed to start new conversation: $error'
+            : '新建对话失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _executeCodexResumeCommand(String? threadId) async {
+    final normalized = threadId?.trim() ?? '';
+    if (normalized.isEmpty) {
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'Usage: /resume <threadId>'
+            : '用法：/resume <threadId>',
+      );
+      return;
+    }
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+      final response = await CodexAppServerService.resumeThread(
+        threadId: normalized,
+      );
+      if (!mounted) return;
+      final resolvedThreadId =
+          _asCodexString(response['threadId']) ??
+          _asCodexString(_asCodexMap(response['thread'])?['id']) ??
+          normalized;
+      setState(() {
+        _activeCodexThreadId = resolvedThreadId;
+      });
+      if (_isRemoteCodexConfigured()) {
+        _activateRemoteCodexRuntimeForThread(resolvedThreadId);
+        _startRemoteCodexSessionSync(resolvedThreadId);
+      } else {
+        await _persistVisibleThreadTargetIfNeeded();
+      }
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Resumed thread $resolvedThreadId'
+            : '已恢复线程 $resolvedThreadId',
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Resume failed: $error'
+            : '恢复失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _executeCodexShowGoalCommand() async {
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if ((conversationId == null || _isRemoteCodexConfigured()) &&
+        threadId.isEmpty) {
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'No active Codex thread for goal'
+            : '当前没有可查询 goal 的线程',
+      );
+      return;
+    }
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+      final response = await CodexAppServerService.getThreadGoal(
+        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+        threadId: threadId.isEmpty ? null : threadId,
+      );
+      if (!mounted) return;
+      final objective = _extractCodexGoalObjective(response);
+      if (objective == null || objective.isEmpty) {
+        _showSnackBar(
+          LegacyTextLocalizer.isEnglish
+              ? 'No goal set for this thread'
+              : '当前线程未设置 goal',
+        );
+        return;
+      }
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'Goal: $objective'
+            : 'Goal：$objective',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Get goal failed: $error'
+            : '获取 goal 失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _executeCodexSetGoalCommand(String objective) async {
+    final normalized = objective.trim();
+    if (normalized.isEmpty) {
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'Usage: /goal <objective>'
+            : '用法：/goal <目标>',
+      );
+      return;
+    }
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if ((conversationId == null || _isRemoteCodexConfigured()) &&
+        threadId.isEmpty) {
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'No active Codex thread for goal'
+            : '当前没有可设置 goal 的线程',
+      );
+      return;
+    }
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+      await CodexAppServerService.setThreadGoal(
+        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+        threadId: threadId.isEmpty ? null : threadId,
+        objective: normalized,
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Goal updated'
+            : 'Goal 已更新',
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Set goal failed: $error'
+            : '设置 goal 失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _executeCodexClearGoalCommand() async {
+    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    if ((conversationId == null || _isRemoteCodexConfigured()) &&
+        threadId.isEmpty) {
+      _showSnackBar(
+        LegacyTextLocalizer.isEnglish
+            ? 'No active Codex thread for goal'
+            : '当前没有可清除 goal 的线程',
+      );
+      return;
+    }
+    try {
+      await _ensureCodexConnectedForSlashCommand();
+      await CodexAppServerService.clearThreadGoal(
+        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+        threadId: threadId.isEmpty ? null : threadId,
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Goal cleared'
+            : 'Goal 已清除',
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Clear goal failed: $error'
+            : '清除 goal 失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Future<void> _ensureCodexConnectedForSlashCommand() async {
+    CodexStatus status = _codexStatus;
+    if (status.connected) {
+      return;
+    }
+    status = await CodexAppServerService.connect();
+    if (mounted) {
+      setState(() {
+        _codexStatus = status;
+      });
+    }
+    if (!status.connected) {
+      throw StateError(
+        status.error?.trim().isNotEmpty == true
+            ? status.error!.trim()
+            : (LegacyTextLocalizer.isEnglish
+                  ? 'Codex is not connected'
+                  : 'Codex 未连接'),
+      );
+    }
+  }
+
+  String _codexPermissionModeLabel(CodexPermissionMode mode) {
+    switch (mode) {
+      case CodexPermissionMode.defaultMode:
+        return LegacyTextLocalizer.isEnglish ? 'Default' : '默认';
+      case CodexPermissionMode.autoReview:
+        return LegacyTextLocalizer.isEnglish ? 'Auto review' : '自动审查';
+      case CodexPermissionMode.fullAccess:
+        return LegacyTextLocalizer.isEnglish ? 'Full access' : '完全访问';
+    }
+  }
+
+  String? _extractCodexGoalObjective(Map<String, dynamic> response) {
+    final direct = _asCodexString(response['objective']);
+    if (direct != null && direct.trim().isNotEmpty) {
+      return direct.trim();
+    }
+    final goalMap = _asCodexMap(response['goal']);
+    final nested = _asCodexString(goalMap?['objective']);
+    if (nested != null && nested.trim().isNotEmpty) {
+      return nested.trim();
+    }
+    final resultMap = _asCodexMap(response['result']);
+    final resultObjective = _asCodexString(resultMap?['objective']);
+    if (resultObjective != null && resultObjective.trim().isNotEmpty) {
+      return resultObjective.trim();
+    }
+    return null;
+  }
+
+  String? _findLatestCodexDiffSummary() {
+    for (final message in _messages.reversed) {
+      final card = message.cardData;
+      if (card == null) {
+        continue;
+      }
+      final summary = _summarizeCodexDiffCard(card);
+      if (summary != null) {
+        return summary;
+      }
+      final nestedCards = card['cards'];
+      if (nestedCards is List) {
+        for (final item in nestedCards.reversed) {
+          if (item is Map) {
+            final nestedSummary = _summarizeCodexDiffCard(
+              Map<String, dynamic>.from(item),
+            );
+            if (nestedSummary != null) {
+              return nestedSummary;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  String? _summarizeCodexDiffCard(Map<String, dynamic> card) {
+    final diffText = (card['diffText'] ?? '').toString().trim();
+    final showDiff = card['showDiff'] == true;
+    final changedFiles = card['changedFiles'];
+    final additions = card['additions'];
+    final deletions = card['deletions'];
+    final hasStats =
+        changedFiles != null || additions != null || deletions != null;
+    if (diffText.isEmpty && !showDiff && !hasStats) {
+      return null;
+    }
+    final path = (card['path'] ??
+            card['filePath'] ??
+            card['toolTitle'] ??
+            card['displayName'] ??
+            '')
+        .toString()
+        .trim();
+    final buffer = StringBuffer(
+      LegacyTextLocalizer.isEnglish ? 'Latest diff' : '最近 diff',
+    );
+    if (path.isNotEmpty) {
+      buffer.write(': $path');
+    }
+    final stats = <String>[];
+    if (changedFiles != null) {
+      stats.add(
+        LegacyTextLocalizer.isEnglish
+            ? 'files $changedFiles'
+            : '文件 $changedFiles',
+      );
+    }
+    if (additions != null) {
+      stats.add('+$additions');
+    }
+    if (deletions != null) {
+      stats.add('-$deletions');
+    }
+    if (stats.isNotEmpty) {
+      buffer.write(' (${stats.join(', ')})');
+    } else if (diffText.isNotEmpty) {
+      final preview = diffText.length > 180
+          ? '${diffText.substring(0, 180)}…'
+          : diffText;
+      buffer.write('\n$preview');
+    } else {
+      return null;
+    }
+    return buffer.toString();
   }
 
   @override
@@ -722,6 +1293,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         model: _activeCodexModelId,
         effort: _activeCodexReasoningEffort,
         collaborationMode: _activeCodexCollaborationMode,
+        serviceTier: _activeCodexServiceTierOrNull,
       );
       final resolvedThreadId = _asCodexString(response['threadId']);
       if (resolvedThreadId != null && remoteCodex) {
@@ -823,6 +1395,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       await _writeCodexPreference(
         _kCodexCollaborationModePreferenceKey,
         collaborationMode,
+      );
+    }
+    if (_activeCodexFastEnabled) {
+      await _writeCodexPreference(
+        _kCodexServiceTierPreferenceKey,
+        _kCodexFastServiceTier,
+      );
+    } else {
+      await _writeCodexPreference(
+        _kCodexServiceTierPreferenceKey,
+        _kCodexOffServiceTier,
       );
     }
   }
@@ -944,6 +1527,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   Future<void> _sendCodexMessage(
     String aiMessageId,
     String messageText, {
+    List<Map<String, dynamic>> attachments = const [],
     String? modelOverride,
     String? collaborationModeOverride,
   }) async {
@@ -987,6 +1571,27 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       );
     }
 
+    // Stage attachments into workspace (file-tray style) so Codex can read
+    // real guest paths. UI keeps local path for image preview.
+    final stagedAttachments = await _prepareCodexWorkspaceAttachments(
+      attachments,
+      taskId: aiMessageId,
+    );
+    if (stagedAttachments.isNotEmpty) {
+      _patchUserMessageAttachments(aiMessageId, stagedAttachments);
+      if (!remoteCodex) {
+        await ConversationHistoryService.saveConversationMessages(
+          resolvedConversationId,
+          List<ChatMessageModel>.from(_messages),
+          mode: ConversationMode.codex,
+        );
+      }
+    }
+    final turnText = _buildCodexTurnText(
+      messageText,
+      attachments: stagedAttachments,
+    );
+
     final collaborationModeForTurn =
         collaborationModeOverride ?? _activeCodexCollaborationMode;
     final turnUsesPlanMode = _isCodexPlanMode(collaborationModeForTurn);
@@ -1003,13 +1608,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final response = await CodexAppServerService.startTurn(
         conversationId: remoteCodex ? null : resolvedConversationId,
         threadId: _activeCodexThreadId,
-        text: messageText,
+        text: turnText,
         approvalPolicy: _codexPermissionMode.approvalPolicy,
         approvalsReviewer: _codexPermissionMode.approvalsReviewer,
         sandboxPolicy: _codexPermissionMode.sandboxPolicy,
         model: modelOverride ?? _activeCodexModelId,
         effort: _activeCodexReasoningEffort,
         collaborationMode: collaborationModeForTurn,
+        serviceTier: _activeCodexServiceTierOrNull,
       );
       final resolvedThreadId = _asCodexString(response['threadId']);
       if (resolvedThreadId != null && remoteCodex) {
@@ -1052,6 +1658,206 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       if (!mounted) return;
       handleAgentError('Codex 启动失败: $error');
     }
+  }
+
+  /// Copy picked files into workspace/.omnibot/attachments so Codex (guest)
+  /// can read them by shell path. Keeps original [path] for UI image preview.
+  Future<List<Map<String, dynamic>>> _prepareCodexWorkspaceAttachments(
+    List<Map<String, dynamic>> attachments, {
+    required String taskId,
+  }) async {
+    if (attachments.isEmpty) {
+      return const <Map<String, dynamic>>[];
+    }
+    await OmnibotResourceService.ensureWorkspacePathsLoaded();
+    final stamp = DateTime.now()
+        .toUtc()
+        .toIso8601String()
+        .replaceAll(RegExp(r'[^0-9A-Za-z]'), '');
+    final safeTask = taskId.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+    final destDir = Directory(
+      '${OmnibotResourceService.internalRootPath}/attachments/$safeTask/$stamp',
+    );
+    try {
+      if (!destDir.existsSync()) {
+        destDir.createSync(recursive: true);
+      }
+    } catch (error) {
+      debugPrint('[Codex] failed to create attachment dir: $error');
+      return attachments
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList(growable: false);
+    }
+
+    final prepared = <Map<String, dynamic>>[];
+    for (final raw in attachments) {
+      final item = Map<String, dynamic>.from(raw);
+      final existingPrompt = (item['promptPath'] as String? ?? '').trim();
+      final existingWorkspace = (item['workspacePath'] as String? ?? '').trim();
+      if (existingPrompt.isNotEmpty || existingWorkspace.isNotEmpty) {
+        if (existingPrompt.isEmpty && existingWorkspace.isNotEmpty) {
+          item['promptPath'] = existingWorkspace;
+        }
+        prepared.add(item);
+        continue;
+      }
+
+      final sourcePath = (item['path'] as String? ?? '').trim();
+      if (sourcePath.isEmpty) {
+        prepared.add(item);
+        continue;
+      }
+      // Already a guest-visible workspace path — reuse as promptPath.
+      final asShell = OmnibotResourceService.shellPathForAndroidPath(sourcePath);
+      if (asShell != null && asShell.startsWith('/workspace')) {
+        item['promptPath'] = asShell;
+        item['workspacePath'] = asShell;
+        prepared.add(item);
+        continue;
+      }
+
+      final source = File(sourcePath);
+      if (!source.existsSync()) {
+        prepared.add(item);
+        continue;
+      }
+
+      final preferredName = () {
+        final name = (item['name'] as String? ?? '').trim();
+        if (name.isNotEmpty) return name;
+        final fileName = (item['fileName'] as String? ?? '').trim();
+        if (fileName.isNotEmpty) return fileName;
+        final segments = sourcePath.replaceAll('\\', '/').split('/');
+        return segments.isEmpty ? 'file' : segments.last;
+      }();
+      final safeName = preferredName.replaceAll(RegExp(r'[\\/]+'), '_');
+      final target = File(
+        '${destDir.path}/${DateTime.now().microsecondsSinceEpoch}_$safeName',
+      );
+      try {
+        source.copySync(target.path);
+        final shellPath =
+            OmnibotResourceService.shellPathForAndroidPath(target.path) ??
+            target.path;
+        // Keep original local path for UI Image.file preview.
+        item['promptPath'] = shellPath;
+        item['workspacePath'] = shellPath;
+        item['size'] ??= target.lengthSync();
+        // Path-only for Codex; do not push base64 image blocks.
+        item['sendToModel'] = false;
+        prepared.add(item);
+      } catch (error) {
+        debugPrint('[Codex] stage attachment failed: $sourcePath → $error');
+        prepared.add(item);
+      }
+    }
+    return prepared;
+  }
+
+  String _buildCodexTurnText(
+    String messageText, {
+    required List<Map<String, dynamic>> attachments,
+  }) {
+    final text = messageText.trim();
+    final pathHint = _buildCodexAttachmentPathHint(attachments);
+    if (pathHint.isNotEmpty) {
+      if (text.isEmpty) {
+        return pathHint;
+      }
+      return '$text\n$pathHint';
+    }
+    if (text.isNotEmpty) {
+      return text;
+    }
+    // Image-only turn with staging failure still needs non-empty startTurn text.
+    final names = attachments
+        .map(_codexAttachmentDisplayName)
+        .where((name) => name.isNotEmpty)
+        .toList(growable: false);
+    if (names.isEmpty) {
+      return messageText;
+    }
+    return LegacyTextLocalizer.isEnglish
+        ? 'Attached: ${names.join(', ')}'
+        : '已附加附件：${names.join('、')}';
+  }
+
+  String _buildCodexAttachmentPathHint(
+    List<Map<String, dynamic>> attachments,
+  ) {
+    if (attachments.isEmpty) {
+      return '';
+    }
+    final lines = <String>[];
+    for (final attachment in attachments) {
+      final promptPath = _codexAttachmentPromptPath(attachment);
+      if (promptPath.isEmpty) {
+        continue;
+      }
+      final name = _codexAttachmentDisplayName(attachment, fallbackPath: promptPath);
+      lines.add(name.isEmpty ? '- $promptPath' : '- $name: $promptPath');
+    }
+    if (lines.isEmpty) {
+      return '';
+    }
+    final header = LegacyTextLocalizer.isEnglish
+        ? 'Added to workspace; read via these paths:'
+        : '已添加到 workspace，可通过以下路径读取：';
+    return '$header\n${lines.join('\n')}';
+  }
+
+  String _codexAttachmentPromptPath(Map<String, dynamic> attachment) {
+    final promptPath = (attachment['promptPath'] as String? ?? '').trim();
+    if (promptPath.isNotEmpty) {
+      return promptPath;
+    }
+    return (attachment['workspacePath'] as String? ?? '').trim();
+  }
+
+  String _codexAttachmentDisplayName(
+    Map<String, dynamic> attachment, {
+    String fallbackPath = '',
+  }) {
+    final name = (attachment['name'] as String? ?? '').trim();
+    if (name.isNotEmpty) {
+      return name;
+    }
+    final fileName = (attachment['fileName'] as String? ?? '').trim();
+    if (fileName.isNotEmpty) {
+      return fileName;
+    }
+    final source = fallbackPath.isNotEmpty
+        ? fallbackPath
+        : (attachment['path'] as String? ?? '').trim();
+    if (source.isEmpty) {
+      return '';
+    }
+    final segments = source.replaceAll('\\', '/').split('/');
+    return segments.isEmpty ? '' : segments.last;
+  }
+
+  void _patchUserMessageAttachments(
+    String aiMessageId,
+    List<Map<String, dynamic>> attachments,
+  ) {
+    if (attachments.isEmpty || !mounted) {
+      return;
+    }
+    final userMessageId = aiMessageId.endsWith('-ai')
+        ? '${aiMessageId.substring(0, aiMessageId.length - 3)}-user'
+        : aiMessageId.replaceFirst(RegExp(r'-ai$'), '-user');
+    final index = _messages.indexWhere((msg) => msg.id == userMessageId);
+    if (index < 0) {
+      return;
+    }
+    final existing = _messages[index];
+    final content = Map<String, dynamic>.from(existing.content ?? const {});
+    content['attachments'] = attachments
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+    setState(() {
+      _messages[index] = existing.copyWith(content: content);
+    });
   }
 
   @override

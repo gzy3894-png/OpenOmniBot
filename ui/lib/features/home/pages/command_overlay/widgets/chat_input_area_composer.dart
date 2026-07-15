@@ -733,6 +733,10 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
           _buildCodexRunSettingsButton(compact: true),
           const SizedBox(width: 2),
         ],
+        if (_shouldShowCodexFastToggle) ...[
+          _buildCodexFastToggleButton(compact: true),
+          const SizedBox(width: 2),
+        ],
         if (_shouldShowModelPicker) ...[
           _buildModelPickerButton(compact: true),
           const SizedBox(width: 2),
@@ -765,7 +769,74 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       widget.codexRunSettings != null &&
       widget.onCodexRunSettingsChanged != null;
 
+  bool get _shouldShowCodexFastToggle =>
+      widget.codexFastEnabled != null &&
+      widget.onCodexFastEnabledChanged != null;
+
   bool get _shouldShowModelPicker => widget.modelPickerSettings != null;
+
+  Widget _buildCodexFastToggleButton({required bool compact}) {
+    final enabled = widget.codexFastEnabled == true;
+    final palette = context.omniPalette;
+    final english = Localizations.localeOf(context).languageCode == 'en';
+    final selectedColor = palette.accentPrimary;
+    final idleColor = context.isDarkTheme
+        ? palette.textSecondary
+        : const Color(0xFF5A6B84);
+    final tooltip = english
+        ? 'Fast · lower latency'
+        : 'Fast · 降延迟';
+
+    return TextFieldTapRegion(
+      child: Tooltip(
+        message: tooltip,
+        waitDuration: const Duration(milliseconds: 350),
+        child: InkWell(
+          key: const ValueKey('chat-input-codex-fast-button'),
+          borderRadius: BorderRadius.circular(999),
+          onTap: () {
+            widget.onCodexFastEnabledChanged?.call(!enabled);
+          },
+          child: AnimatedContainer(
+            duration: _buttonAnimationDuration,
+            curve: _buttonAnimationCurve,
+            height: compact ? 24 : 28,
+            padding: EdgeInsets.symmetric(horizontal: compact ? 7 : 8),
+            decoration: BoxDecoration(
+              color: enabled
+                  ? (context.isDarkTheme
+                        ? selectedColor.withValues(alpha: 0.22)
+                        : const Color(0xFFEAF1FF))
+                  : (context.isDarkTheme
+                        ? palette.surfaceSecondary.withValues(alpha: 0.72)
+                        : const Color(0xFFF2F5FA)),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: enabled
+                    ? selectedColor.withValues(alpha: 0.55)
+                    : (context.isDarkTheme
+                          ? palette.borderSubtle
+                          : const Color(0x1A000000)),
+                width: 1,
+              ),
+            ),
+            child: Center(
+              child: Text(
+                'Fast',
+                style: TextStyle(
+                  color: enabled ? selectedColor : idleColor,
+                  fontSize: compact ? 10.5 : 11,
+                  fontWeight: FontWeight.w700,
+                  height: 1,
+                  letterSpacing: 0.1,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildModelPickerButton({required bool compact}) {
     final settings = widget.modelPickerSettings!;

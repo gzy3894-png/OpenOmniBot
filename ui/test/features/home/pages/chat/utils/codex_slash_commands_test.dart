@@ -41,11 +41,63 @@ void main() {
     );
   });
 
-  test('rejects agent-only slash commands in codex mode', () {
+  test('routes compact status diff stop new resume and goal intents', () {
     expect(
       resolveCodexSlashSubmitIntent('/compact').kind,
-      CodexSlashSubmitKind.unsupported,
+      CodexSlashSubmitKind.startCompact,
     );
+    expect(
+      resolveCodexSlashSubmitIntent('/status').kind,
+      CodexSlashSubmitKind.showStatus,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/diff').kind,
+      CodexSlashSubmitKind.showDiff,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/stop').kind,
+      CodexSlashSubmitKind.stopTurn,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/clean').kind,
+      CodexSlashSubmitKind.stopTurn,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/new').kind,
+      CodexSlashSubmitKind.startNew,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/clear').kind,
+      CodexSlashSubmitKind.startNew,
+    );
+
+    final resumeBare = resolveCodexSlashSubmitIntent('/resume');
+    expect(resumeBare.kind, CodexSlashSubmitKind.resumeThread);
+    expect(resumeBare.value, isNull);
+
+    final resumeWithId = resolveCodexSlashSubmitIntent('/resume thread-123');
+    expect(resumeWithId.kind, CodexSlashSubmitKind.resumeThread);
+    expect(resumeWithId.value, 'thread-123');
+
+    expect(
+      resolveCodexSlashSubmitIntent('/goal').kind,
+      CodexSlashSubmitKind.showGoal,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/goal clear').kind,
+      CodexSlashSubmitKind.clearGoal,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/goal --clear').kind,
+      CodexSlashSubmitKind.clearGoal,
+    );
+
+    final setGoal = resolveCodexSlashSubmitIntent('/goal ship the slash UX');
+    expect(setGoal.kind, CodexSlashSubmitKind.setGoal);
+    expect(setGoal.value, 'ship the slash UX');
+  });
+
+  test('rejects agent-only slash commands in codex mode', () {
     expect(
       resolveCodexSlashSubmitIntent('/effort high').kind,
       CodexSlashSubmitKind.unsupported,

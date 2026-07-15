@@ -30,6 +30,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   late final TextEditingController _bridgeUrlController;
   late final TextEditingController _bridgeTokenController;
   late final TextEditingController _bridgeCwdController;
+  late final TextEditingController _defaultGoalController;
 
   Timer? _saveDebounce;
   bool _isLoading = true;
@@ -39,6 +40,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   bool _obscureApiKey = true;
   bool _obscureBridgeToken = true;
   bool _remoteEnabled = false;
+  bool _fastEnabled = false;
   String _codexHome = _defaultCodexHome;
   String _runtime = 'local';
   String? _error;
@@ -78,6 +80,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     _bridgeUrlController = TextEditingController();
     _bridgeTokenController = TextEditingController();
     _bridgeCwdController = TextEditingController();
+    _defaultGoalController = TextEditingController();
     for (final controller in [
       _baseUrlController,
       _modelController,
@@ -85,6 +88,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       _bridgeUrlController,
       _bridgeTokenController,
       _bridgeCwdController,
+      _defaultGoalController,
     ]) {
       controller.addListener(_handleEdited);
     }
@@ -101,6 +105,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       _bridgeUrlController,
       _bridgeTokenController,
       _bridgeCwdController,
+      _defaultGoalController,
     ]) {
       controller.removeListener(_handleEdited);
       controller.dispose();
@@ -128,7 +133,9 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       _setControllerText(_bridgeUrlController, config.remoteBridgeUrl);
       _setControllerText(_bridgeTokenController, config.remoteBridgeToken);
       _setControllerText(_bridgeCwdController, config.remoteCwd);
+      _setControllerText(_defaultGoalController, config.defaultGoal);
       _remoteEnabled = config.remoteEnabled;
+      _fastEnabled = config.isFastEnabled;
     } finally {
       _isSyncing = false;
     }
@@ -142,6 +149,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     required String remoteBridgeToken,
     required String remoteCwd,
     required bool remoteEnabled,
+    required bool fastEnabled,
+    required String defaultGoal,
   }) {
     return [
       baseUrl.trim(),
@@ -151,6 +160,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       remoteBridgeUrl.trim(),
       remoteBridgeToken.trim(),
       remoteCwd.trim(),
+      fastEnabled ? 'fast' : 'off',
+      defaultGoal.trim(),
     ].join('\n');
   }
 
@@ -163,6 +174,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       remoteBridgeToken: _bridgeTokenController.text,
       remoteCwd: _bridgeCwdController.text,
       remoteEnabled: _remoteEnabled,
+      fastEnabled: _fastEnabled,
+      defaultGoal: _defaultGoalController.text,
     );
   }
 
@@ -248,6 +261,26 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
   }
 
+  void _setFastEnabled(bool value) {
+    if (_fastEnabled == value) return;
+    setState(() {
+      _fastEnabled = value;
+      _error = null;
+      _status = value
+          ? _localeText(
+              zh: 'Fast 已开启（降延迟），即将自动保存。',
+              en: 'Fast enabled (lower latency). Autosave pending.',
+            )
+          : _localeText(
+              zh: 'Fast 已关闭，即将自动保存。',
+              en: 'Fast disabled. Autosave pending.',
+            );
+    });
+    if (_hasCompleteInput && _currentSignature() != _lastSavedSignature) {
+      _scheduleAutoSave(delay: const Duration(milliseconds: 300));
+    }
+  }
+
   void _scheduleAutoSave({Duration delay = _autoSaveDelay}) {
     _saveDebounce?.cancel();
     _saveDebounce = Timer(delay, () => unawaited(_saveConfig()));
@@ -322,6 +355,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         baseUrl: _baseUrlController.text.trim(),
         model: _modelController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
+        serviceTier: _fastEnabled ? 'fast' : '',
+        defaultGoal: _defaultGoalController.text.trim(),
         remoteEnabled: _remoteEnabled,
         remoteBridgeUrl: _bridgeUrlController.text.trim(),
         remoteBridgeToken: _bridgeTokenController.text.trim(),
@@ -336,6 +371,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         remoteBridgeToken: saved.remoteBridgeToken,
         remoteCwd: saved.remoteCwd,
         remoteEnabled: saved.remoteEnabled,
+        fastEnabled: saved.isFastEnabled,
+        defaultGoal: saved.defaultGoal,
       );
       if (_currentSignature() == savingSignature) {
         _syncControllers(saved);
@@ -529,11 +566,28 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   }
 
   Widget _buildRemoteSwitch() {
+    return _buildSimpleSwitch(
+      value: _remoteEnabled,
+      onChanged: _setRemoteEnabled,
+    );
+  }
+
+  Widget _buildFastSwitch() {
+    return _buildSimpleSwitch(
+      value: _fastEnabled,
+      onChanged: _setFastEnabled,
+    );
+  }
+
+  Widget _buildSimpleSwitch({
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
     final palette = context.omniPalette;
     final enabled = !_isSaving;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: enabled ? () => _setRemoteEnabled(!_remoteEnabled) : null,
+      onTap: enabled ? () => onChanged(!value) : null,
       child: Padding(
         padding: const EdgeInsets.only(left: 12),
         child: AbsorbPointer(
@@ -547,8 +601,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
               activeColor: palette.accentPrimary,
               inactiveColor: palette.borderStrong,
               borderRadius: 28.75,
-              value: _remoteEnabled,
-              onToggle: _setRemoteEnabled,
+              value: value,
+              onToggle: onChanged,
             ),
           ),
         ),
@@ -842,6 +896,69 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                             ),
                           ),
                         ),
+                        const SizedBox(height: 14),
+                        Divider(height: 1, color: borderColor),
+                        const SizedBox(height: 12),
+                        Text(
+                          _localeText(
+                            zh: '通用运行偏好',
+                            en: 'General run preferences',
+                          ),
+                          style: TextStyle(
+                            color: _primaryTextColor,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'PingFang SC',
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _localeText(zh: 'Fast', en: 'Fast'),
+                                    style: TextStyle(
+                                      color: _primaryTextColor,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      fontFamily: 'PingFang SC',
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _localeText(
+                                      zh: '降延迟：写入 service_tier=fast 作为全局默认。',
+                                      en: 'Lower latency: save service_tier=fast as the global default.',
+                                    ),
+                                    style: TextStyle(
+                                      color: _secondaryTextColor,
+                                      fontSize: 12,
+                                      height: 1.35,
+                                      fontFamily: 'PingFang SC',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            _buildFastSwitch(),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        _buildTextField(
+                          key: const Key('codex-config-default-goal-field'),
+                          controller: _defaultGoalController,
+                          label: _localeText(
+                            zh: '默认 Goal（可选）',
+                            en: 'Default goal (optional)',
+                          ),
+                          hint: _localeText(
+                            zh: '例如：优先修编译错误',
+                            en: 'e.g. Prefer fixing build errors first',
+                          ),
+                        ),
                         const SizedBox(height: 12),
                         Container(
                           width: double.infinity,
@@ -862,8 +979,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                               Expanded(
                                 child: Text(
                                   _localeText(
-                                    zh: '远程开关关闭时使用本地 Codex；配置修改会自动保存并断开当前 Codex 会话。',
-                                    en: 'When the remote switch is off, local Codex is used. Changes autosave and disconnect the current Codex session.',
+                                    zh: '远程开关关闭时使用本地 Codex；配置修改会自动保存并断开当前 Codex 会话。会话内 Fast 按钮可覆盖全局默认。',
+                                    en: 'When the remote switch is off, local Codex is used. Changes autosave and disconnect the current Codex session. The in-chat Fast button can override this default.',
                                   ),
                                   style: TextStyle(
                                     color: _secondaryTextColor,

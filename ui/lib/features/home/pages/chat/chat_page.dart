@@ -418,6 +418,7 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   String? _activeCodexModelId;
   String? _activeCodexReasoningEffort;
   String? _activeCodexCollaborationMode;
+  bool _activeCodexFastEnabled = false;
   final Set<String> _codexPlanTurnIds = <String>{};
   bool _isCodexModelListLoading = false;
   bool _isCodexCollaborationModeListLoading = false;
@@ -1763,6 +1764,8 @@ abstract class _ChatPageStateBase extends State<ChatPage>
 
   Future<void> _selectCodexReasoningEffort(String effort);
 
+  Future<void> _setCodexFastEnabled(bool enabled);
+
   Future<void> _activateCodexPlanMode({
     bool persistOnly = false,
     bool dismissPanel = true,
@@ -1797,6 +1800,7 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   Future<void> _sendCodexMessage(
     String aiMessageId,
     String messageText, {
+    List<Map<String, dynamic>> attachments = const [],
     String? modelOverride,
     String? collaborationModeOverride,
   });

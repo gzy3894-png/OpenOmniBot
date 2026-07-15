@@ -70,6 +70,9 @@ class CodexLocalConfig {
     required this.model,
     required this.apiKey,
     this.codexHome,
+    this.serviceTier = '',
+    this.modelReasoningEffort = '',
+    this.defaultGoal = '',
     this.remoteEnabled = false,
     this.remoteBridgeUrl = '',
     this.remoteBridgeToken = '',
@@ -82,12 +85,20 @@ class CodexLocalConfig {
   final String model;
   final String apiKey;
   final String? codexHome;
+  final String serviceTier;
+  final String modelReasoningEffort;
+  final String defaultGoal;
   final bool remoteEnabled;
   final String remoteBridgeUrl;
   final String remoteBridgeToken;
   final String remoteCwd;
   final bool remoteConfigured;
   final String? runtime;
+
+  bool get isFastEnabled {
+    final tier = serviceTier.trim().toLowerCase();
+    return tier == 'fast' || tier == 'priority';
+  }
 
   factory CodexLocalConfig.fromMap(Map<dynamic, dynamic>? map) {
     final source = map ?? const <dynamic, dynamic>{};
@@ -96,6 +107,10 @@ class CodexLocalConfig {
       model: _stringOrNull(source['model']) ?? '',
       apiKey: _stringOrNull(source['apiKey']) ?? '',
       codexHome: _stringOrNull(source['codexHome']),
+      serviceTier: _stringOrNull(source['serviceTier']) ?? '',
+      modelReasoningEffort:
+          _stringOrNull(source['modelReasoningEffort']) ?? '',
+      defaultGoal: _stringOrNull(source['defaultGoal']) ?? '',
       remoteEnabled: source['remoteEnabled'] == true,
       remoteBridgeUrl: _stringOrNull(source['remoteBridgeUrl']) ?? '',
       remoteBridgeToken: _stringOrNull(source['remoteBridgeToken']) ?? '',
@@ -276,6 +291,7 @@ class CodexAppServerService {
     String? model,
     String? effort,
     String? collaborationMode,
+    String? serviceTier,
   }) {
     return _invokeMap('thread/start', {
       if (conversationId != null) 'conversationId': conversationId,
@@ -284,6 +300,8 @@ class CodexAppServerService {
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
+      if (serviceTier != null && serviceTier.trim().isNotEmpty)
+        'serviceTier': serviceTier.trim(),
     });
   }
 
@@ -366,6 +384,7 @@ class CodexAppServerService {
     String? model,
     String? effort,
     String? collaborationMode,
+    String? serviceTier,
   }) {
     return _invokeMap('turn/start', {
       if (threadId != null) 'threadId': threadId,
@@ -380,6 +399,8 @@ class CodexAppServerService {
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
+      if (serviceTier != null && serviceTier.trim().isNotEmpty)
+        'serviceTier': serviceTier.trim(),
       'text': text,
     });
   }
@@ -395,6 +416,7 @@ class CodexAppServerService {
     String? model,
     String? effort,
     String? collaborationMode,
+    String? serviceTier,
   }) {
     return _invokeMap('review/start', {
       if (threadId != null) 'threadId': threadId,
@@ -410,6 +432,52 @@ class CodexAppServerService {
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
+      if (serviceTier != null && serviceTier.trim().isNotEmpty)
+        'serviceTier': serviceTier.trim(),
+    });
+  }
+
+  static Future<Map<String, dynamic>> startCompact({
+    String? threadId,
+    int? conversationId,
+  }) {
+    return _invokeMap('thread/compact/start', {
+      if (threadId != null) 'threadId': threadId,
+      if (conversationId != null) 'conversationId': conversationId,
+    });
+  }
+
+  static Future<Map<String, dynamic>> getThreadGoal({
+    String? threadId,
+    int? conversationId,
+  }) {
+    return _invokeMap('thread/goal/get', {
+      if (threadId != null) 'threadId': threadId,
+      if (conversationId != null) 'conversationId': conversationId,
+    });
+  }
+
+  static Future<Map<String, dynamic>> setThreadGoal({
+    String? threadId,
+    int? conversationId,
+    required String objective,
+    String status = 'active',
+  }) {
+    return _invokeMap('thread/goal/set', {
+      if (threadId != null) 'threadId': threadId,
+      if (conversationId != null) 'conversationId': conversationId,
+      'objective': objective.trim(),
+      if (status.trim().isNotEmpty) 'status': status.trim(),
+    });
+  }
+
+  static Future<Map<String, dynamic>> clearThreadGoal({
+    String? threadId,
+    int? conversationId,
+  }) {
+    return _invokeMap('thread/goal/clear', {
+      if (threadId != null) 'threadId': threadId,
+      if (conversationId != null) 'conversationId': conversationId,
     });
   }
 
@@ -434,6 +502,9 @@ class CodexAppServerService {
     required String baseUrl,
     required String model,
     required String apiKey,
+    String serviceTier = '',
+    String modelReasoningEffort = '',
+    String defaultGoal = '',
     bool remoteEnabled = false,
     String remoteBridgeUrl = '',
     String remoteBridgeToken = '',
@@ -443,6 +514,9 @@ class CodexAppServerService {
       'baseUrl': baseUrl.trim(),
       'model': model.trim(),
       'apiKey': apiKey.trim(),
+      'serviceTier': serviceTier.trim(),
+      'modelReasoningEffort': modelReasoningEffort.trim(),
+      'defaultGoal': defaultGoal.trim(),
       'remoteEnabled': remoteEnabled,
       'remoteBridgeUrl': remoteBridgeUrl.trim(),
       'remoteBridgeToken': remoteBridgeToken.trim(),

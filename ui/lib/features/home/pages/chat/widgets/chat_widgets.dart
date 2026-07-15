@@ -2638,6 +2638,8 @@ class ChatInputWrapper extends StatelessWidget {
   final CodexRunSettings? codexRunSettings;
   final CodexRunSettingsChanged? onCodexRunSettingsChanged;
   final FutureOr<void> Function()? onCodexRunSettingsOpened;
+  final bool? codexFastEnabled;
+  final ValueChanged<bool>? onCodexFastEnabledChanged;
   final CodexPermissionMode? codexPermissionMode;
   final ValueChanged<CodexPermissionMode>? onCodexPermissionModeChanged;
   final bool useIndependentSendButton;
@@ -2674,6 +2676,8 @@ class ChatInputWrapper extends StatelessWidget {
     this.codexRunSettings,
     this.onCodexRunSettingsChanged,
     this.onCodexRunSettingsOpened,
+    this.codexFastEnabled,
+    this.onCodexFastEnabledChanged,
     this.codexPermissionMode,
     this.onCodexPermissionModeChanged,
     this.useIndependentSendButton = true,
@@ -2718,6 +2722,8 @@ class ChatInputWrapper extends StatelessWidget {
             codexRunSettings: codexRunSettings,
             onCodexRunSettingsChanged: onCodexRunSettingsChanged,
             onCodexRunSettingsOpened: onCodexRunSettingsOpened,
+            codexFastEnabled: codexFastEnabled,
+            onCodexFastEnabledChanged: onCodexFastEnabledChanged,
             codexPermissionMode: codexPermissionMode,
             onCodexPermissionModeChanged: onCodexPermissionModeChanged,
             onInputHeightChanged: onInputHeightChanged,

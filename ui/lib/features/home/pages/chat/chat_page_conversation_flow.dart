@@ -523,7 +523,11 @@ mixin _ChatPageConversationFlowMixin on _ChatPageStateBase {
     }
 
     if (_activeConversationMode == ChatPageMode.codex) {
-      await _sendCodexMessage(messageIds.aiMessageId, messageText);
+      await _sendCodexMessage(
+        messageIds.aiMessageId,
+        messageText,
+        attachments: attachments,
+      );
       return;
     }
 

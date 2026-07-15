@@ -143,6 +143,8 @@ class ChatInputArea extends StatefulWidget {
   final CodexRunSettings? codexRunSettings;
   final CodexRunSettingsChanged? onCodexRunSettingsChanged;
   final FutureOr<void> Function()? onCodexRunSettingsOpened;
+  final bool? codexFastEnabled;
+  final ValueChanged<bool>? onCodexFastEnabledChanged;
   final CodexPermissionMode? codexPermissionMode;
   final ValueChanged<CodexPermissionMode>? onCodexPermissionModeChanged;
   final bool useIndependentSendButton;
@@ -177,6 +179,8 @@ class ChatInputArea extends StatefulWidget {
     this.codexRunSettings,
     this.onCodexRunSettingsChanged,
     this.onCodexRunSettingsOpened,
+    this.codexFastEnabled,
+    this.onCodexFastEnabledChanged,
     this.codexPermissionMode,
     this.onCodexPermissionModeChanged,
     this.useIndependentSendButton = true,
