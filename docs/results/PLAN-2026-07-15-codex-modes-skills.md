@@ -177,9 +177,9 @@ toggleValue?, nav: 'skills'|null
 |---|------|------|
 | 1 | 点 `chat-input-trigger-slash-button` | 新列表含目标开关/Fast/技能/审查类 |
 | 2 | 开目标模式 | 出现「目标:」前缀态 + 常显目标区 |
-| 3 | 输入目标并发送 | 底层 setGoal / `/goal`；UI 显示目标正文 |
+| 3 | 输入目标并发送 | **会话用户气泡 `/goal …` 且模型有回复**（不能仅 toast）；UI 同步目标正文 |
 | 4 | 关目标模式 | `/goal clear`；UI 清除 |
-| 5 | 开 Fast | 会话内**可见一句**效果说明；后续 turn fast |
+| 5 | 开/关 Fast | **开**提示含优先通道/约1.5×/约2× credits；**关也有提示**；后续 turn 跟随 serviceTier |
 | 6 | `@` 或面板技能 | 列表；选中后 `@技能名`；发送≈`/skill` |
 | 7 | review | 点一下可跑 |
 | 8 | ＋ 附件 | 行为与改前一致 |
@@ -190,9 +190,10 @@ toggleValue?, nav: 'skills'|null
 ## 5. 主线程调度状态
 
 - [x] 方案（真控件名 + 模块锁 + 波次）  
-- [ ] Wave A 派发 M0/M1/M2/M3/M5  
-- [ ] Wave B M4/M6  
-- [ ] Wave C M7 出包  
-- [ ] 用户真机验收  
+- [x] Wave A 派发 M0/M1/M2/M3/M5  
+- [x] Wave B M4/M6  
+- [x] Wave C M7 出包（modes/skills `4a285f7`）  
+- [x] 修复出包：goal 可见 turn + Fast 开/关提示（`6b09bf2` / GHA 29400076462）  
+- [ ] 用户真机重新验收（重点 #3 / #5）  
 
-**当前命令**：方案已定 → **立即 Wave A**。
+**当前命令**：修复包 READY → **主线程等待用户重验**。
