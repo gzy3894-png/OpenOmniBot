@@ -379,10 +379,9 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
   }
 
   /// B11: explicit `@` control next to slash → Codex skills panel.
+  /// B16: color matches slash `_commandSvg` (`palette.accentPrimary`).
   Widget _buildSkillAtTriggerButton({required double iconSize}) {
-    final color = IconTheme.of(context).color ??
-        Theme.of(context).iconTheme.color ??
-        const Color(0xFF54627A);
+    final color = context.omniPalette.accentPrimary;
     return IconButton(
       key: const ValueKey('chat-input-trigger-at-button'),
       padding: EdgeInsets.zero,
@@ -1202,7 +1201,7 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
 
   Widget _buildCodexPermissionButton({required double iconSize}) {
     final selected =
-        widget.codexPermissionMode ?? CodexPermissionMode.fullAccess;
+        widget.codexPermissionMode ?? CodexPermissionMode.defaultMode;
     final palette = context.omniPalette;
     final selectedColor = context.isDarkTheme
         ? palette.accentPrimary

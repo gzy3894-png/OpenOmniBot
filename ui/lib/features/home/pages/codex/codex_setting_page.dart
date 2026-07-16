@@ -133,6 +133,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       _setControllerText(_bridgeCwdController, config.remoteCwd);
       _setControllerText(_defaultGoalController, config.defaultGoal);
       _remoteEnabled = config.remoteEnabled;
+      // Default Fast UI off unless config explicitly has fast_mode or
+      // service_tier=fast (see CodexLocalConfig.isFastEnabled).
       _fastEnabled = config.isFastEnabled;
     } finally {
       _isSyncing = false;
@@ -349,10 +351,13 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       _status = _localeText(zh: '正在自动保存...', en: 'Autosaving...');
     });
     try {
+      // Fast off must write fastMode=false + clear serviceTier; never omit
+      // fastMode and pretend that means off (billing-sensitive).
       final saved = await CodexAppServerService.writeLocalConfig(
         baseUrl: _baseUrlController.text.trim(),
         model: _modelController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
+        fastMode: _fastEnabled,
         serviceTier: _fastEnabled ? 'fast' : '',
         defaultGoal: _defaultGoalController.text.trim(),
         remoteEnabled: _remoteEnabled,
@@ -928,8 +933,10 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                                   const SizedBox(height: 2),
                                   Text(
                                     _localeText(
-                                      zh: '降延迟：写入 service_tier=fast 作为全局默认。',
-                                      en: 'Lower latency: save service_tier=fast as the global default.',
+                                      zh:
+                                          '降延迟：开=fast_mode=true 且 service_tier=fast；关=显式 fast_mode=false 并清除 service_tier=fast。默认关。',
+                                      en:
+                                          'Lower latency: on writes fast_mode=true and service_tier=fast; off writes fast_mode=false and clears service_tier=fast. Default off.',
                                     ),
                                     style: TextStyle(
                                       color: _secondaryTextColor,
@@ -949,8 +956,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                           key: const Key('codex-config-default-goal-field'),
                           controller: _defaultGoalController,
                           label: _localeText(
-                            zh: '默认 Goal（可选）',
-                            en: 'Default goal (optional)',
+                            zh: '默认 Goal 文本（可选，不自动开目标模式）',
+                            en: 'Default goal text (optional; does not enable goal mode)',
                           ),
                           hint: _localeText(
                             zh: '例如：优先修编译错误',

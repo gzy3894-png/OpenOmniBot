@@ -150,6 +150,96 @@ void main() {
       'model': 'gpt-custom',
       'effort': 'high',
     });
+    // Omission: no serviceTier key when neither set nor clear.
+    expect(
+      (capturedCall?.arguments as Map).containsKey('serviceTier'),
+      isFalse,
+    );
+  });
+
+  test('B14 updateThreadSettings can clear serviceTier with JSON null',
+      () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.updateThreadSettings(
+      threadId: 'thread-fast-off',
+      clearServiceTier: true,
+    );
+
+    expect(capturedCall?.method, 'thread/settings/update');
+    final args = Map<String, dynamic>.from(
+      (capturedCall?.arguments as Map).cast<String, dynamic>(),
+    );
+    expect(args['threadId'], 'thread-fast-off');
+    // Key present with null value (not omitted) so schema can clear.
+    expect(args.containsKey('serviceTier'), isTrue);
+    expect(args['serviceTier'], isNull);
+  });
+
+  test('B14 updateThreadSettings sets non-empty serviceTier string', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.updateThreadSettings(
+      threadId: 'thread-fast-on',
+      serviceTier: ' fast ',
+    );
+
+    final args = Map<String, dynamic>.from(
+      (capturedCall?.arguments as Map).cast<String, dynamic>(),
+    );
+    expect(args['serviceTier'], 'fast');
+  });
+
+  test('B14 clearServiceTier wins over serviceTier string', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.updateThreadSettings(
+      threadId: 'thread-1',
+      serviceTier: 'fast',
+      clearServiceTier: true,
+    );
+
+    final args = Map<String, dynamic>.from(
+      (capturedCall?.arguments as Map).cast<String, dynamic>(),
+    );
+    expect(args.containsKey('serviceTier'), isTrue);
+    expect(args['serviceTier'], isNull);
+  });
+
+  test('B14 startTurn/startThread/startReview clearServiceTier sends null',
+      () async {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.startTurn(
+      text: 'hi',
+      clearServiceTier: true,
+    );
+    await CodexAppServerService.startThread(clearServiceTier: true);
+    await CodexAppServerService.startReview(clearServiceTier: true);
+
+    for (final call in calls) {
+      final args = Map<String, dynamic>.from(
+        (call.arguments as Map).cast<String, dynamic>(),
+      );
+      expect(args.containsKey('serviceTier'), isTrue, reason: call.method);
+      expect(args['serviceTier'], isNull, reason: call.method);
+    }
   });
 
   test('ignoreUserInput responds with empty answers payload', () async {
@@ -193,6 +283,8 @@ void main() {
         'model': 'gpt-5.5',
         'apiKey': 'key',
         'codexHome': '/root/.codex',
+        'fastMode': false,
+        'serviceTier': '',
       };
     });
 
@@ -206,20 +298,108 @@ void main() {
     expect(read.baseUrl, 'https://example.com/v1');
     expect(read.model, 'gpt-5.5');
     expect(read.apiKey, 'key');
+    expect(read.isFastEnabled, isFalse);
     expect(written.codexHome, '/root/.codex');
     expect(calls.map((call) => call.method), [
       'config/local/read',
       'config/local/write',
     ]);
+    // Omitting fastMode/serviceTier must not send them (preserve on native).
     expect(calls.last.arguments, <String, dynamic>{
       'baseUrl': 'https://example.com/v1',
       'model': 'gpt-5.5',
       'apiKey': 'key',
+      'modelReasoningEffort': '',
+      'defaultGoal': '',
       'remoteEnabled': false,
       'remoteBridgeUrl': '',
       'remoteBridgeToken': '',
       'remoteCwd': '',
     });
+  });
+
+  test('writeLocalConfig sends explicit fastMode false with empty serviceTier',
+      () async {
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return <String, dynamic>{
+        'baseUrl': 'https://example.com/v1',
+        'model': 'gpt-5.5',
+        'apiKey': 'key',
+        'fastMode': false,
+        'serviceTier': '',
+      };
+    });
+
+    final written = await CodexAppServerService.writeLocalConfig(
+      baseUrl: 'https://example.com/v1',
+      model: 'gpt-5.5',
+      apiKey: 'key',
+      fastMode: false,
+      serviceTier: '',
+    );
+
+    expect(written.isFastEnabled, isFalse);
+    expect(captured?.method, 'config/local/write');
+    final args = Map<String, dynamic>.from(captured!.arguments as Map);
+    expect(args['fastMode'], isFalse);
+    expect(args['serviceTier'], '');
+  });
+
+  test('writeLocalConfig sends fastMode true with serviceTier fast', () async {
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return <String, dynamic>{
+        'baseUrl': 'https://example.com/v1',
+        'model': 'gpt-5.5',
+        'apiKey': 'key',
+        'fastMode': true,
+        'serviceTier': 'fast',
+      };
+    });
+
+    final written = await CodexAppServerService.writeLocalConfig(
+      baseUrl: 'https://example.com/v1',
+      model: 'gpt-5.5',
+      apiKey: 'key',
+      fastMode: true,
+      serviceTier: 'fast',
+    );
+
+    expect(written.isFastEnabled, isTrue);
+    expect(written.fastMode, isTrue);
+    final args = Map<String, dynamic>.from(captured!.arguments as Map);
+    expect(args['fastMode'], isTrue);
+    expect(args['serviceTier'], 'fast');
+  });
+
+  test('CodexLocalConfig.isFastEnabled defaults off without explicit flags',
+      () {
+    final empty = CodexLocalConfig.fromMap(const {});
+    // Missing key → null fastMode, not true; isFastEnabled stays false.
+    expect(empty.fastMode, isNull);
+    expect(empty.isFastEnabled, isFalse);
+
+    final explicitFalse = CodexLocalConfig.fromMap(const {
+      'fastMode': false,
+      'serviceTier': '',
+    });
+    expect(explicitFalse.fastMode, isFalse);
+    expect(explicitFalse.isFastEnabled, isFalse);
+
+    final byMode = CodexLocalConfig.fromMap(const {'fastMode': true});
+    expect(byMode.fastMode, isTrue);
+    expect(byMode.isFastEnabled, isTrue);
+
+    final byTier = CodexLocalConfig.fromMap(const {'serviceTier': 'priority'});
+    expect(byTier.fastMode, isNull);
+    expect(byTier.isFastEnabled, isTrue);
+
+    final snake = CodexLocalConfig.fromMap(const {'fast_mode': true});
+    expect(snake.fastMode, isTrue);
+    expect(snake.isFastEnabled, isTrue);
   });
 
   test(

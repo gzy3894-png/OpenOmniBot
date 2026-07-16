@@ -211,4 +211,189 @@ class CodexAppServerProtocolPayloadTest {
         assertEquals(false, enriched.containsKey("activeTurnId"))
         assertEquals(false, enriched.containsKey("turnId"))
     }
+
+    @Test
+    fun normalizeCodexServiceTierTreatsOffAsNullWithoutAffectingFastMode() {
+        assertNull(normalizeCodexServiceTier("off"))
+        assertNull(normalizeCodexServiceTier("false"))
+        assertNull(normalizeCodexServiceTier("default"))
+        assertEquals("fast", normalizeCodexServiceTier("fast"))
+        assertEquals("fast", normalizeCodexServiceTier("priority"))
+    }
+
+    @Test
+    fun resolveCodexFastModePrefersExplicitBooleanOverServiceTier() {
+        assertEquals(
+            false,
+            resolveCodexFastMode(
+                requestedFastMode = false,
+                serviceTier = "fast",
+                serviceTierArgPresent = true,
+                existingFastMode = true,
+            )
+        )
+        assertEquals(
+            true,
+            resolveCodexFastMode(
+                requestedFastMode = true,
+                serviceTier = "off",
+                serviceTierArgPresent = true,
+                existingFastMode = false,
+            )
+        )
+    }
+
+    @Test
+    fun resolveCodexFastModeUsesServiceTierWhenBooleanAbsent() {
+        assertEquals(
+            true,
+            resolveCodexFastMode(
+                requestedFastMode = null,
+                serviceTier = "fast",
+                serviceTierArgPresent = true,
+                existingFastMode = false,
+            )
+        )
+        assertEquals(
+            false,
+            resolveCodexFastMode(
+                requestedFastMode = null,
+                serviceTier = "off",
+                serviceTierArgPresent = true,
+                existingFastMode = true,
+            )
+        )
+        assertEquals(
+            true,
+            resolveCodexFastMode(
+                requestedFastMode = null,
+                serviceTier = null,
+                serviceTierArgPresent = false,
+                existingFastMode = true,
+            )
+        )
+        assertEquals(
+            false,
+            resolveCodexFastMode(
+                requestedFastMode = null,
+                serviceTier = null,
+                serviceTierArgPresent = false,
+                existingFastMode = null,
+            )
+        )
+    }
+
+    @Test
+    fun buildCodexConfigTomlWritesExplicitFastModeFalseAndDropsFastServiceTier() {
+        val toml = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            serviceTier = "fast",
+            fastMode = false,
+            existingFeatures = mapOf(
+                "auto_compaction" to "true",
+                "hooks" to "true",
+                "goals" to "true",
+                "fast_mode" to "true",
+            ),
+        )
+
+        assertTrue(toml.contains("[features]"))
+        assertTrue(toml.contains("fast_mode = false"))
+        assertTrue(toml.contains("auto_compaction = true"))
+        assertTrue(toml.contains("hooks = true"))
+        assertTrue(toml.contains("goals = true"))
+        assertEquals(false, toml.contains("service_tier = \"fast\""))
+        // Must never "turn off" by deleting the key.
+        assertTrue(Regex("""(?m)^\s*fast_mode\s*=\s*false\s*$""").containsMatchIn(toml))
+    }
+
+    @Test
+    fun buildCodexConfigTomlWritesFastModeTrueAndServiceTierFast() {
+        val toml = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            serviceTier = "fast",
+            fastMode = true,
+        )
+
+        assertTrue(toml.contains("fast_mode = true"))
+        assertTrue(toml.contains("service_tier = \"fast\""))
+    }
+
+    @Test
+    fun buildCodexConfigTomlMergesFeaturesAndPreservesOtherTables() {
+        val existing = """
+            model = "old"
+            service_tier = "fast"
+            approval_policy = "never"
+            sandbox_mode = "danger-full-access"
+
+            [features]
+            auto_compaction = true
+            hooks = true
+            goals = true
+            fast_mode = true
+
+            [projects."/root"]
+            trust_level = "trusted"
+
+            [model_providers.omnimind]
+            name = "omnimind"
+            base_url = "https://old.example/v1"
+        """.trimIndent()
+
+        val features = extractTomlTableEntries(existing, "features")
+        val toml = buildCodexConfigToml(
+            baseUrl = "https://new.example/v1",
+            model = "gpt-new",
+            serviceTier = null,
+            fastMode = false,
+            existingFeatures = features,
+            existingToml = existing,
+        )
+
+        assertTrue(toml.contains("fast_mode = false"))
+        assertTrue(toml.contains("auto_compaction = true"))
+        assertTrue(toml.contains("hooks = true"))
+        assertTrue(toml.contains("goals = true"))
+        assertTrue(toml.contains("approval_policy = \"never\"") || toml.contains("approval_policy = never"))
+        assertTrue(toml.contains("[projects.\"/root\"]"))
+        assertTrue(toml.contains("trust_level = \"trusted\""))
+        assertTrue(toml.contains("base_url = \"https://new.example/v1\""))
+        assertEquals(false, toml.contains("service_tier = \"fast\""))
+        // Managed omnimind provider is rewritten; old base_url must not stick around.
+        assertEquals(false, toml.contains("https://old.example/v1"))
+    }
+
+    @Test
+    fun extractTomlBooleanSupportsBareAndQuotedValues() {
+        val body = """
+            fast_mode = true
+            goals = "false"
+            hooks = FALSE
+        """.trimIndent()
+
+        assertEquals(true, extractTomlBoolean(body, "fast_mode"))
+        assertEquals(false, extractTomlBoolean(body, "goals"))
+        assertEquals(false, extractTomlBoolean(body, "hooks"))
+        assertNull(extractTomlBoolean(body, "missing"))
+    }
+
+    @Test
+    fun extractTomlTableBodyStopsAtNextHeader() {
+        val source = """
+            [features]
+            fast_mode = true
+            goals = true
+
+            [projects."/root"]
+            trust_level = "trusted"
+        """.trimIndent()
+
+        val body = extractTomlTableBody(source, "features")
+        assertTrue(body.contains("fast_mode = true"))
+        assertTrue(body.contains("goals = true"))
+        assertEquals(false, body.contains("trust_level"))
+    }
 }

@@ -458,6 +458,11 @@ class CodexAppServerManager private constructor(
         val modelReasoningEffort =
             extractTomlString(configToml, "model_reasoning_effort").orEmpty()
         val defaultGoal = extractTomlString(configToml, "omnimind_default_goal").orEmpty()
+        val featuresBody = extractTomlTableBody(configToml, "features")
+        // Prefer [features].fast_mode; never treat a missing key as "off by omission".
+        val fastMode = extractTomlBoolean(featuresBody, "fast_mode")
+            ?: extractTomlBoolean(configToml, "fast_mode")
+            ?: false
         return buildCodexLocalConfigPayload(
             model = extractTomlString(configToml, "model").orEmpty(),
             baseUrl = extractTomlString(configToml, "base_url").orEmpty(),
@@ -465,6 +470,7 @@ class CodexAppServerManager private constructor(
             serviceTier = serviceTier,
             modelReasoningEffort = modelReasoningEffort,
             defaultGoal = defaultGoal,
+            fastMode = fastMode,
             remoteConfig = remoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -474,13 +480,18 @@ class CodexAppServerManager private constructor(
         val baseUrl = args.stringValue("baseUrl").orEmpty()
         val model = args.stringValue("model").orEmpty()
         val apiKey = args.stringValue("apiKey").orEmpty()
-        val serviceTier = normalizeCodexServiceTier(args.stringValue("serviceTier"))
+        val serviceTier = normalizeCodexServiceTier(
+            args.stringValue("serviceTier") ?: args.stringValue("service_tier")
+        )
         // Only write effort when the caller provided a valid value — do not
         // silently invent xhigh in config.toml.
         val modelReasoningEffort =
             normalizeCodexReasoningEffort(args.stringValue("modelReasoningEffort"))
                 .orEmpty()
         val defaultGoal = args.stringValue("defaultGoal").orEmpty().trim()
+        val requestedFastMode = args.booleanValue("fastMode") ?: args.booleanValue("fast_mode")
+        val serviceTierArgPresent =
+            args.containsKey("serviceTier") || args.containsKey("service_tier")
         val remoteConfig = CodexRemoteBridgeConfig(
             enabled = args["remoteEnabled"] == true,
             bridgeUrl = args.stringValue("remoteBridgeUrl").orEmpty(),
@@ -493,13 +504,35 @@ class CodexAppServerManager private constructor(
         }
 
         val savedRemoteConfig = remoteConfigStore.write(remoteConfig)
+        val existingToml = if (localComplete) {
+            readExistingCodexConfigToml()
+        } else {
+            ""
+        }
+        val existingFeatures = extractTomlTableEntries(existingToml, "features")
+        val existingFastMode = extractTomlBoolean(
+            extractTomlTableBody(existingToml, "features"),
+            "fast_mode"
+        )
+        val fastMode = resolveCodexFastMode(
+            requestedFastMode = requestedFastMode,
+            serviceTier = serviceTier,
+            serviceTierArgPresent = serviceTierArgPresent,
+            existingFastMode = existingFastMode
+        )
+        // Fast off must never persist service_tier=fast; other tiers stay independent.
+        val effectiveServiceTier =
+            if (!fastMode && serviceTier == "fast") null else serviceTier
         if (localComplete) {
             val configToml = buildCodexConfigToml(
                 baseUrl = baseUrl,
                 model = model,
-                serviceTier = serviceTier,
+                serviceTier = effectiveServiceTier,
                 modelReasoningEffort = modelReasoningEffort,
-                defaultGoal = defaultGoal
+                defaultGoal = defaultGoal,
+                fastMode = fastMode,
+                existingFeatures = existingFeatures,
+                existingToml = existingToml
             )
             val authJson = JSONObject()
                 .put("OPENAI_API_KEY", apiKey)
@@ -536,12 +569,34 @@ class CodexAppServerManager private constructor(
             model = model,
             baseUrl = baseUrl,
             apiKey = apiKey,
-            serviceTier = serviceTier.orEmpty(),
+            serviceTier = effectiveServiceTier.orEmpty(),
             modelReasoningEffort = modelReasoningEffort,
             defaultGoal = defaultGoal,
+            fastMode = fastMode,
             remoteConfig = savedRemoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
+    }
+
+    private suspend fun readExistingCodexConfigToml(): String {
+        val configPath = "${CodexAppServerDefaults.CODEX_HOME}/config.toml"
+        val command = """
+            if [ -f ${shellQuote(configPath)} ]; then
+              cat ${shellQuote(configPath)}
+            fi
+        """.trimIndent()
+        return runCatching {
+            val result = TerminalManager.getInstance(appContext).executeHiddenCommand(
+                command = command,
+                executorKey = "codex-config-read-existing",
+                timeoutMs = 15_000L
+            )
+            if (!result.isOk || result.exitCode != 0) {
+                ""
+            } else {
+                result.output
+            }
+        }.getOrDefault("")
     }
 
     private suspend fun testRemoteConfig(args: Map<String, Any?>): Map<String, Any?> {
@@ -1157,6 +1212,7 @@ private fun buildCodexLocalConfigPayload(
     serviceTier: String = "",
     modelReasoningEffort: String = "",
     defaultGoal: String = "",
+    fastMode: Boolean = false,
     remoteConfig: CodexRemoteBridgeConfig,
     runtime: String
 ): Map<String, Any?> {
@@ -1168,6 +1224,7 @@ private fun buildCodexLocalConfigPayload(
         "serviceTier" to serviceTier,
         "modelReasoningEffort" to modelReasoningEffort,
         "defaultGoal" to defaultGoal,
+        "fastMode" to fastMode,
         "remoteEnabled" to remoteConfig.enabled,
         "remoteBridgeUrl" to remoteConfig.bridgeUrl,
         "remoteBridgeToken" to remoteConfig.authToken,
@@ -1177,12 +1234,22 @@ private fun buildCodexLocalConfigPayload(
     )
 }
 
-private fun buildCodexConfigToml(
+/**
+ * Build OmniMind-managed config.toml.
+ *
+ * Managed keys are rewritten; [features] is merged so unrelated feature flags
+ * (auto_compaction/hooks/goals/...) survive. fast_mode is always written as a
+ * boolean — never "deleted to mean off".
+ */
+internal fun buildCodexConfigToml(
     baseUrl: String,
     model: String,
     serviceTier: String? = null,
     modelReasoningEffort: String = "",
-    defaultGoal: String = ""
+    defaultGoal: String = "",
+    fastMode: Boolean = false,
+    existingFeatures: Map<String, String> = emptyMap(),
+    existingToml: String = ""
 ): String {
     val lines = mutableListOf(
         "model_provider = \"omnimind\"",
@@ -1193,14 +1260,29 @@ private fun buildCodexConfigToml(
     if (!normalizedEffort.isNullOrBlank()) {
         lines += "model_reasoning_effort = ${tomlString(normalizedEffort)}"
     }
+    // service_tier is independent of features.fast_mode; off/false/default omit it.
     val normalizedServiceTier = normalizeCodexServiceTier(serviceTier)
-    if (!normalizedServiceTier.isNullOrBlank()) {
+    if (fastMode) {
+        // When Fast is on, prefer an explicit fast tier when none/other not set.
+        val tierToWrite = normalizedServiceTier ?: "fast"
+        if (tierToWrite.isNotBlank()) {
+            lines += "service_tier = ${tomlString(tierToWrite)}"
+        }
+    } else if (!normalizedServiceTier.isNullOrBlank() && normalizedServiceTier != "fast") {
         lines += "service_tier = ${tomlString(normalizedServiceTier)}"
     }
     if (defaultGoal.isNotBlank()) {
         // Soft OmniMind preference used by the app; ignored by stock Codex.
         lines += "omnimind_default_goal = ${tomlString(defaultGoal)}"
     }
+    // Preserve unmanaged top-level scalar keys from the previous config so a
+    // local write does not silently drop approvals_reviewer / sandbox_mode / etc.
+    val preservedTopLevel = extractPreservedTopLevelTomlLines(existingToml)
+    if (preservedTopLevel.isNotEmpty()) {
+        lines += preservedTopLevel
+    }
+    lines += ""
+    lines += buildCodexFeaturesTomlSection(fastMode = fastMode, existingFeatures = existingFeatures)
     lines += listOf(
         "",
         "[model_providers.omnimind]",
@@ -1209,10 +1291,76 @@ private fun buildCodexConfigToml(
         "wire_api = \"responses\"",
         "requires_openai_auth = true"
     )
+    val otherTables = extractPreservedTomlTables(
+        existingToml,
+        skipTables = setOf("features", "model_providers.omnimind")
+    )
+    if (otherTables.isNotEmpty()) {
+        lines += ""
+        lines += otherTables
+    }
     return lines.joinToString(separator = "\n", postfix = "\n")
 }
 
-private fun normalizeCodexServiceTier(raw: String?): String? {
+/**
+ * Resolve the boolean features.fast_mode value for a write.
+ *
+ * Priority: explicit fastMode/fast_mode arg → serviceTier fast/off when provided →
+ * existing config → default false. Never treat "missing key" as the write target.
+ */
+internal fun resolveCodexFastMode(
+    requestedFastMode: Boolean?,
+    serviceTier: String?,
+    serviceTierArgPresent: Boolean,
+    existingFastMode: Boolean?
+): Boolean {
+    if (requestedFastMode != null) {
+        return requestedFastMode
+    }
+    val normalizedTier = normalizeCodexServiceTier(serviceTier)
+    if (serviceTierArgPresent) {
+        return normalizedTier == "fast"
+    }
+    return existingFastMode ?: false
+}
+
+/**
+ * Emit a [features] table that always includes fast_mode = true|false and
+ * preserves other known feature keys from the previous config body.
+ */
+internal fun buildCodexFeaturesTomlSection(
+    fastMode: Boolean,
+    existingFeatures: Map<String, String> = emptyMap()
+): List<String> {
+    val merged = linkedMapOf<String, String>()
+    existingFeatures.forEach { (key, value) ->
+        val normalizedKey = key.trim()
+        if (normalizedKey.isEmpty() || normalizedKey.equals("fast_mode", ignoreCase = true)) {
+            return@forEach
+        }
+        merged[normalizedKey] = value.trim()
+    }
+    // Always write an explicit boolean. Deleting the key is not allowed for "off".
+    merged["fast_mode"] = if (fastMode) "true" else "false"
+    val lines = mutableListOf("[features]")
+    // Stable-ish order: preserve discovery order of existing keys, then fast_mode last
+    // if it was not present; but since we force-set fast_mode after copy, put common
+    // keys first for readability.
+    val preferredOrder = listOf("auto_compaction", "hooks", "goals", "fast_mode")
+    val emitted = linkedSetOf<String>()
+    for (key in preferredOrder) {
+        val value = merged[key] ?: continue
+        lines += "$key = $value"
+        emitted += key
+    }
+    for ((key, value) in merged) {
+        if (key in emitted) continue
+        lines += "$key = $value"
+    }
+    return lines
+}
+
+internal fun normalizeCodexServiceTier(raw: String?): String? {
     val normalized = raw?.trim()?.lowercase().orEmpty()
     if (normalized.isEmpty() || normalized == "default" || normalized == "off" || normalized == "false") {
         return null
@@ -1250,6 +1398,132 @@ private fun extractTomlString(source: String, key: String): String? {
         pattern = """(?m)^\s*$escapedKey\s*=\s*"((?:\\.|[^"\\])*)"\s*(?:#.*)?$"""
     )
     return pattern.find(source)?.groupValues?.getOrNull(1)?.let(::unescapeTomlBasicString)
+}
+
+/**
+ * Parse an unquoted or quoted TOML boolean for [key]. Returns null when absent
+ * or not a boolean-like value.
+ */
+internal fun extractTomlBoolean(source: String, key: String): Boolean? {
+    if (source.isBlank()) return null
+    val escapedKey = Regex.escape(key)
+    val pattern = Regex(
+        pattern = """(?m)^\s*$escapedKey\s*=\s*("?)(true|false)\1\s*(?:#.*)?$""",
+        option = RegexOption.IGNORE_CASE
+    )
+    val raw = pattern.find(source)?.groupValues?.getOrNull(2)?.lowercase() ?: return null
+    return raw == "true"
+}
+
+/**
+ * Return the body of a top-level `[table]` section until the next table header.
+ * Nested tables like `[features.foo]` are not treated as part of `[features]`.
+ */
+internal fun extractTomlTableBody(source: String, table: String): String {
+    if (source.isBlank()) return ""
+    val escaped = Regex.escape(table)
+    val header = Regex("""(?m)^\s*\[$escaped]\s*(?:#.*)?$""")
+    val match = header.find(source) ?: return ""
+    val bodyStart = match.range.last + 1
+    val rest = source.substring(bodyStart)
+    val nextHeader = Regex("""(?m)^\s*\[[^\]]+]\s*(?:#.*)?$""").find(rest)
+    val body = if (nextHeader == null) rest else rest.substring(0, nextHeader.range.first)
+    return body.trim()
+}
+
+/**
+ * Collect simple key = value pairs inside a TOML table body. Values keep their
+ * original text (quotes / bare tokens) so they can be re-emitted.
+ */
+internal fun extractTomlTableEntries(source: String, table: String): Map<String, String> {
+    val body = extractTomlTableBody(source, table)
+    if (body.isBlank()) return emptyMap()
+    val entries = linkedMapOf<String, String>()
+    val linePattern = Regex(
+        pattern = """(?m)^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+?)\s*(?:#.*)?$"""
+    )
+    for (match in linePattern.findAll(body)) {
+        val key = match.groupValues.getOrNull(1)?.trim().orEmpty()
+        val value = match.groupValues.getOrNull(2)?.trim().orEmpty()
+        if (key.isEmpty() || value.isEmpty()) continue
+        // Skip nested array/table starters; keep scalars (bool/string/number).
+        if (value.startsWith("[") || value.startsWith("{")) continue
+        entries[key] = value
+    }
+    return entries
+}
+
+/** Top-level keys rewritten by [buildCodexConfigToml]; anything else may be preserved. */
+private val CODEX_MANAGED_TOP_LEVEL_KEYS = setOf(
+    "model_provider",
+    "model",
+    "disable_response_storage",
+    "model_reasoning_effort",
+    "service_tier",
+    "omnimind_default_goal",
+    "fast_mode"
+)
+
+/**
+ * Keep unmanaged top-level scalar assignments from an existing config so a
+ * rewrite does not drop operator-set keys (approval_policy, sandbox_mode, ...).
+ */
+internal fun extractPreservedTopLevelTomlLines(source: String): List<String> {
+    if (source.isBlank()) return emptyList()
+    val firstTable = Regex("""(?m)^\s*\[[^\]]+]\s*(?:#.*)?$""").find(source)
+    val preamble = if (firstTable == null) source else source.substring(0, firstTable.range.first)
+    val lines = mutableListOf<String>()
+    val assignment = Regex("""^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+?)\s*(?:#.*)?$""")
+    for (rawLine in preamble.lines()) {
+        val match = assignment.find(rawLine) ?: continue
+        val key = match.groupValues[1].trim()
+        if (key in CODEX_MANAGED_TOP_LEVEL_KEYS) continue
+        val value = match.groupValues[2].trim()
+        if (value.startsWith("[") || value.startsWith("{")) continue
+        lines += "$key = $value"
+    }
+    return lines
+}
+
+/**
+ * Re-emit whole TOML tables other than the managed ones. Nested tables that
+ * start with a skipped prefix (e.g. model_providers.omnimind.auth) are also
+ * skipped so the managed provider block stays authoritative.
+ */
+internal fun extractPreservedTomlTables(
+    source: String,
+    skipTables: Set<String>
+): List<String> {
+    if (source.isBlank()) return emptyList()
+    val headerPattern = Regex("""(?m)^\s*\[([^\]]+)]\s*(?:#.*)?$""")
+    val matches = headerPattern.findAll(source).toList()
+    if (matches.isEmpty()) return emptyList()
+    val blocks = mutableListOf<String>()
+    for (index in matches.indices) {
+        val match = matches[index]
+        val tableName = match.groupValues[1].trim()
+        if (shouldSkipTomlTable(tableName, skipTables)) continue
+        val start = match.range.first
+        val end = if (index + 1 < matches.size) {
+            matches[index + 1].range.first
+        } else {
+            source.length
+        }
+        val block = source.substring(start, end).trimEnd()
+        if (block.isNotBlank()) {
+            blocks += block.trim()
+        }
+    }
+    return blocks
+}
+
+private fun shouldSkipTomlTable(tableName: String, skipTables: Set<String>): Boolean {
+    val normalized = tableName.trim()
+    if (normalized in skipTables) return true
+    // Skip nested tables under a managed parent (model_providers.omnimind.*).
+    return skipTables.any { skip ->
+        normalized == skip || normalized.startsWith("$skip.")
+    }
 }
 
 private fun extractOpenAiApiKey(source: String): String? {
@@ -1318,6 +1592,28 @@ private fun shellQuote(value: String): String {
 
 private fun Map<String, Any?>.stringValue(key: String): String? {
     return this[key]?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+/**
+ * Coerce a map value into a Boolean when the caller intended a boolean flag.
+ * Accepts Boolean, Number (non-zero), and common string forms (true/false/1/0/on/off).
+ * Returns null when the key is absent or not boolean-like.
+ */
+private fun Map<String, Any?>.booleanValue(key: String): Boolean? {
+    if (!containsKey(key)) return null
+    val raw = this[key] ?: return null
+    return when (raw) {
+        is Boolean -> raw
+        is Number -> raw.toInt() != 0
+        is String -> {
+            when (raw.trim().lowercase()) {
+                "true", "1", "on", "yes" -> true
+                "false", "0", "off", "no" -> false
+                else -> null
+            }
+        }
+        else -> null
+    }
 }
 
 private fun Map<String, Any?>.longValue(key: String): Long? {

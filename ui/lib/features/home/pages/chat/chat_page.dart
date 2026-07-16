@@ -450,7 +450,7 @@ abstract class _ChatPageStateBase extends State<ChatPage>
     'xhigh',
   ];
   List<String> _codexCollaborationModes = const <String>[];
-  CodexPermissionMode _codexPermissionMode = CodexPermissionMode.fullAccess;
+  CodexPermissionMode _codexPermissionMode = CodexPermissionMode.defaultMode;
   ChatBrowserSessionSnapshot? _liveBrowserSessionSnapshot;
   bool _isBrowserOverlayVisible = false;
   bool _isBrowserOverlayInitialized = false;

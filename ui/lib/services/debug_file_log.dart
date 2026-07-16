@@ -144,6 +144,154 @@ class DebugFileLog {
     );
   }
 
+  /// B21: Fast mode toggle (UI pref + settings RPC + config fast_mode).
+  ///
+  /// Matrix: enabled, pref, settingsRpc, configFastMode, activeThreadId.
+  static Future<void> logFastSet({
+    required bool enabled,
+    Object? pref,
+    Object? settingsRpc,
+    Object? configFastMode,
+    String? activeThreadId,
+    Object? error,
+  }) {
+    return log(
+      'fast_set',
+      enabled ? 'enable' : 'disable',
+      fields: <String, Object?>{
+        'enabled': enabled,
+        if (pref != null) 'pref': pref,
+        if (settingsRpc != null) 'settingsRpc': settingsRpc,
+        if (configFastMode != null) 'configFastMode': configFastMode,
+        if (activeThreadId != null && activeThreadId.isNotEmpty)
+          'activeThreadId': activeThreadId,
+        if (error != null) 'error': error.toString(),
+      },
+    );
+  }
+
+  /// B21: Turn start payload actually sent (service tier / effort / policy).
+  ///
+  /// Matrix: serviceTier, effort, approvalPolicy, sandboxType.
+  static Future<void> logTurnStart({
+    String? serviceTier,
+    String? effort,
+    String? approvalPolicy,
+    String? sandboxType,
+    String? threadId,
+    int? conversationId,
+    String? model,
+  }) {
+    return log(
+      'turn_start',
+      'start',
+      fields: <String, Object?>{
+        if (serviceTier != null) 'serviceTier': serviceTier,
+        if (effort != null) 'effort': effort,
+        if (approvalPolicy != null) 'approvalPolicy': approvalPolicy,
+        if (sandboxType != null) 'sandboxType': sandboxType,
+        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (conversationId != null) 'conversationId': conversationId,
+        if (model != null) 'model': model,
+      },
+    );
+  }
+
+  /// B21: Permission mode applied (local state + settings RPC).
+  ///
+  /// Matrix: mode, approvalPolicy, approvalsReviewer, sandbox, settingsRpc.
+  static Future<void> logPermissionSet({
+    String? mode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    String? sandbox,
+    Object? settingsRpc,
+    String? threadId,
+    Object? error,
+  }) {
+    return log(
+      'permission_set',
+      mode == null || mode.isEmpty ? 'set' : 'set:$mode',
+      fields: <String, Object?>{
+        if (mode != null) 'mode': mode,
+        if (approvalPolicy != null) 'approvalPolicy': approvalPolicy,
+        if (approvalsReviewer != null) 'approvalsReviewer': approvalsReviewer,
+        if (sandbox != null) 'sandbox': sandbox,
+        if (settingsRpc != null) 'settingsRpc': settingsRpc,
+        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (error != null) 'error': error.toString(),
+      },
+    );
+  }
+
+  /// B21: Approval prompt shown or user decision.
+  ///
+  /// [action] typically `prompt` or `decision`.
+  /// Matrix: requestId, decision.
+  static Future<void> logApproval(
+    String action, {
+    String? requestId,
+    String? decision,
+    String? threadId,
+    Object? error,
+  }) {
+    return log(
+      'approval',
+      action,
+      fields: <String, Object?>{
+        if (requestId != null && requestId.isNotEmpty) 'requestId': requestId,
+        if (decision != null) 'decision': decision,
+        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (error != null) 'error': error.toString(),
+      },
+    );
+  }
+
+  /// B21: Context compact lifecycle.
+  ///
+  /// [action] typically `start` / `compacted` / `fail` (or matrix compact_*).
+  /// Matrix: threadId, error?
+  static Future<void> logCompact(
+    String action, {
+    String? threadId,
+    Object? error,
+  }) {
+    return log(
+      'compact',
+      action,
+      fields: <String, Object?>{
+        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (error != null) 'error': error.toString(),
+      },
+    );
+  }
+
+  /// B21: Reasoning effort change (allowed set + settings RPC).
+  ///
+  /// Matrix: value, allowedFromModel, settingsRpc.
+  /// Prefer this over [logModel] when only effort changes with whitelist info.
+  static Future<void> logEffortSet({
+    required String value,
+    Object? allowedFromModel,
+    Object? settingsRpc,
+    String? previous,
+    String? model,
+    Object? error,
+  }) {
+    return log(
+      'effort_set',
+      'set',
+      fields: <String, Object?>{
+        'value': value,
+        if (allowedFromModel != null) 'allowedFromModel': allowedFromModel,
+        if (settingsRpc != null) 'settingsRpc': settingsRpc,
+        if (previous != null) 'previous': previous,
+        if (model != null) 'model': model,
+        if (error != null) 'error': error.toString(),
+      },
+    );
+  }
+
   /// Critical errors (catch blocks).
   static Future<void> logError(
     String where,

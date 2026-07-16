@@ -283,15 +283,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _kCodexServiceTierPreferenceKey,
       conversationId: conversationId,
     );
-    var fastEnabled = _isCodexFastServiceTier(serviceTier);
-    // Session/global preference wins; fall back to local config default.
+    // B14: cold start default is Fast OFF. Preference null must not re-open
+    // Fast via config fallback (that was the billing sticky-on bug).
+    // Only an explicit fast/priority preference enables Fast at refresh time.
+    final bool fastEnabled;
     if (serviceTier == null) {
-      try {
-        final localConfig = await CodexAppServerService.readLocalConfig();
-        fastEnabled = localConfig.isFastEnabled;
-      } catch (error) {
-        debugPrint('Read Codex local Fast default failed: $error');
-      }
+      fastEnabled = false;
+    } else {
+      fastEnabled = _isCodexFastServiceTier(serviceTier);
     }
     if (!mounted) return;
     setState(() {
@@ -531,19 +530,94 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   Future<void> _selectCodexReasoningEffort(String effort) async {
     final normalized = _normalizeCodexReasoningEffort(effort);
     if (normalized == null) {
+      unawaited(
+        DebugFileLog.logEffortSet(
+          value: effort.toString().trim(),
+          allowedFromModel: _codexReasoningEffortOptions,
+          settingsRpc: 'rejected',
+          previous: (_activeCodexReasoningEffort ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexReasoningEffort ?? '').trim(),
+          model: (_activeCodexModelId ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexModelId ?? '').trim(),
+          error: 'unsupported_or_unknown_effort',
+        ),
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Unsupported reasoning effort: $effort'
+            : '不支持的思考等级：$effort',
+        type: ToastType.error,
+      );
       return;
     }
+
+    // B19: refuse values outside the model-supported option list (no RPC).
+    final allowed = _codexReasoningEffortOptions
+        .map((e) => e.trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    if (allowed.isNotEmpty && !allowed.contains(normalized)) {
+      unawaited(
+        DebugFileLog.logEffortSet(
+          value: normalized,
+          allowedFromModel: _codexReasoningEffortOptions,
+          settingsRpc: 'rejected',
+          previous: (_activeCodexReasoningEffort ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexReasoningEffort ?? '').trim(),
+          model: (_activeCodexModelId ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexModelId ?? '').trim(),
+          error: 'not_in_supported_list',
+        ),
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Effort "$normalized" is not supported by the current model'
+            : '当前模型不支持思考等级「$normalized」',
+        type: ToastType.error,
+      );
+      unawaited(
+        DebugFileLog.logModel(
+          'effort_failed',
+          effort: normalized,
+          previous: (_activeCodexReasoningEffort ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexReasoningEffort ?? '').trim(),
+        ),
+      );
+      return;
+    }
+
     final previous = (_activeCodexReasoningEffort ?? '').trim();
     final changed = previous != normalized;
     final threadId = (_activeCodexThreadId ?? '').trim();
+    Object? settingsRpc = 'skipped';
     if (threadId.isNotEmpty && changed) {
       try {
         await CodexAppServerService.updateThreadSettings(
           threadId: threadId,
           effort: normalized,
         );
+        settingsRpc = 'ok';
       } catch (error) {
         if (!mounted) return;
+        unawaited(
+          DebugFileLog.logEffortSet(
+            value: normalized,
+            allowedFromModel: _codexReasoningEffortOptions,
+            settingsRpc: 'fail',
+            previous: previous.isEmpty ? null : previous,
+            model: (_activeCodexModelId ?? '').trim().isEmpty
+                ? null
+                : (_activeCodexModelId ?? '').trim(),
+            error: error,
+          ),
+        );
         unawaited(
           DebugFileLog.logModel(
             'effort_failed',
@@ -563,11 +637,23 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (!mounted) return;
     setState(() {
       _activeCodexReasoningEffort = normalized;
+      // Keep options from catalog; do not re-inject illegal current values.
       _codexReasoningEffortOptions = _mergeCodexReasoningEffortOptions(
-        current: normalized,
+        current: null,
         options: _codexReasoningEffortOptions,
       );
     });
+    unawaited(
+      DebugFileLog.logEffortSet(
+        value: normalized,
+        allowedFromModel: _codexReasoningEffortOptions,
+        settingsRpc: settingsRpc,
+        previous: previous.isEmpty ? null : previous,
+        model: (_activeCodexModelId ?? '').trim().isEmpty
+            ? null
+            : (_activeCodexModelId ?? '').trim(),
+      ),
+    );
     unawaited(
       DebugFileLog.logModel(
         'effort',
@@ -650,10 +736,70 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (_codexPermissionMode == mode) {
       return;
     }
+    final previous = _codexPermissionMode;
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    final approvalPolicy = mode.approvalPolicy;
+    final approvalsReviewer = mode.approvalsReviewer;
+    final sandboxPolicy = mode.sandboxPolicy;
+    final sandboxType = sandboxPolicy?['type']?.toString();
+
+    // Optimistic UI; roll back on settings RPC failure.
     if (!mounted) return;
     setState(() {
       _codexPermissionMode = mode;
     });
+
+    Object? settingsRpc = 'skipped';
+    Object? rpcError;
+    if (threadId.isNotEmpty) {
+      try {
+        await CodexAppServerService.updateThreadSettings(
+          threadId: threadId,
+          approvalPolicy: approvalPolicy,
+          approvalsReviewer: approvalsReviewer,
+          sandboxPolicy: sandboxPolicy,
+        );
+        settingsRpc = 'ok';
+      } catch (error) {
+        settingsRpc = 'fail';
+        rpcError = error;
+        if (!mounted) return;
+        setState(() {
+          _codexPermissionMode = previous;
+        });
+        unawaited(
+          DebugFileLog.logPermissionSet(
+            mode: mode.name,
+            approvalPolicy: approvalPolicy,
+            approvalsReviewer: approvalsReviewer,
+            sandbox: sandboxType,
+            settingsRpc: settingsRpc,
+            threadId: threadId,
+            error: error,
+          ),
+        );
+        showToast(
+          LegacyTextLocalizer.isEnglish
+              ? 'Failed to update Codex permission: $error'
+              : '更新 Codex 权限失败：$error',
+          type: ToastType.error,
+        );
+        return;
+      }
+    }
+
+    unawaited(
+      DebugFileLog.logPermissionSet(
+        mode: mode.name,
+        approvalPolicy: approvalPolicy,
+        approvalsReviewer: approvalsReviewer,
+        sandbox: sandboxType,
+        settingsRpc: settingsRpc,
+        threadId: threadId.isEmpty ? null : threadId,
+        error: rpcError,
+      ),
+    );
+
     // Local transcript tip only — never send as a model turn.
     await _appendCodexLocalSystemTip(
       codexSessionTipPermission(
@@ -674,47 +820,129 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (_activeCodexFastEnabled == enabled) {
       return;
     }
-    final turningOn = enabled && !_activeCodexFastEnabled;
-    final turningOff = !enabled && _activeCodexFastEnabled;
+    final previous = _activeCodexFastEnabled;
+    final turningOn = enabled && !previous;
+    final turningOff = !enabled && previous;
+    final threadId = (_activeCodexThreadId ?? '').trim();
+    final prefValue =
+        enabled ? _kCodexFastServiceTier : _kCodexOffServiceTier;
+
+    // Optimistic UI; any failure must tip error + roll back (no fake off/on).
     if (!mounted) return;
     setState(() {
       _activeCodexFastEnabled = enabled;
     });
+
+    Object? settingsRpc = 'skipped';
+    Object? configFastMode;
+    Object? rpcError;
+
+    Future<void> rollbackAndTip(Object error, {required String stage}) async {
+      if (mounted) {
+        setState(() {
+          _activeCodexFastEnabled = previous;
+        });
+      }
+      unawaited(
+        DebugFileLog.logFastSet(
+          enabled: enabled,
+          pref: prefValue,
+          settingsRpc: settingsRpc,
+          configFastMode: configFastMode,
+          activeThreadId: threadId.isEmpty ? null : threadId,
+          error: '$stage: $error',
+        ),
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Failed to ${enabled ? 'enable' : 'disable'} Fast: $error'
+            : '${enabled ? '开启' : '关闭'} Fast 失败：$error',
+        type: ToastType.error,
+      );
+    }
+
+    // A. Live thread settings: on=fast, off=explicit null clear (schema).
+    if (threadId.isNotEmpty) {
+      try {
+        if (enabled) {
+          await CodexAppServerService.updateThreadSettings(
+            threadId: threadId,
+            serviceTier: _kCodexFastServiceTier,
+          );
+        } else {
+          await CodexAppServerService.updateThreadSettings(
+            threadId: threadId,
+            clearServiceTier: true,
+          );
+        }
+        settingsRpc = 'ok';
+      } catch (error) {
+        settingsRpc = 'fail';
+        rpcError = error;
+        await rollbackAndTip(error, stage: 'settingsRpc');
+        return;
+      }
+    }
+
+    // B. Persist config: fast_mode bool + serviceTier (empty when off).
+    try {
+      final localConfig = await CodexAppServerService.readLocalConfig();
+      final saved = await CodexAppServerService.writeLocalConfig(
+        baseUrl: localConfig.baseUrl,
+        model: localConfig.model,
+        apiKey: localConfig.apiKey,
+        serviceTier: enabled ? _kCodexFastServiceTier : '',
+        fastMode: enabled,
+        modelReasoningEffort: localConfig.modelReasoningEffort,
+        defaultGoal: localConfig.defaultGoal,
+        remoteEnabled: localConfig.remoteEnabled,
+        remoteBridgeUrl: localConfig.remoteBridgeUrl,
+        remoteBridgeToken: localConfig.remoteBridgeToken,
+        remoteCwd: localConfig.remoteCwd,
+      );
+      configFastMode = saved.fastMode ?? saved.isFastEnabled;
+      // Guard: off must not leave Fast enabled in config payload.
+      if (!enabled && saved.isFastEnabled) {
+        throw StateError(
+          'config still reports Fast after write '
+          '(fastMode=${saved.fastMode}, serviceTier=${saved.serviceTier})',
+        );
+      }
+    } catch (error) {
+      // Best-effort: if settings already cleared but config failed, still
+      // surface failure and restore UI so user retries (no silent half-off).
+      await rollbackAndTip(error, stage: 'config');
+      return;
+    }
+
+    // C. Preference cache for cold start / pre-thread UI.
+    try {
+      await _writeCodexPreference(_kCodexServiceTierPreferenceKey, prefValue);
+    } catch (error) {
+      await rollbackAndTip(error, stage: 'pref');
+      return;
+    }
+
     unawaited(
-      DebugFileLog.logModel(
-        enabled ? 'fast_on' : 'fast_off',
-        serviceTier: enabled ? _kCodexFastServiceTier : _kCodexOffServiceTier,
+      DebugFileLog.logFastSet(
+        enabled: enabled,
+        pref: prefValue,
+        settingsRpc: settingsRpc,
+        configFastMode: configFastMode,
+        activeThreadId: threadId.isEmpty ? null : threadId,
+        error: rpcError,
       ),
     );
-    if (enabled) {
-      await _writeCodexPreference(
-        _kCodexServiceTierPreferenceKey,
-        _kCodexFastServiceTier,
+
+    // Local transcript tip only — never send as a model turn.
+    if (turningOn || turningOff) {
+      await _appendCodexLocalSystemTip(
+        codexFastModeHint(
+          isEnglish: LegacyTextLocalizer.isEnglish,
+          enabled: enabled,
+        ),
       );
-      // Local transcript tip only — never send as a model turn.
-      if (turningOn) {
-        await _appendCodexLocalSystemTip(
-          codexFastModeHint(
-            isEnglish: LegacyTextLocalizer.isEnglish,
-            enabled: true,
-          ),
-        );
-      }
-    } else {
-      // Explicit off so refresh won't fall back to local-config default Fast.
-      await _writeCodexPreference(
-        _kCodexServiceTierPreferenceKey,
-        _kCodexOffServiceTier,
-      );
-      // Local transcript tip only — never send as a model turn.
-      if (turningOff) {
-        await _appendCodexLocalSystemTip(
-          codexFastModeHint(
-            isEnglish: LegacyTextLocalizer.isEnglish,
-            enabled: false,
-          ),
-        );
-      }
     }
   }
 
@@ -1222,7 +1450,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       selection: TextSelection.collapsed(offset: start + insert.length),
     );
     _closeCodexSkillsPanel(hideSlashPanel: true);
-    _requestComposerFocus();
+    _requestComposerFocus(showKeyboard: true);
     // Local transcript tip only — never send as a model turn.
     unawaited(
       _appendCodexLocalSystemTip(
@@ -1502,17 +1730,26 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
 
     // Work-mode toggles / skills nav (M3 cardIds).
+    // B18: card tap always hides slash panel, then re-focus composer
+    // (keep keyboard) unless the path is a real turn / review start (unfocus).
     if (cardId == 'slash-command-codex-goal-mode' || command == '/goal-mode') {
       await _setCodexGoalModeEnabled(!_codexGoalModeEnabled);
+      // enable path already hides; hide again so disable from card also closes.
+      _hideSlashCommandPanel();
+      // B18: re-focus after hide so keyboard stays (goal used to drop it).
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (cardId == 'slash-command-codex-fast-mode' || command == '/fast') {
+      _hideSlashCommandPanel();
       await _setCodexFastEnabled(!_activeCodexFastEnabled);
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (cardId == 'slash-command-codex-skills' ||
         command == '/skills' ||
         nav == kCodexSkillPanelRouteName) {
+      // Skills browse keeps panel open (sub-list). Prefer @ for insert.
       await _openCodexSkillsPanel();
       return;
     }
@@ -1526,7 +1763,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         text: '/model ',
         selection: TextSelection.collapsed(offset: 7),
       );
-      _requestComposerFocus();
+      // Prefill keeps slash route open via _handleSlashCommandInput.
+      _requestComposerFocus(showKeyboard: true);
       _handleSlashCommandInput();
       await _loadCodexModelOptions();
       return;
@@ -1537,35 +1775,48 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         text: '/review ',
         selection: TextSelection.collapsed(offset: 8),
       );
-      _requestComposerFocus();
+      // Prefill stays on slash route; keep keyboard for notes.
+      _requestComposerFocus(showKeyboard: true);
       _handleSlashCommandInput();
       return;
     }
     if (command == '/init') {
+      _hideSlashCommandPanel();
       await _executeCodexInitCommand();
       return;
     }
     if (command == '/plan') {
-      await _toggleCodexPlanMode(dismissPanel: false);
+      // B18: dismiss panel + keep keyboard after plan toggle.
+      await _toggleCodexPlanMode(dismissPanel: true);
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (command == '/compact') {
+      _hideSlashCommandPanel();
       await _executeCodexCompactCommand();
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (command == '/status') {
+      _hideSlashCommandPanel();
       await _executeCodexStatusCommand();
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (command == '/diff') {
+      _hideSlashCommandPanel();
       await _executeCodexDiffCommand();
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (command == '/stop') {
+      // stopTurn may still be reached via typed /stop; card removed in B15.
+      _hideSlashCommandPanel();
       await _executeCodexStopCommand();
       return;
     }
     if (command == '/new') {
+      _hideSlashCommandPanel();
       await _executeCodexNewCommand();
       return;
     }
@@ -1574,17 +1825,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         text: '/resume ',
         selection: TextSelection.collapsed(offset: 8),
       );
-      _requestComposerFocus();
+      _requestComposerFocus(showKeyboard: true);
       _handleSlashCommandInput();
       return;
     }
     if (command == '/goal') {
+      _hideSlashCommandPanel();
       await _executeCodexShowGoalCommand();
+      _requestComposerFocus(showKeyboard: true);
       return;
     }
     if (_resolveSlashCommandPanelRoute(_messageController.text) ==
         _SlashCommandPanelRoute.codexModel) {
+      _hideSlashCommandPanel();
       await _selectCodexModel(command);
+      _requestComposerFocus(showKeyboard: true);
     }
   }
 
@@ -1708,46 +1963,92 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
 
   Future<void> _executeCodexCompactCommand() async {
     final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
-    // B12: force a real threadId; connect first, never toast-only.
+    // B12/B17: force a real threadId; connect first; tip + DebugFileLog always.
     try {
       await _ensureCodexConnectedForSlashCommand();
     } catch (error) {
-      if (!mounted) return;
-      await _appendCodexLocalSystemTip(
-        LegacyTextLocalizer.isEnglish
-            ? 'Compact failed: $error'
-            : '压缩失败：$error',
+      unawaited(
+        DebugFileLog.log(
+          'compact',
+          'compact_fail',
+          fields: <String, Object?>{
+            if (conversationId != null) 'conversationId': conversationId,
+            'threadId': (_activeCodexThreadId ?? '').trim(),
+            'error': error.toString(),
+            'reason': 'connect',
+          },
+        ),
       );
+      if (!mounted) return;
+      final failText = LegacyTextLocalizer.isEnglish
+          ? 'Compact failed: $error'
+          : '压缩失败：$error';
+      await _appendCodexLocalSystemTip(failText);
+      _showSnackBar(failText);
       return;
     }
     final threadId = (_activeCodexThreadId ?? '').trim();
     if (threadId.isEmpty) {
-      if (!mounted) return;
-      await _appendCodexLocalSystemTip(
-        LegacyTextLocalizer.isEnglish
-            ? 'No active Codex thread to compact'
-            : '当前没有可压缩的 Codex 线程',
+      unawaited(
+        DebugFileLog.log(
+          'compact',
+          'compact_fail',
+          fields: <String, Object?>{
+            if (conversationId != null) 'conversationId': conversationId,
+            'threadId': '',
+            'error': 'no_active_thread',
+            'reason': 'no_thread',
+          },
+        ),
       );
+      if (!mounted) return;
+      final noThreadText = LegacyTextLocalizer.isEnglish
+          ? 'No active Codex thread to compact'
+          : '当前没有可压缩的 Codex 线程';
+      await _appendCodexLocalSystemTip(noThreadText);
+      _showSnackBar(noThreadText);
       return;
     }
     try {
+      unawaited(
+        DebugFileLog.log(
+          'compact',
+          'compact_start',
+          fields: <String, Object?>{
+            if (conversationId != null) 'conversationId': conversationId,
+            'threadId': threadId,
+          },
+        ),
+      );
       await CodexAppServerService.startCompact(
         conversationId: _isRemoteCodexConfigured() ? null : conversationId,
         threadId: threadId,
       );
       if (!mounted) return;
-      await _appendCodexLocalSystemTip(
-        LegacyTextLocalizer.isEnglish
-            ? 'Context compact started'
-            : '已开始压缩上下文',
-      );
+      final startedText = LegacyTextLocalizer.isEnglish
+          ? 'Context compact started'
+          : '已开始压缩上下文';
+      await _appendCodexLocalSystemTip(startedText);
+      _showSnackBar(startedText);
     } catch (error) {
-      if (!mounted) return;
-      await _appendCodexLocalSystemTip(
-        LegacyTextLocalizer.isEnglish
-            ? 'Compact failed: $error'
-            : '压缩失败：$error',
+      unawaited(
+        DebugFileLog.log(
+          'compact',
+          'compact_fail',
+          fields: <String, Object?>{
+            if (conversationId != null) 'conversationId': conversationId,
+            'threadId': threadId,
+            'error': error.toString(),
+            'reason': 'rpc',
+          },
+        ),
       );
+      if (!mounted) return;
+      final failText = LegacyTextLocalizer.isEnglish
+          ? 'Compact failed: $error'
+          : '压缩失败：$error';
+      await _appendCodexLocalSystemTip(failText);
+      _showSnackBar(failText);
     }
   }
 
@@ -2612,17 +2913,34 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       // G1/B2: model may clear/complete goal mid-turn — resync text + mode.
       unawaited(_refreshCodexActiveGoalText());
     }
-    // B12: official compact completion notification → session tip.
+    // B12/B17: official compact completion → tip + snackbar + DebugFileLog.
+    // Keep method matching: thread/compacted | thread.compacted (diagnostic + result).
     if (isVisibleConversation &&
         (diagnosticMethod == 'thread/compacted' ||
             diagnosticMethod == 'thread.compacted' ||
             result.method == 'thread/compacted' ||
             result.method == 'thread.compacted')) {
+      final compactedThreadId =
+          (threadId ?? _activeCodexThreadId ?? '').trim();
       unawaited(
-        _appendCodexLocalSystemTip(
-          LegacyTextLocalizer.isEnglish ? 'Compacted' : '已压缩',
+        DebugFileLog.log(
+          'compact',
+          'compacted',
+          fields: <String, Object?>{
+            'conversationId': conversationId,
+            if (compactedThreadId.isNotEmpty) 'threadId': compactedThreadId,
+            'method': diagnosticMethod.isNotEmpty
+                ? diagnosticMethod
+                : result.method,
+          },
         ),
       );
+      final compactedText =
+          LegacyTextLocalizer.isEnglish ? 'Compacted' : '已压缩';
+      unawaited(_appendCodexLocalSystemTip(compactedText));
+      if (mounted) {
+        _showSnackBar(compactedText);
+      }
     }
     if (isVisibleConversation) {
       final runtime = _runtimeCoordinator.runtimeFor(
@@ -6569,6 +6887,8 @@ List<String> _mergeCodexReasoningEffortOptions({
   String? current,
   required List<String> options,
 }) {
+  // B19: options come from model catalog / supported list only.
+  // Do not hard-pad low..xhigh. Do not re-inject an illegal [current].
   final seen = <String>{};
   final result = <String>[];
   void add(String? value) {
@@ -6579,17 +6899,16 @@ List<String> _mergeCodexReasoningEffortOptions({
     result.add(normalized);
   }
 
-  add(current);
   for (final option in options) {
     add(option);
   }
-  for (final option in const <String>[
-    'low',
-    'medium',
-    'high',
-    _kKnownCodexReasoningEffortXHigh,
-  ]) {
-    add(option);
+  // Only surface [current] when it already normalized into the allow-list of
+  // known efforts AND options were empty (cold path before model/list).
+  if (result.isEmpty) {
+    final normalizedCurrent = _normalizeCodexReasoningEffort(current);
+    if (normalizedCurrent != null) {
+      add(normalizedCurrent);
+    }
   }
   return result;
 }
@@ -6599,10 +6918,13 @@ String? _normalizeCodexReasoningEffort(dynamic value) {
   if (text.isEmpty) {
     return null;
   }
+  // B19: unknown values (max/ultra/...) → null; never infinite-pass via `_ => text`.
   return switch (text) {
     'no' || 'none' || 'off' => 'none',
     'min' || 'minimal' || 'minimum' => 'minimal',
+    'low' => 'low',
     'med' || 'medium' => 'medium',
+    'high' => 'high',
     'extra_high' ||
     'extra-high' ||
     'very_high' ||
@@ -6610,8 +6932,7 @@ String? _normalizeCodexReasoningEffort(dynamic value) {
     'x-high' ||
     'x high' ||
     'xhigh' => 'xhigh',
-    'low' || 'high' => text,
-    _ => text,
+    _ => null,
   };
 }
 
@@ -6684,7 +7005,9 @@ extension _CodexPermissionModePayload on CodexPermissionMode {
 
   String get approvalsReviewer {
     return switch (this) {
-      CodexPermissionMode.autoReview => 'guardian_subagent',
+      // Schema ApprovalsReviewer: "user" | "auto_review" | "guardian_subagent".
+      // Product autoReview maps to auto_review (not guardian_subagent).
+      CodexPermissionMode.autoReview => 'auto_review',
       CodexPermissionMode.defaultMode ||
       CodexPermissionMode.fullAccess => 'user',
     };
@@ -6695,7 +7018,15 @@ extension _CodexPermissionModePayload on CodexPermissionMode {
       CodexPermissionMode.fullAccess => const <String, dynamic>{
         'type': 'dangerFullAccess',
       },
-      CodexPermissionMode.defaultMode || CodexPermissionMode.autoReview => null,
+      // B20: default + autoReview must send explicit workspaceWrite (not null).
+      CodexPermissionMode.defaultMode ||
+      CodexPermissionMode.autoReview => const <String, dynamic>{
+        'type': 'workspaceWrite',
+        'writableRoots': <String>[],
+        'networkAccess': true,
+        'excludeTmpdirEnvVar': false,
+        'excludeSlashTmp': false,
+      },
     };
   }
 }

@@ -71,6 +71,9 @@ class CodexLocalConfig {
     required this.apiKey,
     this.codexHome,
     this.serviceTier = '',
+    /// Mirror of config.toml `[features].fast_mode`. Null means unknown /
+    /// not provided and does **not** enable Fast by itself (default off).
+    this.fastMode,
     this.modelReasoningEffort = '',
     this.defaultGoal = '',
     this.remoteEnabled = false,
@@ -86,6 +89,9 @@ class CodexLocalConfig {
   final String apiKey;
   final String? codexHome;
   final String serviceTier;
+
+  /// Explicit `[features].fast_mode` from config. Null/false do not enable Fast.
+  final bool? fastMode;
   final String modelReasoningEffort;
   final String defaultGoal;
   final bool remoteEnabled;
@@ -95,9 +101,14 @@ class CodexLocalConfig {
   final bool remoteConfigured;
   final String? runtime;
 
+  /// Fast is on when service tier is fast/priority **or** [fastMode] is true.
+  /// Missing / null [fastMode] defaults off (never treat absence as on).
   bool get isFastEnabled {
     final tier = serviceTier.trim().toLowerCase();
-    return tier == 'fast' || tier == 'priority';
+    if (tier == 'fast' || tier == 'priority') {
+      return true;
+    }
+    return fastMode == true;
   }
 
   factory CodexLocalConfig.fromMap(Map<dynamic, dynamic>? map) {
@@ -108,6 +119,8 @@ class CodexLocalConfig {
       apiKey: _stringOrNull(source['apiKey']) ?? '',
       codexHome: _stringOrNull(source['codexHome']),
       serviceTier: _stringOrNull(source['serviceTier']) ?? '',
+      fastMode: _boolOrNull(source['fastMode']) ??
+          _boolOrNull(source['fast_mode']),
       modelReasoningEffort:
           _stringOrNull(source['modelReasoningEffort']) ?? '',
       defaultGoal: _stringOrNull(source['defaultGoal']) ?? '',
@@ -292,17 +305,25 @@ class CodexAppServerService {
     String? effort,
     String? collaborationMode,
     String? serviceTier,
+    /// When true, sends `serviceTier: null` (JSON null clear). Prefer
+    /// [updateThreadSettings] for live threads; native start path may still
+    /// drop null until Kotlin optional-param helper preserves it.
+    bool clearServiceTier = false,
   }) {
-    return _invokeMap('thread/start', {
+    final args = <String, dynamic>{
       if (conversationId != null) 'conversationId': conversationId,
       if (cwd != null && cwd.trim().isNotEmpty) 'cwd': cwd.trim(),
       if (model != null && model.trim().isNotEmpty) 'model': model.trim(),
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
-      if (serviceTier != null && serviceTier.trim().isNotEmpty)
-        'serviceTier': serviceTier.trim(),
-    });
+    };
+    _putServiceTierArg(
+      args,
+      serviceTier: serviceTier,
+      clearServiceTier: clearServiceTier,
+    );
+    return _invokeMap('thread/start', args);
   }
 
   static Future<Map<String, dynamic>> resumeThread({
@@ -385,8 +406,11 @@ class CodexAppServerService {
     String? effort,
     String? collaborationMode,
     String? serviceTier,
+    /// Explicit JSON-null clear for this turn (schema allows null). Prefer
+    /// clearing via [updateThreadSettings] on the live thread when possible.
+    bool clearServiceTier = false,
   }) {
-    return _invokeMap('turn/start', {
+    final args = <String, dynamic>{
       if (threadId != null) 'threadId': threadId,
       if (conversationId != null) 'conversationId': conversationId,
       if (cwd != null && cwd.trim().isNotEmpty) 'cwd': cwd.trim(),
@@ -399,10 +423,14 @@ class CodexAppServerService {
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
-      if (serviceTier != null && serviceTier.trim().isNotEmpty)
-        'serviceTier': serviceTier.trim(),
       'text': text,
-    });
+    };
+    _putServiceTierArg(
+      args,
+      serviceTier: serviceTier,
+      clearServiceTier: clearServiceTier,
+    );
+    return _invokeMap('turn/start', args);
   }
 
   static Future<Map<String, dynamic>> startReview({
@@ -417,8 +445,9 @@ class CodexAppServerService {
     String? effort,
     String? collaborationMode,
     String? serviceTier,
+    bool clearServiceTier = false,
   }) {
-    return _invokeMap('review/start', {
+    final args = <String, dynamic>{
       if (threadId != null) 'threadId': threadId,
       if (conversationId != null) 'conversationId': conversationId,
       if (cwd != null && cwd.trim().isNotEmpty) 'cwd': cwd.trim(),
@@ -432,9 +461,13 @@ class CodexAppServerService {
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
-      if (serviceTier != null && serviceTier.trim().isNotEmpty)
-        'serviceTier': serviceTier.trim(),
-    });
+    };
+    _putServiceTierArg(
+      args,
+      serviceTier: serviceTier,
+      clearServiceTier: clearServiceTier,
+    );
+    return _invokeMap('review/start', args);
   }
 
   static Future<Map<String, dynamic>> startCompact({
@@ -482,13 +515,18 @@ class CodexAppServerService {
   }
 
   /// Update live thread run settings (model/effort/etc.) via app-server
-  /// `thread/settings/update`. Only non-empty overrides are forwarded so
-  /// callers can patch a single field without clearing others.
+  /// `thread/settings/update`.
+  ///
+  /// Schema: for `serviceTier`, **null clears** the current tier; **omission**
+  /// leaves it unchanged. Callers that need to turn Fast off must pass
+  /// [clearServiceTier]: true (sends JSON null). A non-empty [serviceTier]
+  /// string sets the tier; empty string alone is still treated as omit.
   static Future<Map<String, dynamic>> updateThreadSettings({
     required String threadId,
     String? model,
     String? effort,
     String? serviceTier,
+    bool clearServiceTier = false,
     String? collaborationMode,
     String? summary,
     String? approvalPolicy,
@@ -502,12 +540,10 @@ class CodexAppServerService {
     if (resolvedThreadId.isEmpty) {
       throw ArgumentError.value(threadId, 'threadId', 'must not be empty');
     }
-    return _invokeMap('thread/settings/update', {
+    final args = <String, dynamic>{
       'threadId': resolvedThreadId,
       if (model != null && model.trim().isNotEmpty) 'model': model.trim(),
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
-      if (serviceTier != null && serviceTier.trim().isNotEmpty)
-        'serviceTier': serviceTier.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
       if (summary != null && summary.trim().isNotEmpty)
@@ -522,7 +558,13 @@ class CodexAppServerService {
       if (cwd != null && cwd.trim().isNotEmpty) 'cwd': cwd.trim(),
       if (personality != null && personality.trim().isNotEmpty)
         'personality': personality.trim(),
-    });
+    };
+    _putServiceTierArg(
+      args,
+      serviceTier: serviceTier,
+      clearServiceTier: clearServiceTier,
+    );
+    return _invokeMap('thread/settings/update', args);
   }
 
   static Future<Map<String, dynamic>> listModels() {
@@ -542,11 +584,20 @@ class CodexAppServerService {
     return CodexLocalConfig.fromMap(result);
   }
 
+  /// Persist OmniMind local Codex config.
+  ///
+  /// [fastMode] / [serviceTier] are optional so callers that only change
+  /// remote cwd do not wipe billing prefs. When provided, both should be set
+  /// together for Fast:
+  /// - on: `fastMode: true`, `serviceTier: 'fast'`
+  /// - off: `fastMode: false`, `serviceTier: ''` (explicit off; never omit
+  ///   fastMode to mean off)
   static Future<CodexLocalConfig> writeLocalConfig({
     required String baseUrl,
     required String model,
     required String apiKey,
-    String serviceTier = '',
+    String? serviceTier,
+    bool? fastMode,
     String modelReasoningEffort = '',
     String defaultGoal = '',
     bool remoteEnabled = false,
@@ -558,7 +609,8 @@ class CodexAppServerService {
       'baseUrl': baseUrl.trim(),
       'model': model.trim(),
       'apiKey': apiKey.trim(),
-      'serviceTier': serviceTier.trim(),
+      if (serviceTier != null) 'serviceTier': serviceTier.trim(),
+      if (fastMode != null) 'fastMode': fastMode,
       'modelReasoningEffort': modelReasoningEffort.trim(),
       'defaultGoal': defaultGoal.trim(),
       'remoteEnabled': remoteEnabled,
@@ -768,6 +820,24 @@ class CodexAppServerService {
   ]) async {
     final result = await _methodChannel.invokeMethod<dynamic>(method, args);
     return _normalizeMap(result) ?? <String, dynamic>{};
+  }
+}
+
+/// Put `serviceTier` on [args] with three-way semantics:
+/// - [clearServiceTier] true → JSON null clear (key present, value null)
+/// - non-empty [serviceTier] → set string
+/// - otherwise omit (leave unchanged / native default)
+void _putServiceTierArg(
+  Map<String, dynamic> args, {
+  String? serviceTier,
+  bool clearServiceTier = false,
+}) {
+  if (clearServiceTier) {
+    args['serviceTier'] = null;
+    return;
+  }
+  if (serviceTier != null && serviceTier.trim().isNotEmpty) {
+    args['serviceTier'] = serviceTier.trim();
   }
 }
 

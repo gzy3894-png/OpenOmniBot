@@ -385,8 +385,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     final goalModeEnabled = _codexGoalModeEnabled;
     final fastModeEnabled = _activeCodexFastEnabled;
     final isEnglish = LegacyTextLocalizer.isEnglish;
-    // B8 白名单：常用工作模式优先；下架 init/resume/new/diff/status（scout）。
-    // 顺序：goal-mode → fast → skills → review → plan → stop → compact。
+    // B15 白名单：常用工作模式优先；下架 stop/skills（@ 仍可插技能；手输 /stop 仍解析）。
+    // 顺序：goal-mode → fast → review → plan → compact。
     final commands = <Map<String, dynamic>>[
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-goal-mode',
@@ -443,22 +443,6 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         controlType: 'toggle',
       ),
       _buildCodexCommandCard(
-        cardId: 'slash-command-codex-skills',
-        toolTitle: '/skills',
-        displayName: isEnglish ? 'Skills' : '技能',
-        toolTypeLabel: isEnglish ? 'Skill' : '技能',
-        status: 'running',
-        statusLabel: isEnglish ? 'Browse' : '浏览',
-        summary: isEnglish
-            ? 'Browse and insert skills with @name'
-            : '浏览技能并以 @名称 插入',
-        progress: isEnglish
-            ? 'Opens skills sub-panel (same source as @)'
-            : '打开技能子列表（与 @ 同源）',
-        controlType: 'nav',
-        nav: 'skills',
-      ),
-      _buildCodexCommandCard(
         cardId: 'slash-command-codex-review',
         toolTitle: '/review',
         displayName: '/review',
@@ -499,21 +483,6 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         controlType: 'toggle',
       ),
       _buildCodexCommandCard(
-        cardId: 'slash-command-codex-stop',
-        toolTitle: '/stop',
-        displayName: '/stop',
-        toolTypeLabel: isEnglish ? 'Stop' : '停止',
-        status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
-        summary: isEnglish
-            ? 'Interrupt the current Codex turn'
-            : '中断当前 Codex 回合',
-        progress: isEnglish
-            ? 'Sends turn interrupt for the active thread'
-            : '对当前线程发送 turn interrupt',
-        controlType: 'action',
-      ),
-      _buildCodexCommandCard(
         cardId: 'slash-command-codex-compact',
         toolTitle: '/compact',
         displayName: '/compact',
@@ -528,8 +497,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
             : '对当前 Codex 线程执行上下文压缩',
         controlType: 'action',
       ),
-    ];
-    // Bare `/` 展示白名单全量；继续输入时按 title/display/label/cardId 过滤。
+    ];    // Bare `/` 展示白名单全量；继续输入时按 title/display/label/cardId 过滤。
     final showAll = query.isEmpty || query == '/';
     if (showAll) {
       return commands;
