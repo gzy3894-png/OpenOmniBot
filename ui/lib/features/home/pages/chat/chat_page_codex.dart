@@ -1268,13 +1268,26 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
 
     final cwd = (_codexStatus.remoteCwd ?? _codexStatus.cwd ?? '').trim();
+    // B21: light startThread payload line (same matrix as turn_start).
+    final threadServiceTier = _activeCodexServiceTierOrNull;
+    unawaited(
+      DebugFileLog.logTurnStart(
+        threadId: _activeCodexThreadId,
+        serviceTier: threadServiceTier ?? 'omitted',
+        effort: _activeCodexReasoningEffort,
+        approvalPolicy: _codexPermissionMode.approvalPolicy,
+        sandboxType: _codexPermissionMode.sandboxPolicy?['type']?.toString(),
+        conversationId: remoteCodex ? null : conversationId,
+        model: _activeCodexModelId,
+      ),
+    );
     final response = await CodexAppServerService.startThread(
       conversationId: remoteCodex ? null : conversationId,
       cwd: cwd.isEmpty ? null : cwd,
       model: _activeCodexModelId,
       effort: _activeCodexReasoningEffort,
       collaborationMode: _activeCodexCollaborationMode,
-      serviceTier: _activeCodexServiceTierOrNull,
+      serviceTier: threadServiceTier,
     );
     final threadId =
         _asCodexString(response['threadId']) ??
@@ -3036,6 +3049,16 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final collaborationModeForTurn =
         collaborationModeOverride ?? _activeCodexCollaborationMode;
     final turnUsesPlanMode = _isCodexPlanMode(collaborationModeForTurn);
+    // B21: capture actual startTurn payload (tier omitted when Fast off).
+    final turnServiceTier = _activeCodexServiceTierOrNull;
+    final turnEffort = _activeCodexReasoningEffort;
+    final turnApprovalPolicy = _codexPermissionMode.approvalPolicy;
+    final turnSandboxType =
+        _codexPermissionMode.sandboxPolicy?['type']?.toString();
+    final turnModel = modelOverride ?? _activeCodexModelId;
+    final turnThreadId = _activeCodexThreadId;
+    final turnConversationId = remoteCodex ? null : resolvedConversationId;
+    final turnServiceTierLog = turnServiceTier ?? 'omitted';
     try {
       CodexStatus status = _codexStatus;
       if (!status.connected) {
@@ -3046,6 +3069,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           });
         }
       }
+      unawaited(
+        DebugFileLog.logTurnStart(
+          threadId: turnThreadId,
+          serviceTier: turnServiceTierLog,
+          effort: turnEffort,
+          approvalPolicy: turnApprovalPolicy,
+          sandboxType: turnSandboxType,
+          conversationId: turnConversationId,
+          model: turnModel,
+        ),
+      );
       final response = await CodexAppServerService.startTurn(
         conversationId: remoteCodex ? null : resolvedConversationId,
         threadId: _activeCodexThreadId,
@@ -3056,7 +3090,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         model: modelOverride ?? _activeCodexModelId,
         effort: _activeCodexReasoningEffort,
         collaborationMode: collaborationModeForTurn,
-        serviceTier: _activeCodexServiceTierOrNull,
+        serviceTier: turnServiceTier,
       );
       final resolvedThreadId = _asCodexString(response['threadId']);
       if (resolvedThreadId != null && remoteCodex) {
@@ -3097,17 +3131,36 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       await _writeCodexCommandPreferencesForCurrentConversation();
     } catch (error) {
       unawaited(
+        DebugFileLog.logTurnStart(
+          threadId: turnThreadId ?? _activeCodexThreadId,
+          serviceTier: turnServiceTierLog,
+          effort: turnEffort,
+          approvalPolicy: turnApprovalPolicy,
+          sandboxType: turnSandboxType,
+          conversationId: turnConversationId ??
+              _currentConversationIdByMode[ChatPageMode.codex],
+          model: turnModel,
+          error: error,
+        ),
+      );
+      unawaited(
         DebugFileLog.logError(
           'turn.start',
           error,
           fields: <String, Object?>{
-            if ((_activeCodexThreadId ?? '').isNotEmpty)
-              'threadId': _activeCodexThreadId,
-            if (_currentConversationIdByMode[ChatPageMode.codex] != null)
-              'conversationId':
+            if ((turnThreadId ?? _activeCodexThreadId ?? '').isNotEmpty)
+              'threadId': turnThreadId ?? _activeCodexThreadId,
+            if ((turnConversationId ??
+                    _currentConversationIdByMode[ChatPageMode.codex]) !=
+                null)
+              'conversationId': turnConversationId ??
                   _currentConversationIdByMode[ChatPageMode.codex],
-            'model': _activeCodexModelId,
-            'effort': _activeCodexReasoningEffort,
+            'model': turnModel,
+            'effort': turnEffort,
+            'serviceTier': turnServiceTierLog,
+            if (turnApprovalPolicy != null)
+              'approvalPolicy': turnApprovalPolicy,
+            if (turnSandboxType != null) 'sandboxType': turnSandboxType,
           },
         ),
       );

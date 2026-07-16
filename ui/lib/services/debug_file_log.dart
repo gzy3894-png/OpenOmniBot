@@ -181,10 +181,11 @@ class DebugFileLog {
     String? threadId,
     int? conversationId,
     String? model,
+    Object? error,
   }) {
     return log(
       'turn_start',
-      'start',
+      error == null ? 'start' : 'fail',
       fields: <String, Object?>{
         if (serviceTier != null) 'serviceTier': serviceTier,
         if (effort != null) 'effort': effort,
@@ -193,6 +194,7 @@ class DebugFileLog {
         if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
         if (conversationId != null) 'conversationId': conversationId,
         if (model != null) 'model': model,
+        if (error != null) 'error': error.toString(),
       },
     );
   }
