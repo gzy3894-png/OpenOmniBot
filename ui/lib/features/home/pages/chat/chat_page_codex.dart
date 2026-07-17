@@ -2430,6 +2430,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
+  @override
   Future<void> _executeCodexCompactCommand() async {
     final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
     // B34: Codex compact is thread RPC only — never agent manual compact.

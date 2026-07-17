@@ -1852,6 +1852,10 @@ abstract class _ChatPageStateBase extends State<ChatPage>
 
   Future<void> _executeCodexInitCommand();
 
+  /// B34: Codex thread compact RPC. Declared on base so OpenClaw hard-gate can
+  /// re-route without cross-mixin private call compile errors.
+  Future<void> _executeCodexCompactCommand();
+
   /// B5: optional [instructions] → review target custom.instructions;
   /// bare/null → uncommittedChanges (second action after prefill).
   Future<void> _startCodexReviewCommand({String? instructions});
