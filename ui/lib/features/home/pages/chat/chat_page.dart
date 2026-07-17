@@ -428,6 +428,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   String? _activeCodexReasoningEffort;
   String? _activeCodexCollaborationMode;
   bool _activeCodexFastEnabled = false;
+  /// conf `features.auto_compaction` mirror; null=unknown (UI default on).
+  /// On base so Codex mixin slash toggle can read/write without cross-mixin private.
+  bool? _activeCodexAutoCompactionEnabled;
   // Goal-mode session chrome (UI defaults). Handlers/RPC ownership: M4.
   bool _codexGoalModeEnabled = false;
   String? _codexActiveGoalText;
@@ -1857,6 +1860,10 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   /// B34: Codex thread compact RPC. Declared on base so OpenClaw hard-gate can
   /// re-route without cross-mixin private call compile errors.
   Future<void> _executeCodexCompactCommand();
+
+  /// B37: auto-compaction conf toggle (UI mixin). On base so Codex slash path
+  /// can call without cross-mixin private compile errors.
+  Future<void> _setCodexAutoCompactionEnabled(bool enabled);
 
   /// B5: optional [instructions] → review target custom.instructions;
   /// bare/null → uncommittedChanges (second action after prefill).

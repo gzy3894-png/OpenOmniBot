@@ -31,8 +31,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   double _codexContextBarHeight = 0;
   /// conf `omnimind_context_token_threshold` 缓存；缺省 128000。
   int _codexContextTokenThreshold = _kDefaultContextTokenThreshold;
-  /// conf `features.auto_compaction` 缓存；null=未知（UI 默认开）。
-  bool? _activeCodexAutoCompactionEnabled;
+  // B37: `_activeCodexAutoCompactionEnabled` lives on `_ChatPageStateBase`
+  // so Codex slash toggle can share the same mirror field.
   bool _codexLocalConfigHydrateInFlight = false;
   bool _codexLocalConfigHydrated = false;
   /// 输入柱整柱实测高度（ChatInputWrapper 含 topBanner + composer + 顶 padding）。
@@ -287,6 +287,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     }());
   }
 
+  @override
   Future<void> _setCodexAutoCompactionEnabled(bool enabled) async {
     final previous = _activeCodexAutoCompactionEnabled;
     if (previous == enabled) {
