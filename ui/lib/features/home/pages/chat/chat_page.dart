@@ -444,6 +444,8 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   String? _codexModelListError;
   String? _codexCollaborationModeListError;
   List<String> _codexModelOptions = const <String>[];
+  // wireId → display label from model/list (fallback to wireId when absent)
+  Map<String, String> _codexModelDisplayNames = const <String, String>{};
   // B26: efforts for the *active* model only. Cold start empty (or last catalog
   // restore) — never fake low..xhigh as universal truth.
   List<String> _codexReasoningEffortOptions = const <String>[];

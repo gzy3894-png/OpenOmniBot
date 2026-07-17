@@ -853,11 +853,13 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       ];
     }
     return orderedModels
-        .map(
-          (modelId) => _buildCodexCommandCard(
+        .map((modelId) {
+          // toolTitle/progress stay wire id so selection routes via _selectCodexModel.
+          final label = _codexModelDisplayNames[modelId] ?? modelId;
+          return _buildCodexCommandCard(
             cardId: 'slash-command-codex-model-$modelId',
             toolTitle: modelId,
-            displayName: modelId,
+            displayName: label,
             toolTypeLabel: LegacyTextLocalizer.isEnglish ? 'Model' : '模型',
             status: modelId == selectedModel ? 'success' : 'running',
             statusLabel: modelId == selectedModel
@@ -866,11 +868,11 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
             summary: modelId == selectedModel
                 ? (LegacyTextLocalizer.isEnglish ? 'Current model' : '当前模型')
                 : (LegacyTextLocalizer.isEnglish
-                      ? 'Switch to $modelId'
-                      : '切换到 $modelId'),
+                      ? 'Switch to $label'
+                      : '切换到 $label'),
             progress: modelId,
-          ),
-        )
+          );
+        })
         .toList(growable: false);
   }
 
@@ -1900,6 +1902,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                               modelOptions: _codexModelOptions,
                               reasoningEffortOptions:
                                   _codexReasoningEffortOptions,
+                              modelDisplayNames: _codexModelDisplayNames,
                               isLoadingModels: _isCodexModelListLoading,
                               modelListError: _codexModelListError,
                             )

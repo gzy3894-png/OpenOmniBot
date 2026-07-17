@@ -378,6 +378,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       // B32/B34 residual: pure model/list wire ids (slug preferred over display_name).
       // Never merge current/preferred; preserve model/list catalog order.
       final models = _extractCodexModelOptionIds(response);
+      // B37: wireId → displayName for UI labels (selection still uses wire id).
+      final displayNames = _extractCodexModelDisplayNames(response);
       if (models.isEmpty) {
         debugPrint(
           '[Codex] model/list returned no parseable models: ${jsonEncode(response)}',
@@ -390,6 +392,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
             fields: <String, Object?>{
               'count': models.length,
               'models': models.join(','),
+              'displayNameCount': displayNames.length,
             },
           ),
         );
@@ -462,6 +465,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           };
         }
         _codexModelOptions = models;
+        _codexModelDisplayNames = displayNames;
         if ((_activeCodexModelId ?? '').trim() != (nextActiveModel ?? '')) {
           _activeCodexModelId = nextActiveModel;
         }
@@ -589,21 +593,26 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           model: normalized,
         );
       } catch (error) {
-        if (!mounted) return;
-        unawaited(
-          DebugFileLog.logModel(
-            'select_failed',
-            model: normalized,
-            previous: previous.isEmpty ? null : previous,
-          ),
-        );
-        showToast(
-          LegacyTextLocalizer.isEnglish
-              ? 'Failed to update Codex model: $error'
-              : '更新 Codex 模型失败：$error',
-          type: ToastType.error,
-        );
-        return;
+        // B37: stale thread id → clear and still apply model locally.
+        if (_isCodexThreadMissingError(error)) {
+          _clearStaleCodexThreadId(threadId);
+        } else {
+          if (!mounted) return;
+          unawaited(
+            DebugFileLog.logModel(
+              'select_failed',
+              model: normalized,
+              previous: previous.isEmpty ? null : previous,
+            ),
+          );
+          showToast(
+            LegacyTextLocalizer.isEnglish
+                ? 'Failed to update Codex model: $error'
+                : '更新 Codex 模型失败：$error',
+            type: ToastType.error,
+          );
+          return;
+        }
       }
     }
     if (!mounted) return;
@@ -972,37 +981,51 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
         settingsRpc = 'ok';
       } catch (error) {
-        settingsRpc = 'fail';
         rpcError = error;
-        if (!sameMode && mounted) {
-          setState(() {
-            _codexPermissionMode = previous;
-          });
+        // B37: dead thread → clear id, keep optimistic mode, continue tip path.
+        if (_isCodexThreadMissingError(error)) {
+          _clearStaleCodexThreadId(threadId);
+          settingsRpc = 'stale_cleared';
+          if (mounted) {
+            showToast(
+              LegacyTextLocalizer.isEnglish
+                  ? 'Session expired; permission applies on next chat'
+                  : '会话已失效，权限将在下次对话生效',
+              type: ToastType.warning,
+            );
+          }
+        } else {
+          settingsRpc = 'fail';
+          if (!sameMode && mounted) {
+            setState(() {
+              _codexPermissionMode = previous;
+            });
+          }
+          unawaited(
+            DebugFileLog.log(
+              'permission_set',
+              'fail:${mode.name}',
+              fields: <String, Object?>{
+                'mode': mode.name,
+                'approvalPolicy': approvalPolicy,
+                'approvalsReviewer': approvalsReviewer,
+                'sandbox': sandboxType,
+                'writableRoots': rootsLabel,
+                'settingsRpc': settingsRpc,
+                'threadId': threadId,
+                'sameMode': sameMode,
+                'error': error.toString(),
+              },
+            ),
+          );
+          showToast(
+            LegacyTextLocalizer.isEnglish
+                ? 'Failed to update Codex permission: $error'
+                : '更新 Codex 权限失败：$error',
+            type: ToastType.error,
+          );
+          return;
         }
-        unawaited(
-          DebugFileLog.log(
-            'permission_set',
-            'fail:${mode.name}',
-            fields: <String, Object?>{
-              'mode': mode.name,
-              'approvalPolicy': approvalPolicy,
-              'approvalsReviewer': approvalsReviewer,
-              'sandbox': sandboxType,
-              'writableRoots': rootsLabel,
-              'settingsRpc': settingsRpc,
-              'threadId': threadId,
-              'sameMode': sameMode,
-              'error': error.toString(),
-            },
-          ),
-        );
-        showToast(
-          LegacyTextLocalizer.isEnglish
-              ? 'Failed to update Codex permission: $error'
-              : '更新 Codex 权限失败：$error',
-          type: ToastType.error,
-        );
-        return;
       }
     }
 
@@ -1121,10 +1144,16 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         }
         settingsRpc = 'ok';
       } catch (error) {
-        settingsRpc = 'fail';
         rpcError = error;
-        await rollbackAndTip(error, stage: 'settingsRpc');
-        return;
+        // B37: dead thread → clear id and continue conf/pref (keep optimistic).
+        if (_isCodexThreadMissingError(error)) {
+          _clearStaleCodexThreadId(threadId);
+          settingsRpc = 'stale_cleared';
+        } else {
+          settingsRpc = 'fail';
+          await rollbackAndTip(error, stage: 'settingsRpc');
+          return;
+        }
       }
     }
 
@@ -1189,8 +1218,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
-  /// B33/B34: slash card / typed `/auto-compact` toggles `features.auto_compaction`.
-  /// Does **not** call thread compact RPC (`/compact`) or Fast tier toggles.
+  /// B33/B34/B37: slash `/auto-compact` → same path as card toggle so UI mirror
+  /// stays in sync. Does **not** call thread compact RPC or Fast tier toggles.
   Future<void> _toggleCodexAutoCompactionFromSlash() async {
     unawaited(
       DebugFileLog.log(
@@ -1200,64 +1229,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           'compactPath': 'conf_only',
           'fastPath': 'none',
           'threadCompact': false,
+          'via': 'slash',
         },
       ),
     );
-    try {
-      final localConfig = await CodexAppServerService.readLocalConfig();
-      final next = !localConfig.isAutoCompactionEnabled;
-      await CodexAppServerService.writeLocalConfig(
-        baseUrl: localConfig.baseUrl,
-        model: localConfig.model,
-        apiKey: localConfig.apiKey,
-        serviceTier: localConfig.serviceTier,
-        fastMode: localConfig.fastMode,
-        autoCompaction: next,
-        contextTokenThreshold: localConfig.contextTokenThreshold,
-        modelReasoningEffort: localConfig.modelReasoningEffort,
-        defaultGoal: localConfig.defaultGoal,
-        remoteEnabled: localConfig.remoteEnabled,
-        remoteBridgeUrl: localConfig.remoteBridgeUrl,
-        remoteBridgeToken: localConfig.remoteBridgeToken,
-        remoteCwd: localConfig.remoteCwd,
-      );
-      unawaited(
-        DebugFileLog.log(
-          'auto_compact',
-          next ? 'on' : 'off',
-          fields: const <String, Object?>{
-            'compactPath': 'conf_only',
-            'threadCompact': false,
-          },
-        ),
-      );
-      if (!mounted) return;
-      // UI mirror lives on _ChatPageUiMixin; card path updates it via
-      // _setCodexAutoCompactionEnabled. Typed /auto-compact toast only.
-      showToast(
-        LegacyTextLocalizer.isEnglish
-            ? (next
-                  ? 'Auto-compaction on (new session applies)'
-                  : 'Auto-compaction off')
-            : (next ? '自动压缩已开（新开对话生效）' : '自动压缩已关'),
-        type: ToastType.success,
-      );
-    } catch (error) {
-      unawaited(
-        DebugFileLog.log(
-          'auto_compact',
-          'toggle_fail',
-          fields: <String, Object?>{'error': error.toString()},
-        ),
-      );
-      if (!mounted) return;
-      showToast(
-        LegacyTextLocalizer.isEnglish
-            ? 'Failed to toggle auto-compaction: $error'
-            : '切换自动压缩失败：$error',
-        type: ToastType.error,
-      );
-    }
+    final current = _activeCodexAutoCompactionEnabled ?? true;
+    await _setCodexAutoCompactionEnabled(!current);
   }
 
   Future<void> _appendCodexLocalSystemTip(String text) async {
@@ -4423,6 +4400,34 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       debugPrint('Start Codex login failed: $error');
     }
   }
+
+  /// B37: thread/settings/update failed because UI holds a dead thread id.
+  bool _isCodexThreadMissingError(Object error) {
+    final s = error.toString().toLowerCase();
+    return s.contains('thread not found') ||
+        (s.contains('-32600') && s.contains('thread'));
+  }
+
+  /// B37: drop stale `_activeCodexThreadId` so later RPCs do not target ghosts.
+  void _clearStaleCodexThreadId(String expectedThreadId) {
+    final cur = (_activeCodexThreadId ?? '').trim();
+    if (cur.isEmpty) return;
+    if (expectedThreadId.isNotEmpty && cur != expectedThreadId) return;
+    if (mounted) {
+      setState(() {
+        _activeCodexThreadId = null;
+      });
+    } else {
+      _activeCodexThreadId = null;
+    }
+    unawaited(
+      DebugFileLog.log(
+        'thread',
+        'stale_cleared',
+        fields: <String, Object?>{'threadId': expectedThreadId},
+      ),
+    );
+  }
 }
 
 int? _asCodexInt(dynamic value) {
@@ -7117,6 +7122,46 @@ List<String> _extractCodexModelOptionIds(Map<String, dynamic> response) {
     result.add(id);
   }
   return result;
+}
+
+/// B37: wireId → display label from model/list items.
+/// Selection/RPC stay on wire id; UI can use [_codexModelDisplayLabel].
+Map<String, String> _extractCodexModelDisplayNames(
+  Map<String, dynamic> response,
+) {
+  final rawItems = _collectCodexModelListItems(response);
+  final out = <String, String>{};
+  for (final item in rawItems) {
+    final id = _codexModelWireId(item);
+    if (id == null || id.isEmpty) continue;
+    String? label;
+    if (item is Map) {
+      for (final key in const [
+        'displayName',
+        'display_name',
+        'name',
+        'title',
+      ]) {
+        final t = item[key]?.toString().trim() ?? '';
+        if (t.isNotEmpty) {
+          label = t;
+          break;
+        }
+      }
+    }
+    out[id] = (label != null && label.isNotEmpty) ? label : id;
+  }
+  return out;
+}
+
+/// B37: pure helper for tests/UI; map may be empty → fallback to wire id.
+String _codexModelDisplayLabel(
+  String wireId, [
+  Map<String, String> displayNames = const <String, String>{},
+]) {
+  final id = wireId.trim();
+  if (id.isEmpty) return id;
+  return displayNames[id] ?? id;
 }
 
 /// Prefer top-level model list keys in declared order; avoid deep nested

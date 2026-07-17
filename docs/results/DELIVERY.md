@@ -1,84 +1,112 @@
 # 当前交付单
 
-> 更新：2026-07-17 · Stage **B34–B36 READY（待真机复测）**  
-> **真源：** `docs/results/PLAN-2026-07-17-b34-fast-perm-leak.md` · EXEC `docs/results/EXEC-2026-07-17-b34-b36.md`  
-> **主线程：方案/调度/验收**（不写业务码）· 子代理 ≥6 并发 · push **仅 mine**
+> 更新：2026-07-17 · Stage **B37 READY-for-push**（代码已落 · commit/GHA 待做）  
+> **真源：** `docs/results/PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `docs/results/EXEC-2026-07-17-b37-stale-thread.md`  
+> 上一包：B34–B36 · `7896a6c` · GHA #29565426990 · sha256 `aa34e473…e6d9a8` · **真机 FAIL**  
+> **主线程：方案/调度/验收** · push **仅 mine** · 禁本机 assemble  
+> 状态：**READY-for-push** · **不编** 新 commit / GHA run id（待 push 后回填）
 
 ---
 
 ## 1. 现在请你做
 
-1. 安装：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`  
-   （副本：`/storage/emulated/0/Download/OpenOmniBot-s1-7896a6c-standard-debug.apk`）
-2. 按 §3 测点 1–8 真机复测；优先 B34 Fast≠压缩、B35 权限按钮、B36 Fast 拨开关无 `thread not found`。
-3. 模型列表对照：wire id 须为 catalog **slug**（见下方 note），勿只认 display_name。
+**开发侧：**
 
-**你不需要改代码、管构建。** 反馈 PASS/FAIL 即可（FAIL 写现象 + 是否可复现）。
+1. push **mine only** → 等 GHA `baseline-standard-debug` → stage APK。  
+2. 回填 EXEC/本单：commit · GHA run · sha256 → 标 **READY**。  
+3. **禁止本机 assemble**。
+
+**真机侧：**
+
+- B34–B36（`7896a6c` / `aa34e473…`）**已 FAIL**，不必再测该包修设置类。  
+- B37 出包并 READY 后再装新 APK，按 §4 复测。
 
 ---
 
-## 2. 当前包（B34–B36 READY · 待真机）
+## 2. B34–B36 包状态（归档 · 真机 FAIL）
 
 | 项 | 值 |
 |----|-----|
 | 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
 | 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-7896a6c-standard-debug.apk` |
-| 状态 | **READY · 待真机复测** |
+| 状态 | **真机 FAIL**（设置 RPC stale thread） |
 | sha256 | `aa34e473d781302247188bc925425893fe8e1b7a0ce9e3ad219a412437e6d9a8` |
-| 大小 | `366335306` bytes（~349 MB） |
-| 功能 commit | `d7abe18`（B34–B36）+ `7896a6c`（跨 mixin：`_executeCodexCompactCommand` 声明在 base） |
-| HEAD | `7896a6c9342303d964f9908e2571a4471d619afd` |
+| 功能 commit | `d7abe18` + `7896a6c` |
+| HEAD（该波） | `7896a6c9342303d964f9908e2571a4471d619afd` |
 | 分支 | `secondary/s1-baseline` |
 | fork | `gzy3894-png/OpenOmniBot` · push **仅 mine** |
-| GHA | [Baseline Standard Debug #29565426990](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29565426990) · **SUCCESS** · head `7896a6c` |
+| GHA | [Baseline Standard Debug #29565426990](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29565426990) · SUCCESS · head `7896a6c` |
 | 计划 / EXEC | `PLAN-2026-07-17-b34-fast-perm-leak.md` · `EXEC-2026-07-17-b34-b36.md` |
-| B36 报告 | `docs/results/reports/b36-heat-leak-scan-2026-07-17.md` |
 
-**本包相对 5542b47 已含：** B34 Fast≠compact · B35 权限按钮恢复 · B36 soft conf 不杀 session · B32 residual 模型列表 wire id 优先 slug
+### FAIL 证据（`omnibot-debug-20260717.log`）
 
-**本机模型 note（对照测点 7 / B32）：**  
-- conf `model` = `gpt-5.6-sol`  
-- catalog slug：`claude-fable-5` · `claude-haiku-4-5-20251001` · `claude-opus-4-8` · `gpt-5.6-sol`  
-- 列表 wire id **须与 `model/list` slug 一致**，勿用 display_name 当 id
+- `permission_set fail: thread not found`
+- `model select_failed: thread not found`
+- `fast_set settingsRpc fail: thread not found`
+- `MissingPluginException connect` intermittent
+- `model_list` 加载 7 wire ids **OK**
+
+### 根因摘要（→ B37）
+
+1. Soft conf 写假阳性 hard/bootstrap（toml 读空）→ session kill → stale threadId  
+2. Flutter 死线程 settings RPC：无 clear / 无本地 apply  
+3. 模型 UI 仅 wire（次要）
 
 ---
 
-## 3. 测点（B34–B36 · PLAN §8）
+## 3. 当前波 · B37（READY-for-push）
 
-| # | 操作 | PASS 标准 |
-|---|------|-----------|
-| 1 | 只拨 Fast 开→关→开 | 仅 Fast tip；**无**压缩 marker / 「无可压缩」toast |
-| 2 | 发「测试fast模式」 | 正常 user turn；无压缩 |
-| 3 | 点「自动压缩」 | 仅 conf 开关 tip；**不** thread/agent compact |
-| 4 | 点 `/compact` | 仅 Codex compact 文案路径 |
-| 5 | 看输入区权限按钮 | 可见且可点三级（请求审批 / 自动审 / 全放行） |
-| 6 | defaultMode 下触发需批工具 | 稳定弹出请求授权（类 plan） |
-| 7 | 回归 B30–B32 + 模型列表 | 顶栏 / `/` `@` 互斥 / 列表 **slug** 与 `model/list` 一致 |
-| 8 | 使用 5–10 min；Fast 连拨 5 次 | 发热主观对比；**无** `thread not found`；soft conf 不杀 session |
+| 项 | 值 |
+|----|-----|
+| 状态 | **READY-for-push**（代码已落 · 待 push/GHA） |
+| 计划 | `PLAN-2026-07-17-b37-stale-thread-settings.md` |
+| EXEC | `EXEC-2026-07-17-b37-stale-thread.md` |
+| 功能 commit | _TBD_ |
+| HEAD | _TBD_ |
+| GHA | _TBD_ · workflow `baseline-standard-debug` |
+| APK sha256 | _TBD_ |
+| stage | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` + `…-<shortsha>-…` |
 
-### 本波修复摘要
+### 本波已实现（待 push）
 
 | ID | 修复 |
 |----|------|
-| **B34** | 卡标签去歧义；`/fast` · `/auto-compact` · `/compact` **三路互斥**；Fast **永不** compact RPC；Codex hard-gate 禁止 agent compact |
-| **B35** | 权限按钮恢复（composer 门闸 + UI props）；defaultMode = on-request + writableRoots 再断言 |
-| **B36** | soft conf（`fast_mode` / `auto_compaction` / `service_tier` / threshold 等）写回 **跳过** session disconnect；静态泄漏扫描见报告 |
-| **B32 residual** | model/list wire id **优先 slug**，不用 display_name |
+| **B37** | Manager `writeLocalConfig` 硬化（`existingTomlKnown` / `existingAuthKnown` / `firstLocalBootstrap` 仅无 live session）；Flutter stale clear + model/perm/fast 本地 apply；displayName map（cards/composer）；auto-compact slash → `_setCodexAutoCompactionEnabled` |
+
+**保留不回滚：** B34 Fast≠compact · B35 权限按钮 · B36 soft 意图（修假阳性 kill）· B32 wire slug
 
 ---
 
-## 4. 状态
+## 4. 测点（B37 · PLAN §7）
 
-- [x] B34–B36 实现（`d7abe18`）
-- [x] 跨 mixin 编译修（`7896a6c`）
-- [x] push mine · GHA #29565426990 SUCCESS
-- [x] APK stage → sha256 / size 已填
-- [ ] 真机复测 PASS
+| # | 操作 | PASS 标准 |
+|---|------|-----------|
+| 1 | Fast 连拨 ×5 | 无 `thread not found`；session 不无故 kill |
+| 2 | 权限三级各一次 | 无 `permission_set fail: thread not found` |
+| 3 | 模型选另一 slug | 无 `select_failed`；有 displayName 则展示，value=slug |
+| 4 | 自动压缩 / `/auto-compact` | conf↔UI 同步；不 compact RPC |
+| 5 | soft 写后立刻 perm/model/fast | session 仍活；无连环 fail |
+| 6 | 回归 B34 | Fast ≠ 压缩 |
+| 7 | 回归 B35 | 权限按钮可见可点 |
+| 8 | model_list | wire ids 仍加载 |
+| 9 | 使用 5–10 min | reconnect 不误杀；MissingPlugin 偶发可记日志 |
 
 ---
 
-## 5. 未改 / 残余（B36 报告）
+## 5. 状态勾选
 
-- Remote 2s poll、每 event `debugPrint`：**未改**（待真机确认 remote 是否常开）
-- 监听 bind/unbind、顶栏 height：无硬泄漏证据，**未改**
-- 改 baseUrl / model / apiKey 仍应 reconnect（硬字段）
+- [x] B34–B36 实现 + GHA SUCCESS + APK stage  
+- [x] 真机复测 → **FAIL**（stale thread settings）  
+- [x] B37 PLAN / EXEC 文档  
+- [x] B37 实现（代码已落 · 待 push）  
+- [ ] push mine · GHA SUCCESS  
+- [ ] APK stage · 填 sha256 / shortsha  
+- [ ] 真机 §4 PASS  
+
+---
+
+## 6. 未改 / 残余
+
+- Remote 2s poll、每 event `debugPrint`：仍未改  
+- MissingPlugin connect：B37 不优先全量修，除非阻断设置且有新证据  
+- hard 字段（baseUrl / model / apiKey）变更仍应 reconnect  

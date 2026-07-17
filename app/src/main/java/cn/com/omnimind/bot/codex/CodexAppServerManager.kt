@@ -533,9 +533,10 @@ class CodexAppServerManager private constructor(
             throw IllegalArgumentException("Remote Codex bridge URL and cwd are required.")
         }
 
-        // B36: compare hard identity before write so soft feature toggles
+        // B36/B37: compare hard identity before write so soft feature toggles
         // (fast_mode / auto_compaction / service_tier / threshold) can skip
         // session kill — avoids Fast path "thread not found" + reconnect heat.
+        // B37: empty/failed reads are unknown, not empty identity (shell race).
         val previousRemoteConfig = remoteConfigStore.read()
         val savedRemoteConfig = remoteConfigStore.write(remoteConfig)
         val existingToml = if (localComplete) {
@@ -607,9 +608,13 @@ class CodexAppServerManager private constructor(
                 )
             }
         }
-        // B36: only kill session when hard identity changes (provider/model/key/remote).
+        // B36/B37: only kill session when hard identity changes (provider/model/key/remote).
         // Soft toggles (fast_mode, auto_compaction, service_tier, threshold, effort,
         // defaultGoal) keep the live session so Fast no longer yields thread-not-found.
+        // B37 harden: blank readExisting* results are unknown — do not treat as empty
+        // identity or first bootstrap while a session is live (shell race/fail).
+        val existingTomlKnown = existingToml.isNotBlank()
+        val existingAuthKnown = existingAuthJson.isNotBlank()
         val existingModel = extractTomlString(existingToml, "model").orEmpty()
         val existingBaseUrl = extractTomlString(existingToml, "base_url").orEmpty()
         val existingApiKey = extractOpenAiApiKey(existingAuthJson).orEmpty()
@@ -619,14 +624,24 @@ class CodexAppServerManager private constructor(
                 previousRemoteConfig.authToken.trim() != savedRemoteConfig.authToken.trim() ||
                 previousRemoteConfig.cwd.trim() != savedRemoteConfig.cwd.trim()
         val localHardChanged = localComplete && (
-            existingModel != model ||
-                existingBaseUrl != baseUrl ||
-                existingApiKey != apiKey
+            (existingTomlKnown && (existingModel != model || existingBaseUrl != baseUrl)) ||
+                (existingAuthKnown && existingApiKey != apiKey)
             )
-        // First-time local write (no prior toml identity) still needs a clean session.
-        val firstLocalBootstrap = localComplete && existingModel.isBlank() && existingBaseUrl.isBlank()
+        // First-time local write only when no known toml AND no live session (fail-open soft).
+        val hasLiveSession = session != null
+        val firstLocalBootstrap = localComplete && !existingTomlKnown && !hasLiveSession
         val shouldRestartSession = remoteHardChanged || localHardChanged || firstLocalBootstrap
         if (shouldRestartSession) {
+            val reason = when {
+                remoteHardChanged -> "remote-hard"
+                localHardChanged -> "local-hard"
+                firstLocalBootstrap -> "bootstrap"
+                else -> "unknown"
+            }
+            Log.i(
+                "CodexAppServerManager",
+                "B37 writeLocalConfig restart session reason=$reason"
+            )
             sessionMutex.withLock {
                 session?.disconnect()
                 session = null
@@ -634,6 +649,11 @@ class CodexAppServerManager private constructor(
                 activeTurnsByThreadId.clear()
                 finishedNotifyOnceByThread.clear()
             }
+        } else if (localComplete && !existingTomlKnown && hasLiveSession) {
+            Log.i(
+                "CodexAppServerManager",
+                "B37 writeLocalConfig skip restart: existing toml unknown while session live"
+            )
         }
         return buildCodexLocalConfigPayload(
             model = model,

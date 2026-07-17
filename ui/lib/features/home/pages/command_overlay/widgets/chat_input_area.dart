@@ -50,6 +50,7 @@ class CodexRunSettings {
     required this.reasoningEffort,
     this.modelOptions = const <String>[],
     this.reasoningEffortOptions = const <String>[],
+    this.modelDisplayNames = const <String, String>{},
     this.isLoadingModels = false,
     this.modelListError,
   });
@@ -58,6 +59,8 @@ class CodexRunSettings {
   final String reasoningEffort;
   final List<String> modelOptions;
   final List<String> reasoningEffortOptions;
+  /// wireId → pretty display name for model picker labels.
+  final Map<String, String> modelDisplayNames;
   final bool isLoadingModels;
   final String? modelListError;
 }

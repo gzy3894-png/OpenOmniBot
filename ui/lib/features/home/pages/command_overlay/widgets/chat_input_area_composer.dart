@@ -1004,7 +1004,10 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
           : (english ? 'No models available' : '未获取到可用模型');
       final models = [
         for (final option in modelOptions)
-          ProviderModelOption(id: option, displayName: option),
+          ProviderModelOption(
+            id: option,
+            displayName: settings.modelDisplayNames[option] ?? option,
+          ),
       ];
       final currentSelection = modelId.isEmpty
           ? null
