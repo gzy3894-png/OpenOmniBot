@@ -23,6 +23,12 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
       _requestComposerFocus(showKeyboard: true);
       return;
     }
+    // B31 mutex: opening `/` clears skills so route resolves to root.
+    // Skills-only open (no `/` prefix, e.g. `@`) switches to root via inject.
+    if (_codexSkillsPanelVisible) {
+      _codexSkillsPanelVisible = false;
+      _codexSkillPanelQuery = '';
+    }
     if (!slashPrefixed) {
       _messageController.value = const TextEditingValue(
         text: '/',
@@ -85,7 +91,15 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
   @override
   void _handleSlashCommandInput() {
     final value = _messageController.value;
-    final shouldShowSlash = value.text.trimLeft().startsWith('/');
+    final trimmedLeft = value.text.trimLeft();
+    final shouldShowSlash = trimmedLeft.startsWith('/');
+    final normalizedSlash = trimmedLeft.toLowerCase();
+    // B31: typed `/skill(s)` may keep skills; other slash roots force skills off.
+    final isSkillSlashPath = _activeMode == ChatPageMode.codex &&
+        shouldShowSlash &&
+        (normalizedSlash == '/skills' ||
+            normalizedSlash == '/skill' ||
+            normalizedSlash.startsWith('/skill '));
 
     // Codex: `@` opens the skills panel (same catalog as /skills), not model mention.
     if (_activeMode == ChatPageMode.codex && !shouldShowSlash) {
@@ -133,12 +147,15 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
     final nextOpenClawPanelExpanded = shouldCollapsePanels
         ? false
         : _openClawPanelExpanded;
-    final keepCodexSkills =
-        _activeMode == ChatPageMode.codex && _codexSkillsPanelVisible;
+    // B31: never keep skills when entering non-skill slash-prefixed mode.
+    final keepCodexSkills = _activeMode == ChatPageMode.codex &&
+        _codexSkillsPanelVisible &&
+        (!shouldShowSlash || isSkillSlashPath);
     final nextSlashPanelVisible = shouldShowSlash ||
         shouldShowModelMention ||
         nextOpenClawPanelExpanded ||
         keepCodexSkills;
+    final nextCodexSkillsVisible = keepCodexSkills;
 
     if (!mounted) return;
 
@@ -147,6 +164,7 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
         shouldShowModelMention != _showModelMentionPanel ||
         nextMentionToken != _activeModelMentionToken ||
         nextOpenClawPanelExpanded != _openClawPanelExpanded ||
+        nextCodexSkillsVisible != _codexSkillsPanelVisible ||
         _isSlashCommandExpanded;
     if (!shouldUpdate) {
       return;
@@ -158,6 +176,12 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
       _activeModelMentionToken = nextMentionToken;
       _openClawPanelExpanded = nextOpenClawPanelExpanded;
       _slashCommandExpandedByMode[_activeMode] = false;
+      if (_codexSkillsPanelVisible != nextCodexSkillsVisible) {
+        _codexSkillsPanelVisible = nextCodexSkillsVisible;
+        if (!nextCodexSkillsVisible) {
+          _codexSkillPanelQuery = '';
+        }
+      }
     });
   }
 

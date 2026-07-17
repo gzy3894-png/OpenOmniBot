@@ -375,6 +375,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     try {
       final configSettings = await _readCodexRunSettingsFromServerConfig();
       final response = await CodexAppServerService.listModels();
+      // B32: options are pure model/list extract — never merge current/preferred.
       final models = _extractCodexOptionIds(
         response,
         _kCodexModelListResponseKeys,
@@ -390,14 +391,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           _extractCodexDefaultModelId(response) ??
           (models.isNotEmpty ? models.first : null);
       final activeModel = (_activeCodexModelId ?? '').trim();
-      final modelOptions = _mergeCodexOptionIds(
-        current: activeModel.isEmpty ? preferredModel : activeModel,
-        preferred: preferredModel,
-        options: models,
-      );
-      final effectiveModel = activeModel.isNotEmpty
-          ? activeModel
-          : preferredModel;
+      // Clamp selection to pure list: active ∈ models → preferred ∈ models → first/empty.
+      final String? nextActiveModel;
+      if (activeModel.isNotEmpty && models.contains(activeModel)) {
+        nextActiveModel = activeModel;
+      } else if (preferredModel != null &&
+          preferredModel.isNotEmpty &&
+          models.contains(preferredModel)) {
+        nextActiveModel = preferredModel;
+      } else if (models.isNotEmpty) {
+        nextActiveModel = models.first;
+      } else {
+        nextActiveModel = null;
+      }
+      final selectionClamped =
+          activeModel.isNotEmpty && nextActiveModel != activeModel;
+      final effectiveModel = nextActiveModel;
       // B26: per-model supportedReasoningEfforts + defaults (not a global union).
       final parsedCatalog = _extractCodexModelEffortCatalog(response);
       final parsedDefaults = _extractCodexModelDefaultEffortCatalog(response);
@@ -443,16 +452,24 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
             ...parsedDefaults,
           };
         }
-        _codexModelOptions = modelOptions;
-        if ((_activeCodexModelId ?? '').trim().isEmpty &&
-            preferredModel != null) {
-          _activeCodexModelId = preferredModel;
+        _codexModelOptions = models;
+        if ((_activeCodexModelId ?? '').trim() != (nextActiveModel ?? '')) {
+          _activeCodexModelId = nextActiveModel;
         }
         _activeCodexReasoningEffort = nextActiveEffort;
         _codexReasoningEffortOptions = effortOptions;
         _isCodexModelListLoading = false;
         _codexModelListError = null;
       });
+      if (selectionClamped) {
+        unawaited(
+          DebugFileLog.logModel(
+            'clamp',
+            model: nextActiveModel,
+            previous: activeModel,
+          ),
+        );
+      }
       if (parsedCatalog.isNotEmpty) {
         unawaited(_persistCodexModelEffortCatalog(_codexModelEffortCatalog));
       }
@@ -529,6 +546,27 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   }) async {
     final normalized = modelId.trim();
     if (normalized.isEmpty || normalized.startsWith('/')) {
+      return;
+    }
+    // B32: reject ghost ids not present in pure model/list options.
+    final catalog = _codexModelOptions;
+    if (catalog.isNotEmpty && !catalog.contains(normalized)) {
+      unawaited(
+        DebugFileLog.logModel(
+          'select_rejected',
+          model: normalized,
+          previous: (_activeCodexModelId ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexModelId ?? '').trim(),
+        ),
+      );
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Model not in list: $normalized'
+            : '模型不在列表中：$normalized',
+        type: ToastType.warning,
+      );
       return;
     }
     final previous = (_activeCodexModelId ?? '').trim();
@@ -1084,6 +1122,51 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
+  /// B33: slash card / typed `/auto-compact` toggles `features.auto_compaction`.
+  /// Does **not** call thread compact RPC (`/compact`).
+  Future<void> _toggleCodexAutoCompactionFromSlash() async {
+    try {
+      final localConfig = await CodexAppServerService.readLocalConfig();
+      final next = !localConfig.isAutoCompactionEnabled;
+      await CodexAppServerService.writeLocalConfig(
+        baseUrl: localConfig.baseUrl,
+        model: localConfig.model,
+        apiKey: localConfig.apiKey,
+        serviceTier: localConfig.serviceTier,
+        fastMode: localConfig.fastMode,
+        autoCompaction: next,
+        contextTokenThreshold: localConfig.contextTokenThreshold,
+        modelReasoningEffort: localConfig.modelReasoningEffort,
+        defaultGoal: localConfig.defaultGoal,
+        remoteEnabled: localConfig.remoteEnabled,
+        remoteBridgeUrl: localConfig.remoteBridgeUrl,
+        remoteBridgeToken: localConfig.remoteBridgeToken,
+        remoteCwd: localConfig.remoteCwd,
+      );
+      if (!mounted) return;
+      setState(() {
+        _activeCodexAutoCompactionEnabled = next;
+        _codexLocalConfigHydrated = true;
+      });
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? (next
+                  ? 'Auto-compaction on (new session applies)'
+                  : 'Auto-compaction off')
+            : (next ? '自动压缩已开（新开对话生效）' : '自动压缩已关'),
+        type: ToastType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Failed to toggle auto-compaction: $error'
+            : '切换自动压缩失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
   Future<void> _appendCodexLocalSystemTip(String text) async {
     final tip = text.trim();
     if (tip.isEmpty || !mounted) {
@@ -1223,6 +1306,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       return;
     }
     final normalizedQuery = query.trim();
+    // B31: bare `/` draft collides with slash-root route; clear so skills-only
+    // can own the shared panel shell without slash-root card conflict.
+    final draft = _messageController.text.trim();
+    if (draft == '/') {
+      _messageController.clear();
+    }
     setState(() {
       _codexSkillsPanelVisible = true;
       _codexSkillPanelQuery = normalizedQuery;
@@ -1233,6 +1322,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         query: normalizedQuery,
         isEnglish: LegacyTextLocalizer.isEnglish,
       );
+      // Shared shell with slash panel; other agents clear skills when opening `/`.
       _showSlashCommandPanel = true;
       _showModelMentionPanel = false;
       _activeModelMentionToken = null;
@@ -1713,12 +1803,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if ((_activeCodexModelId ?? '').trim() == normalized) {
       return;
     }
+    // B32: never append server model into options. Accept only when ∈ pure
+    // list (or list still empty / not loaded — keep server truth cautiously).
+    final options = _codexModelOptions;
+    if (options.isNotEmpty && !options.contains(normalized)) {
+      unawaited(
+        DebugFileLog.logModel(
+          'sync_skip_not_in_list',
+          model: normalized,
+          previous: (_activeCodexModelId ?? '').trim().isEmpty
+              ? null
+              : (_activeCodexModelId ?? '').trim(),
+        ),
+      );
+      return;
+    }
     _activeCodexModelId = normalized;
-    _codexModelOptions = _mergeCodexOptionIds(
-      current: normalized,
-      preferred: normalized,
-      options: _codexModelOptions,
-    );
     // B26: rebind effort options for the server-selected model.
     final modelEfforts = _lookupCodexModelEfforts(
       catalog: _codexModelEffortCatalog,
@@ -1934,6 +2034,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _requestComposerFocus(showKeyboard: true);
       return;
     }
+    // B33: toggle features.auto_compaction via conf (not /compact thread RPC).
+    if (cardId == 'slash-command-codex-auto-compaction' ||
+        command == '/auto-compact' ||
+        command == '/auto-compaction') {
+      _hideSlashCommandPanel();
+      await _toggleCodexAutoCompactionFromSlash();
+      _requestComposerFocus(showKeyboard: true);
+      return;
+    }
     if (cardId == 'slash-command-codex-skills' ||
         command == '/skills' ||
         nav == kCodexSkillPanelRouteName) {
@@ -2034,6 +2143,15 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   @override
   Future<bool> _tryHandleCodexSlashCommand(String messageText) async {
     final trimmed = messageText.trim();
+    // B33: typed `/auto-compact` (resolver has no dedicated kind yet).
+    final trimmedLower = trimmed.toLowerCase();
+    if (trimmedLower == '/auto-compact' ||
+        trimmedLower == '/auto-compaction') {
+      _messageController.clear();
+      _hideSlashCommandPanel();
+      await _toggleCodexAutoCompactionFromSlash();
+      return true;
+    }
     final intent = resolveCodexSlashSubmitIntent(trimmed);
     switch (intent.kind) {
       case CodexSlashSubmitKind.none:
@@ -6807,6 +6925,8 @@ List<String> _extractCodexOptionIds(
   return result;
 }
 
+/// B32: pure options passthrough. [current]/[preferred] are ignored so
+/// callers cannot inject list-foreign ids into model catalogs.
 List<String> _mergeCodexOptionIds({
   String? current,
   String? preferred,
@@ -6814,18 +6934,12 @@ List<String> _mergeCodexOptionIds({
 }) {
   final seen = <String>{};
   final result = <String>[];
-  void add(String? value) {
-    final text = value?.trim() ?? '';
+  for (final option in options) {
+    final text = option.trim();
     if (text.isEmpty || !seen.add(text)) {
-      return;
+      continue;
     }
     result.add(text);
-  }
-
-  add(current);
-  add(preferred);
-  for (final option in options) {
-    add(option);
   }
   return result;
 }

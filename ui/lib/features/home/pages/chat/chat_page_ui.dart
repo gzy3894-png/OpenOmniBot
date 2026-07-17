@@ -27,6 +27,14 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   static const double _kHdPadPaneCollapseMinWidthFactor = 0.72;
   /// Codex Goal bar 实测高度；mode 关 / bar 未挂载时按 0 计入 inset。
   double _codexGoalBarHeight = 0;
+  /// Codex 上下文顶栏实测高度；非 codex / 未挂载时按 0。
+  double _codexContextBarHeight = 0;
+  /// conf `omnimind_context_token_threshold` 缓存；缺省 128000。
+  int _codexContextTokenThreshold = _kDefaultContextTokenThreshold;
+  /// conf `features.auto_compaction` 缓存；null=未知（UI 默认开）。
+  bool? _activeCodexAutoCompactionEnabled;
+  bool _codexLocalConfigHydrateInFlight = false;
+  bool _codexLocalConfigHydrated = false;
   /// 输入柱整柱实测高度（ChatInputWrapper 含 topBanner + composer + 顶 padding）。
   /// 优先用于 transcript bottom inset，避免只量 ChatInputArea 漏掉 Goal bar。
   double _inputPillarMeasuredHeight = 0;
@@ -153,35 +161,61 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         _kChatMessageBottomSafeSpacing;
   }
 
-  /// mode 开且 bar 可见时占用高度 = bar 实测 + banner/composer 间距；否则 0。
+  /// Codex topBanner 占用：Goal bar（可选）+ Context bar（codex 常显）+ 间距。
   double _resolveCodexGoalBarOccupancy() {
-    if (!_isCodexGoalBarMounted) {
-      // topBanner 已卸下时清零 bar 缓存并重测整柱，避免残留 bar 高度挡字。
-      if (_codexGoalBarHeight > 0.5) {
+    if (_activeMode != ChatPageMode.codex) {
+      if (_codexGoalBarHeight > 0.5 || _codexContextBarHeight > 0.5) {
         _scheduleCodexGoalBarHeightClear();
       }
       return 0.0;
     }
-    final barHeight = _codexGoalBarHeight.isFinite ? _codexGoalBarHeight : 0.0;
-    if (barHeight <= 0.5) {
+    if (!_isCodexGoalBarMounted && _codexGoalBarHeight > 0.5) {
+      // Goal bar 已卸下时清零缓存，避免残留高度挡字。
+      _scheduleCodexGoalBarHeightClear();
+    }
+    var total = 0.0;
+    var barCount = 0;
+    if (_isCodexGoalBarMounted) {
+      final goalH = _codexGoalBarHeight.isFinite ? _codexGoalBarHeight : 0.0;
+      if (goalH > 0.5) {
+        total += goalH;
+        barCount += 1;
+      }
+    }
+    final contextH =
+        _codexContextBarHeight.isFinite ? _codexContextBarHeight : 0.0;
+    if (contextH > 0.5) {
+      total += contextH;
+      barCount += 1;
+    }
+    if (total <= 0.5) {
       return 0.0;
     }
-    return barHeight + _kChatInputTopBannerGap;
+    // 多 bar 之间 8px + topBanner 与 composer 之间的 gap。
+    final internalGaps =
+        barCount > 1 ? (barCount - 1) * _kChatInputTopBannerGap : 0.0;
+    return total + internalGaps + _kChatInputTopBannerGap;
   }
 
   bool get _isCodexGoalBarMounted =>
       _activeMode == ChatPageMode.codex && _codexGoalModeEnabled;
 
+  bool get _isCodexContextBarMounted => _activeMode == ChatPageMode.codex;
+
   void _scheduleCodexGoalBarHeightClear() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_isCodexGoalBarMounted) {
+      if (_isCodexGoalBarMounted && _isCodexContextBarMounted) {
         _scheduleInputPillarHeightSync();
         return;
       }
       var changed = false;
-      if (_codexGoalBarHeight > 0.5) {
+      if (!_isCodexGoalBarMounted && _codexGoalBarHeight > 0.5) {
         _codexGoalBarHeight = 0;
+        changed = true;
+      }
+      if (!_isCodexContextBarMounted && _codexContextBarHeight > 0.5) {
+        _codexContextBarHeight = 0;
         changed = true;
       }
       // mode 关后整柱高度也要重测，去掉 bar 占用。
@@ -206,6 +240,225 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       _codexGoalBarHeight = normalized;
     });
     _scheduleInputPillarHeightSync();
+  }
+
+  void _handleCodexContextBarHeightChanged(double height) {
+    final normalized = height.isFinite ? height : 0.0;
+    if ((_codexContextBarHeight - normalized).abs() < 0.5) {
+      _scheduleInputPillarHeightSync();
+      return;
+    }
+    if (!mounted) {
+      _codexContextBarHeight = normalized;
+      return;
+    }
+    setState(() {
+      _codexContextBarHeight = normalized;
+    });
+    _scheduleInputPillarHeightSync();
+  }
+
+  /// 懒加载 conf：阈值 + auto_compaction（B30/B33 展示用）。
+  void _ensureCodexLocalConfigHydrated() {
+    if (_codexLocalConfigHydrated || _codexLocalConfigHydrateInFlight) {
+      return;
+    }
+    _codexLocalConfigHydrateInFlight = true;
+    unawaited(() async {
+      try {
+        final config = await CodexAppServerService.readLocalConfig();
+        if (!mounted) return;
+        setState(() {
+          _activeCodexAutoCompactionEnabled = config.isAutoCompactionEnabled;
+          final threshold = config.contextTokenThreshold;
+          if (threshold != null && threshold > 0) {
+            _codexContextTokenThreshold = threshold.clamp(
+              _kMinContextTokenThreshold,
+              _kMaxContextTokenThreshold,
+            );
+          }
+          _codexLocalConfigHydrated = true;
+        });
+      } catch (_) {
+        // 保持默认；下次再试。
+      } finally {
+        _codexLocalConfigHydrateInFlight = false;
+      }
+    }());
+  }
+
+  Future<void> _setCodexAutoCompactionEnabled(bool enabled) async {
+    final previous = _activeCodexAutoCompactionEnabled;
+    if (previous == enabled) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _activeCodexAutoCompactionEnabled = enabled;
+      });
+    } else {
+      _activeCodexAutoCompactionEnabled = enabled;
+    }
+    _hideSlashCommandPanel();
+    _requestComposerFocus(showKeyboard: true);
+    try {
+      final localConfig = await CodexAppServerService.readLocalConfig();
+      final saved = await CodexAppServerService.writeLocalConfig(
+        baseUrl: localConfig.baseUrl,
+        model: localConfig.model,
+        apiKey: localConfig.apiKey,
+        serviceTier: localConfig.serviceTier,
+        fastMode: localConfig.fastMode,
+        autoCompaction: enabled,
+        contextTokenThreshold: localConfig.contextTokenThreshold,
+        modelReasoningEffort: localConfig.modelReasoningEffort,
+        defaultGoal: localConfig.defaultGoal,
+        remoteEnabled: localConfig.remoteEnabled,
+        remoteBridgeUrl: localConfig.remoteBridgeUrl,
+        remoteBridgeToken: localConfig.remoteBridgeToken,
+        remoteCwd: localConfig.remoteCwd,
+      );
+      if (!mounted) return;
+      setState(() {
+        _activeCodexAutoCompactionEnabled = saved.isAutoCompactionEnabled;
+        _codexLocalConfigHydrated = true;
+      });
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? (enabled
+                  ? 'Auto-compaction on (new chats apply conf)'
+                  : 'Auto-compaction off (new chats apply conf)')
+            : (enabled ? '已开启自动压缩（新开对话后生效）' : '已关闭自动压缩（新开对话后生效）'),
+      );
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _activeCodexAutoCompactionEnabled = previous;
+        });
+      } else {
+        _activeCodexAutoCompactionEnabled = previous;
+      }
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Failed to update auto-compaction: $error'
+            : '更新自动压缩失败：$error',
+        type: ToastType.error,
+      );
+    }
+  }
+
+  Widget? _buildCodexTopBanner() {
+    if (_activeMode != ChatPageMode.codex) {
+      return null;
+    }
+    _ensureCodexLocalConfigHydrated();
+    final contextBar = CodexContextBar(
+      threshold: _codexContextTokenThreshold > 0
+          ? _codexContextTokenThreshold
+          : _kDefaultContextTokenThreshold,
+      usedTokens: (_currentConversation?.latestPromptTokens ?? 0) > 0
+          ? _currentConversation!.latestPromptTokens
+          : null,
+      autoCompactionEnabled: _activeCodexAutoCompactionEnabled ?? true,
+      onTap: () {
+        unawaited(_handleCodexContextBarTap());
+      },
+      onHeightChanged: _handleCodexContextBarHeightChanged,
+    );
+    if (!_codexGoalModeEnabled) {
+      return contextBar;
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CodexGoalModeBar(
+          goalText: _codexActiveGoalText,
+          // B6: 空目标不占位锁底栏
+          showWhenEmpty: false,
+          visible: true,
+          onHeightChanged: _handleCodexGoalBarHeightChanged,
+          onClear: () {
+            // B24: bar X = clear thread goal + leave mode.
+            // Toggle OFF alone keeps thread goal.
+            unawaited(
+              _setCodexGoalModeEnabled(
+                false,
+                clearThreadGoal: true,
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: _kChatInputTopBannerGap),
+        contextBar,
+      ],
+    );
+  }
+
+  Future<void> _handleCodexContextBarTap() async {
+    _ensureCodexLocalConfigHydrated();
+    final initialThreshold = _codexContextTokenThreshold > 0
+        ? _codexContextTokenThreshold
+        : _kDefaultContextTokenThreshold;
+    final usageTokens = _currentConversation?.latestPromptTokens ?? 0;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: false,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ContextThresholdSheet(
+        initialThreshold: initialThreshold,
+        currentUsageTokens: usageTokens,
+        onThresholdSaved: (nextThreshold) async {
+          if (nextThreshold == _codexContextTokenThreshold) {
+            return true;
+          }
+          try {
+            final localConfig = await CodexAppServerService.readLocalConfig();
+            final saved = await CodexAppServerService.writeLocalConfig(
+              baseUrl: localConfig.baseUrl,
+              model: localConfig.model,
+              apiKey: localConfig.apiKey,
+              serviceTier: localConfig.serviceTier,
+              fastMode: localConfig.fastMode,
+              autoCompaction: localConfig.autoCompaction,
+              contextTokenThreshold: nextThreshold,
+              modelReasoningEffort: localConfig.modelReasoningEffort,
+              defaultGoal: localConfig.defaultGoal,
+              remoteEnabled: localConfig.remoteEnabled,
+              remoteBridgeUrl: localConfig.remoteBridgeUrl,
+              remoteBridgeToken: localConfig.remoteBridgeToken,
+              remoteCwd: localConfig.remoteCwd,
+            );
+            if (!mounted) {
+              return true;
+            }
+            setState(() {
+              _codexContextTokenThreshold =
+                  saved.contextTokenThreshold ?? nextThreshold;
+              _codexLocalConfigHydrated = true;
+            });
+            // B30: conf 写盘后当前 thread 可仍旧值，提示新开对话生效。
+            showToast(
+              LegacyTextLocalizer.isEnglish
+                  ? 'Saved; takes effect on new conversations'
+                  : '已保存，新开对话后生效',
+            );
+            return true;
+          } catch (error) {
+            if (!mounted) {
+              return false;
+            }
+            showToast(
+              LegacyTextLocalizer.isEnglish
+                  ? 'Failed to save context threshold: $error'
+                  : '保存上下文阈值失败：$error',
+              type: ToastType.error,
+            );
+            return false;
+          }
+        },
+      ),
+    );
   }
 
   /// 测量 `_inputAreaKey` 整柱高度（含 topBanner Goal bar），写入 inset。
@@ -379,14 +632,18 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   }
 
   List<Map<String, dynamic>> _buildCodexRootCommandCards() {
+    // B33: pull conf so auto-compact card reflects features.auto_compaction.
+    _ensureCodexLocalConfigHydrated();
     final query = _messageController.text.trimLeft().toLowerCase();
     final planModeEnabled = _isCodexPlanMode(_activeCodexCollaborationMode);
     // Session flag declared on base (default false). Toggle handlers: M4.
     final goalModeEnabled = _codexGoalModeEnabled;
     final fastModeEnabled = _activeCodexFastEnabled;
+    // B33: conf auto_compaction; null → UI default on (Codex-ish).
+    final autoCompactionEnabled = _activeCodexAutoCompactionEnabled ?? true;
     final isEnglish = LegacyTextLocalizer.isEnglish;
     // B15 白名单：常用工作模式优先；下架 stop/skills（@ 仍可插技能；手输 /stop 仍解析）。
-    // 顺序：goal-mode → fast → review → plan → compact。
+    // 顺序：goal-mode → fast → auto-compact → review → plan → compact。
     final commands = <Map<String, dynamic>>[
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-goal-mode',
@@ -440,6 +697,31 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
             : '切换 _activeCodexFastEnabled / serviceTier=fast',
         isToggle: true,
         toggleValue: fastModeEnabled,
+        controlType: 'toggle',
+      ),
+      // B33: auto-compaction toggle (conf features.auto_compaction).
+      // Default on when conf key missing; /compact remains manual one-shot.
+      _buildCodexCommandCard(
+        cardId: 'slash-command-codex-auto-compaction',
+        toolTitle: '/auto-compact',
+        displayName: isEnglish ? 'Auto-compact' : '自动压缩',
+        toolTypeLabel: isEnglish ? 'Compact' : '压缩',
+        status: autoCompactionEnabled ? 'success' : 'running',
+        statusLabel: autoCompactionEnabled
+            ? (isEnglish ? 'On' : '开启')
+            : (isEnglish ? 'Off' : '关闭'),
+        summary: autoCompactionEnabled
+            ? (isEnglish
+                  ? 'Auto-compaction is on in conf'
+                  : '配置中已开启自动压缩')
+            : (isEnglish
+                  ? 'Auto-compaction is off in conf'
+                  : '配置中已关闭自动压缩'),
+        progress: isEnglish
+            ? 'Writes features.auto_compaction; new chats apply'
+            : '写入 features.auto_compaction；新开对话后生效',
+        isToggle: true,
+        toggleValue: autoCompactionEnabled,
         controlType: 'toggle',
       ),
       _buildCodexCommandCard(
@@ -628,6 +910,19 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
 
   void _handleSlashCommandCardSelected(Map<String, dynamic> cardData) {
     if (_activeMode == ChatPageMode.codex) {
+      final cardId = (cardData['cardId'] ?? '').toString().trim();
+      final command =
+          (cardData['toolTitle'] ?? cardData['displayName'] ?? '')
+              .toString()
+              .trim();
+      // B33: auto-compact toggle handled in UI (conf write); codex mixin may
+      // also learn this cardId later.
+      if (cardId == 'slash-command-codex-auto-compaction' ||
+          command == '/auto-compact') {
+        final current = _activeCodexAutoCompactionEnabled ?? true;
+        unawaited(_setCodexAutoCompactionEnabled(!current));
+        return;
+      }
       unawaited(_handleCodexSlashCommandCardSelected(cardData));
       return;
     }
@@ -1537,6 +1832,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       onPickAttachment: _pickAttachments,
                       onTriggerSlashCommand: _triggerSlashCommandPanel,
                       // B22: @ second press collapses skills list (toggle).
+                      // B31: opening @ clears bare `/` draft for exclusive route.
                       onTriggerSkillMention: _activeMode == ChatPageMode.codex
                           ? () {
                               if (_codexSkillsPanelVisible &&
@@ -1545,34 +1841,22 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                                 // B18 pattern: keep keyboard after hide.
                                 _requestComposerFocus(showKeyboard: true);
                               } else {
+                                final draft = _messageController.text;
+                                if (draft.trim() == '/') {
+                                  _messageController.clear();
+                                  _draftMessageByMode[
+                                          _activeConversationMode] =
+                                      '';
+                                }
                                 unawaited(_openCodexSkillsPanel());
                               }
                             }
                           : null,
                       attachments: _pendingAttachments,
                       onRemoveAttachment: _removePendingAttachment,
-                      // Goal bar = topBanner of input column. mode 关则 null
-                      //（高度 0，不占位挡字）。高度并入 composerReservedInset。
-                      topBanner: _activeMode == ChatPageMode.codex &&
-                              _codexGoalModeEnabled
-                          ? CodexGoalModeBar(
-                              goalText: _codexActiveGoalText,
-                              // B6: 空目标不占位锁底栏
-                              showWhenEmpty: false,
-                              visible: true,
-                              onHeightChanged: _handleCodexGoalBarHeightChanged,
-                              onClear: () {
-                                // B24: bar X = clear thread goal + leave mode.
-                                // Toggle OFF alone keeps thread goal.
-                                unawaited(
-                                  _setCodexGoalModeEnabled(
-                                    false,
-                                    clearThreadGoal: true,
-                                  ),
-                                );
-                              },
-                            )
-                          : null,
+                      // B30: Codex topBanner = Goal bar (optional) + Context bar.
+                      // mode 非 codex → null；高度并入 composerReservedInset。
+                      topBanner: _buildCodexTopBanner(),
                       selectedModelOverrideId:
                           _activeMode == ChatPageMode.normal &&
                               _showConversationModelMentionChip
@@ -1650,15 +1934,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                               unawaited(_setCodexFastEnabled(enabled));
                             }
                           : null,
-                      codexPermissionMode: _activeMode == ChatPageMode.codex
-                          ? _codexPermissionMode
-                          : null,
-                      onCodexPermissionModeChanged:
-                          _activeMode == ChatPageMode.codex
-                          ? (mode) {
-                              unawaited(_setCodexPermissionMode(mode));
-                            }
-                          : null,
+                      // B33: hide composer permission selector (no three-level UI).
+                      codexPermissionMode: null,
+                      onCodexPermissionModeChanged: null,
                       codexGoalModeEnabled: _activeMode == ChatPageMode.codex &&
                           _codexGoalModeEnabled,
                       codexGoalText: _activeMode == ChatPageMode.codex

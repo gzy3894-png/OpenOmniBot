@@ -77,6 +77,9 @@ class CodexLocalConfig {
     /// Mirror of config.toml `[features].auto_compaction`. Null means unknown
     /// / not provided (UI defaults on for B27 discoverability).
     this.autoCompaction,
+    /// Mirror of top-level `omnimind_context_token_threshold`. Null means missing
+    /// (UI may default to 128000).
+    this.contextTokenThreshold,
     this.modelReasoningEffort = '',
     this.defaultGoal = '',
     this.remoteEnabled = false,
@@ -98,6 +101,9 @@ class CodexLocalConfig {
 
   /// Explicit `[features].auto_compaction` from config. Null means unknown.
   final bool? autoCompaction;
+
+  /// Top-level `omnimind_context_token_threshold`. Null when absent from conf.
+  final int? contextTokenThreshold;
   final String modelReasoningEffort;
   final String defaultGoal;
   final bool remoteEnabled;
@@ -132,6 +138,9 @@ class CodexLocalConfig {
           _boolOrNull(source['fast_mode']),
       autoCompaction: _boolOrNull(source['autoCompaction']) ??
           _boolOrNull(source['auto_compaction']),
+      contextTokenThreshold: _intOrNull(source['contextTokenThreshold']) ??
+          _intOrNull(source['omnimind_context_token_threshold']) ??
+          _intOrNull(source['context_token_threshold']),
       modelReasoningEffort:
           _stringOrNull(source['modelReasoningEffort']) ?? '',
       defaultGoal: _stringOrNull(source['defaultGoal']) ?? '',
@@ -607,6 +616,10 @@ class CodexAppServerService {
   /// [autoCompaction] is optional. When provided, writes
   /// `features.auto_compaction = true|false` without wiping other features.
   /// When omitted, native preserves the existing key.
+  ///
+  /// [contextTokenThreshold] is optional. When provided, writes top-level
+  /// `omnimind_context_token_threshold = <n>`. When omitted (null), native
+  /// preserves the existing key.
   static Future<CodexLocalConfig> writeLocalConfig({
     required String baseUrl,
     required String model,
@@ -614,6 +627,7 @@ class CodexAppServerService {
     String? serviceTier,
     bool? fastMode,
     bool? autoCompaction,
+    int? contextTokenThreshold,
     String modelReasoningEffort = '',
     String defaultGoal = '',
     bool remoteEnabled = false,
@@ -628,6 +642,8 @@ class CodexAppServerService {
       if (serviceTier != null) 'serviceTier': serviceTier.trim(),
       if (fastMode != null) 'fastMode': fastMode,
       if (autoCompaction != null) 'autoCompaction': autoCompaction,
+      if (contextTokenThreshold != null)
+        'contextTokenThreshold': contextTokenThreshold,
       'modelReasoningEffort': modelReasoningEffort.trim(),
       'defaultGoal': defaultGoal.trim(),
       'remoteEnabled': remoteEnabled,

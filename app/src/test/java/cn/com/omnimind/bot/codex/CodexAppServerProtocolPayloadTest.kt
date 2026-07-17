@@ -499,6 +499,43 @@ class CodexAppServerProtocolPayloadTest {
     }
 
     @Test
+    fun buildCodexConfigTomlWritesContextTokenThresholdAndClamp() {
+        val written = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            contextTokenThreshold = 128000,
+        )
+        assertTrue(written.contains("omnimind_context_token_threshold = 128000"))
+
+        val clampedLow = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            contextTokenThreshold = 100,
+        )
+        assertTrue(clampedLow.contains("omnimind_context_token_threshold = 10000"))
+
+        val omitted = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            contextTokenThreshold = null,
+        )
+        assertEquals(false, omitted.contains("omnimind_context_token_threshold"))
+    }
+
+    @Test
+    fun extractTomlIntParsesBareAndQuotedValues() {
+        val body = """
+            omnimind_context_token_threshold = 128000
+            other = "64000"
+        """.trimIndent()
+        assertEquals(128000, extractTomlInt(body, "omnimind_context_token_threshold"))
+        assertEquals(64000, extractTomlInt(body, "other"))
+        assertNull(extractTomlInt(body, "missing"))
+        assertEquals(10000, clampContextTokenThreshold(1))
+        assertEquals(1_000_000, clampContextTokenThreshold(9_999_999))
+    }
+
+    @Test
     fun extractTomlTableBodyStopsAtNextHeader() {
         val source = """
             [features]

@@ -807,9 +807,8 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     );
   }
 
-  bool get _shouldShowCodexPermissionSelector =>
-      widget.codexPermissionMode != null &&
-      widget.onCodexPermissionModeChanged != null;
+  // B33: hide 3-level permission UI entirely (even if parent still wires mode).
+  bool get _shouldShowCodexPermissionSelector => false;
 
   bool get _shouldShowCodexRunSettingsSelector =>
       widget.codexRunSettings != null &&
@@ -983,10 +982,13 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       if (opened != null) {
         unawaited(Future<void>.sync(opened));
       }
+      // B32: model menu is pure catalog — do not inject current if absent.
       final modelOptions = _codexRunSettingsOptions(
         current: modelId,
         options: settings.modelOptions,
+        injectCurrent: false,
       );
+      // B26: empty catalog stays empty; no global fake effort fallbacks.
       final effortOptions = _codexRunSettingsOptions(
         current: effort,
         options: settings.reasoningEffortOptions.isEmpty
@@ -1180,9 +1182,16 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     return '$prefix...';
   }
 
+  /// Deduped option list for Codex run-settings menus.
+  ///
+  /// [injectCurrent]: when true (effort), prepend [current] if missing so the
+  /// last-known value remains selectable. When false (B32 model), show pure
+  /// [options] only — current may still appear on the button label even if
+  /// absent from the list.
   List<String> _codexRunSettingsOptions({
     required String current,
     required List<String> options,
+    bool injectCurrent = true,
   }) {
     final seen = <String>{};
     final result = <String>[];
@@ -1194,7 +1203,9 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       result.add(normalized);
     }
 
-    add(current);
+    if (injectCurrent) {
+      add(current);
+    }
     for (final option in options) {
       add(option);
     }

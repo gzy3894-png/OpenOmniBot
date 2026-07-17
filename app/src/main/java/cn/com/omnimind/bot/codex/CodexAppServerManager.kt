@@ -474,6 +474,9 @@ class CodexAppServerManager private constructor(
         val modelReasoningEffort =
             extractTomlString(configToml, "model_reasoning_effort").orEmpty()
         val defaultGoal = extractTomlString(configToml, "omnimind_default_goal").orEmpty()
+        // B30: app-managed context token threshold for Codex top bar (null when missing).
+        val contextTokenThreshold =
+            extractTomlInt(configToml, "omnimind_context_token_threshold")
         val featuresBody = extractTomlTableBody(configToml, "features")
         // Prefer [features].fast_mode; never treat a missing key as "off by omission".
         val fastMode = extractTomlBoolean(featuresBody, "fast_mode")
@@ -491,6 +494,7 @@ class CodexAppServerManager private constructor(
             defaultGoal = defaultGoal,
             fastMode = fastMode,
             autoCompaction = autoCompaction,
+            contextTokenThreshold = contextTokenThreshold,
             remoteConfig = remoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -512,6 +516,10 @@ class CodexAppServerManager private constructor(
         val requestedFastMode = args.booleanValue("fastMode") ?: args.booleanValue("fast_mode")
         val requestedAutoCompaction =
             args.booleanValue("autoCompaction") ?: args.booleanValue("auto_compaction")
+        val requestedContextTokenThreshold =
+            args.intValue("contextTokenThreshold")
+                ?: args.intValue("omnimind_context_token_threshold")
+                ?: args.intValue("context_token_threshold")
         val serviceTierArgPresent =
             args.containsKey("serviceTier") || args.containsKey("service_tier")
         val remoteConfig = CodexRemoteBridgeConfig(
@@ -535,6 +543,8 @@ class CodexAppServerManager private constructor(
         val featuresBodyForWrite = extractTomlTableBody(existingToml, "features")
         val existingFastMode = extractTomlBoolean(featuresBodyForWrite, "fast_mode")
         val existingAutoCompaction = extractTomlBoolean(featuresBodyForWrite, "auto_compaction")
+        val existingContextTokenThreshold =
+            extractTomlInt(existingToml, "omnimind_context_token_threshold")
         val fastMode = resolveCodexFastMode(
             requestedFastMode = requestedFastMode,
             serviceTier = serviceTier,
@@ -543,6 +553,10 @@ class CodexAppServerManager private constructor(
         )
         // B27: only force auto_compaction when caller provides it; otherwise preserve.
         val autoCompaction = requestedAutoCompaction ?: existingAutoCompaction
+        // B30: only rewrite threshold when caller provides it; otherwise preserve.
+        val contextTokenThreshold =
+            (requestedContextTokenThreshold ?: existingContextTokenThreshold)
+                ?.let(::clampContextTokenThreshold)
         // Fast off must never persist service_tier=fast; other tiers stay independent.
         val effectiveServiceTier =
             if (!fastMode && serviceTier == "fast") null else serviceTier
@@ -555,6 +569,7 @@ class CodexAppServerManager private constructor(
                 defaultGoal = defaultGoal,
                 fastMode = fastMode,
                 autoCompaction = autoCompaction,
+                contextTokenThreshold = contextTokenThreshold,
                 existingFeatures = existingFeatures,
                 existingToml = existingToml
             )
@@ -599,6 +614,7 @@ class CodexAppServerManager private constructor(
             defaultGoal = defaultGoal,
             fastMode = fastMode,
             autoCompaction = autoCompaction,
+            contextTokenThreshold = contextTokenThreshold,
             remoteConfig = savedRemoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -1375,6 +1391,7 @@ private fun buildCodexLocalConfigPayload(
     defaultGoal: String = "",
     fastMode: Boolean = false,
     autoCompaction: Boolean? = null,
+    contextTokenThreshold: Int? = null,
     remoteConfig: CodexRemoteBridgeConfig,
     runtime: String
 ): Map<String, Any?> {
@@ -1388,6 +1405,7 @@ private fun buildCodexLocalConfigPayload(
         "defaultGoal" to defaultGoal,
         "fastMode" to fastMode,
         "autoCompaction" to autoCompaction,
+        "contextTokenThreshold" to contextTokenThreshold,
         "remoteEnabled" to remoteConfig.enabled,
         "remoteBridgeUrl" to remoteConfig.bridgeUrl,
         "remoteBridgeToken" to remoteConfig.authToken,
@@ -1413,6 +1431,7 @@ internal fun buildCodexConfigToml(
     defaultGoal: String = "",
     fastMode: Boolean = false,
     autoCompaction: Boolean? = null,
+    contextTokenThreshold: Int? = null,
     existingFeatures: Map<String, String> = emptyMap(),
     existingToml: String = ""
 ): String {
@@ -1439,6 +1458,10 @@ internal fun buildCodexConfigToml(
     if (defaultGoal.isNotBlank()) {
         // Soft OmniMind preference used by the app; ignored by stock Codex.
         lines += "omnimind_default_goal = ${tomlString(defaultGoal)}"
+    }
+    // B30: soft OmniMind context threshold for the app top bar; stock Codex ignores it.
+    if (contextTokenThreshold != null) {
+        lines += "omnimind_context_token_threshold = ${clampContextTokenThreshold(contextTokenThreshold)}"
     }
     // Preserve unmanaged top-level scalar keys from the previous config so a
     // local write does not silently drop approvals_reviewer / sandbox_mode / etc.
@@ -1612,6 +1635,25 @@ internal fun extractTomlBoolean(source: String, key: String): Boolean? {
 }
 
 /**
+ * Parse an integer TOML scalar for [key] (bare or quoted). Returns null when
+ * absent or not an integer.
+ */
+internal fun extractTomlInt(source: String, key: String): Int? {
+    if (source.isBlank()) return null
+    val escapedKey = Regex.escape(key)
+    val pattern = Regex(
+        pattern = """(?m)^\s*$escapedKey\s*=\s*"?(-?\d+)"?\s*(?:#.*)?$"""
+    )
+    val raw = pattern.find(source)?.groupValues?.getOrNull(1) ?: return null
+    return raw.toIntOrNull()
+}
+
+/** Clamp app-managed context token threshold to a sane write range. */
+internal fun clampContextTokenThreshold(value: Int): Int {
+    return value.coerceIn(10_000, 1_000_000)
+}
+
+/**
  * Return the body of a top-level `[table]` section until the next table header.
  * Nested tables like `[features.foo]` are not treated as part of `[features]`.
  */
@@ -1657,6 +1699,7 @@ private val CODEX_MANAGED_TOP_LEVEL_KEYS = setOf(
     "model_reasoning_effort",
     "service_tier",
     "omnimind_default_goal",
+    "omnimind_context_token_threshold",
     "fast_mode"
 )
 
@@ -1817,6 +1860,15 @@ private fun Map<String, Any?>.longValue(key: String): Long? {
     return when (raw) {
         is Number -> raw.toLong()
         is String -> raw.trim().toLongOrNull()
+        else -> null
+    }
+}
+
+private fun Map<String, Any?>.intValue(key: String): Int? {
+    val raw = this[key] ?: return null
+    return when (raw) {
+        is Number -> raw.toInt()
+        is String -> raw.trim().toIntOrNull()
         else -> null
     }
 }

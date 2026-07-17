@@ -402,6 +402,62 @@ void main() {
     expect(snake.isFastEnabled, isTrue);
   });
 
+  test('CodexLocalConfig.contextTokenThreshold parses aliases and null default',
+      () {
+    expect(CodexLocalConfig.fromMap(const {}).contextTokenThreshold, isNull);
+    expect(
+      CodexLocalConfig.fromMap(const {
+        'contextTokenThreshold': 128000,
+      }).contextTokenThreshold,
+      128000,
+    );
+    expect(
+      CodexLocalConfig.fromMap(const {
+        'omnimind_context_token_threshold': 64000,
+      }).contextTokenThreshold,
+      64000,
+    );
+    expect(
+      CodexLocalConfig.fromMap(const {
+        'context_token_threshold': 32000,
+      }).contextTokenThreshold,
+      32000,
+    );
+  });
+
+  test('writeLocalConfig sends contextTokenThreshold only when provided',
+      () async {
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return <String, dynamic>{
+        'baseUrl': 'https://example.com/v1',
+        'model': 'gpt-5.5',
+        'apiKey': 'key',
+        'contextTokenThreshold': 128000,
+      };
+    });
+
+    final omitted = await CodexAppServerService.writeLocalConfig(
+      baseUrl: 'https://example.com/v1',
+      model: 'gpt-5.5',
+      apiKey: 'key',
+    );
+    final omitArgs = Map<String, dynamic>.from(captured!.arguments as Map);
+    expect(omitArgs.containsKey('contextTokenThreshold'), isFalse);
+    expect(omitted.contextTokenThreshold, 128000);
+
+    final written = await CodexAppServerService.writeLocalConfig(
+      baseUrl: 'https://example.com/v1',
+      model: 'gpt-5.5',
+      apiKey: 'key',
+      contextTokenThreshold: 128000,
+    );
+    final args = Map<String, dynamic>.from(captured!.arguments as Map);
+    expect(args['contextTokenThreshold'], 128000);
+    expect(written.contextTokenThreshold, 128000);
+  });
+
   test(
     'forwards remote filesystem operations without trimming content',
     () async {

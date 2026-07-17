@@ -86,6 +86,7 @@ import 'chat_page_models.dart';
 import 'tool_activity_utils.dart';
 import 'widgets/chat_widgets.dart';
 import 'widgets/codex_goal_mode_bar.dart';
+import 'widgets/codex_context_bar.dart';
 import 'widgets/chat_browser_overlay.dart';
 import 'widgets/chat_message_anchor_bar.dart';
 import 'widgets/chat_tool_activity_strip.dart';
@@ -1061,23 +1062,29 @@ abstract class _ChatPageStateBase extends State<ChatPage>
       _activeMode == ChatPageMode.normal && !_isOpenClawSurface;
 
   _SlashCommandPanelRoute _resolveSlashCommandPanelRoute(String text) {
-    // Skills sub-panel is session-flag driven (panel entry / `@` / `/skill`).
-    if (_activeMode == ChatPageMode.codex && _codexSkillsPanelVisible) {
+    final trimmed = text.trimLeft();
+    final slashPrefixed = trimmed.startsWith('/');
+    final normalized = trimmed.toLowerCase();
+    final isSkillSlashPath = _activeMode == ChatPageMode.codex &&
+        slashPrefixed &&
+        (normalized == '/skills' ||
+            normalized == '/skill' ||
+            normalized.startsWith('/skill '));
+    // B31 mutex: skills only when flag is on AND (not typed `/`, or path is
+    // /skill(s)). Plain `/` /model /effort ignore a stale skills flag.
+    if (_activeMode == ChatPageMode.codex &&
+        _codexSkillsPanelVisible &&
+        (!slashPrefixed || isSkillSlashPath)) {
       return _SlashCommandPanelRoute.skills;
     }
-    final trimmed = text.trimLeft();
-    if (!trimmed.startsWith('/')) {
+    if (!slashPrefixed) {
       return _SlashCommandPanelRoute.root;
     }
-    final normalized = trimmed.toLowerCase();
     if (_activeMode == ChatPageMode.codex &&
         (normalized == '/model' || normalized.startsWith('/model '))) {
       return _SlashCommandPanelRoute.codexModel;
     }
-    if (_activeMode == ChatPageMode.codex &&
-        (normalized == '/skills' ||
-            normalized == '/skill' ||
-            normalized.startsWith('/skill '))) {
+    if (isSkillSlashPath) {
       return _SlashCommandPanelRoute.skills;
     }
     if (normalized == '/effort' || normalized.startsWith('/effort ')) {
