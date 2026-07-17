@@ -6,7 +6,7 @@
 > 分支：`secondary/s1-baseline` · push **仅 mine** `gzy3894-png/OpenOmniBot`  
 > 工作区：`/root/workspace/omnibot-product` · **主线程只做方案/调度/验收** · 子代理实现 · **≥6 并发**  
 > GHA：`baseline-standard-debug` → `assembleDevelopStandardDebug` / `lib/main_standard.dart` · **禁止本机 Gradle assemble**  
-> 状态：**代码完成 · 待 push/GHA**（READY-for-push；不编 commit / GHA run id / APK sha）
+> 状态：**READY** · HEAD `898dc26` · GHA #29594207043 SUCCESS · APK staged · **pending device retest**
 
 ---
 
@@ -98,7 +98,7 @@
 
 - 不删 B35 权限按钮；不把 Fast 再接到 compact。  
 - 不本机 `assemble*`；不 push `origin`/上游。  
-- 不编造 commit SHA / GHA run id；代码已落、push/GHA 前 DELIVERY/EXEC 标 **READY-for-push**，字段仍 _TBD_。  
+- 不编造 commit SHA / GHA run id；READY 字段仅填已验证值。  
 - 不扩大修 Remote 2s poll / 全量 MissingPlugin 根治（除非 R1 修后仍必现且有新证据）。  
 - 不回滚 B34 三路互斥与 B36 soft 意图；只修 **假阳性 kill** 与 **死线程 RPC**。
 
@@ -124,9 +124,21 @@
 
 - push **只** `mine`（`gzy3894-png/OpenOmniBot`），**禁止** push `origin`/上游。  
 - APK 只走 GHA artifact `omnibot-standard-debug-apk`，stage 到  
-  `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` + `…-<shortsha>-standard-debug.apk`。  
+  `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` + `…-<shortsha>-…`。  
 - 主线程不写业务实现码；验收对照 §7。  
 - 记忆：`mem short` 记过程；长期 `mem propose-long`；**不写密钥**。
+
+### 本波交付（已填）
+
+| 项 | 值 |
+|----|-----|
+| 功能 commit | `1220a4d` |
+| 编译修 | `898dc26`（cross-mixin private → base abstract） |
+| HEAD | `898dc26` |
+| GHA | #29594207043 SUCCESS（首包 #29593369757 FAILED 后修） |
+| APK sha256 | `9c560e73b461cee69ac0a9b2ceb93fa8551fd7b8e0b43bbc2b5473257164fd68` |
+| stage | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| 版本副本 | `…-898dc26-9c560e73.apk` |
 
 ---
 
@@ -143,6 +155,8 @@
 | 7 | 回归 B35 | 权限按钮可见可点 |
 | 8 | `model_list` | 仍能加载 wire ids（≥ 本机 catalog）；展示可读 |
 | 9 | 使用 5–10 min | 关注 reconnect 是否仍误触发；MissingPlugin 若仍偶发记日志不挡本波 PASS（除非阻断设置） |
+
+**复测优先清单（设备）：** permission mode · model switch · model labels · Fast/auto-compact toggles after goal clear / resume。
 
 ---
 
@@ -167,6 +181,6 @@ docs/results/DELIVERY.md
 | 阶段 | 状态 |
 |------|------|
 | 本文档 / 定位 | **完成** |
-| 代码实现（Manager 硬化 · stale clear · displayName · auto-compact UI） | **完成** · 待 push |
-| push + GHA + APK stage | **待做** → READY（填真实 shortsha / run id / sha256） |
-| 真机 §7 | 用户 PASS/FAIL |
+| 代码实现（Manager 硬化 · stale clear · displayName · auto-compact UI） | **完成** · `1220a4d` + `898dc26` |
+| push + GHA + APK stage | **完成** · GHA #29594207043 · sha256 `9c560e73…` |
+| 真机 §7 | **pending device retest** · 用户 PASS/FAIL |

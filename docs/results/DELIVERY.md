@@ -1,25 +1,33 @@
 # 当前交付单
 
-> 更新：2026-07-17 · Stage **B37 READY-for-push**（代码已落 · commit/GHA 待做）  
+> 更新：2026-07-17 · Stage **B37 READY**（pending device retest）  
 > **真源：** `docs/results/PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `docs/results/EXEC-2026-07-17-b37-stale-thread.md`  
 > 上一包：B34–B36 · `7896a6c` · GHA #29565426990 · sha256 `aa34e473…e6d9a8` · **真机 FAIL**  
 > **主线程：方案/调度/验收** · push **仅 mine** · 禁本机 assemble  
-> 状态：**READY-for-push** · **不编** 新 commit / GHA run id（待 push 后回填）
+> 状态：**READY** · HEAD `898dc26` · GHA #29594207043 SUCCESS · APK staged · **待真机复测**
 
 ---
 
 ## 1. 现在请你做
 
+**真机侧（装本包后复测）：**
+
+1. 安装 staged APK（见 §3）。  
+2. 按 §4 全表 + **优先清单** 复测。  
+3. 回传 PASS/FAIL 与关键日志（`omnibot-debug-*.log` / OmniBotLogs）。
+
+**优先复测清单：**
+
+- permission mode 切换  
+- model switch  
+- model labels（displayName / wire slug）  
+- Fast / auto-compact toggles  
+- 上述开关在 **goal clear / resume** 之后仍可用、无 `thread not found`
+
 **开发侧：**
 
-1. push **mine only** → 等 GHA `baseline-standard-debug` → stage APK。  
-2. 回填 EXEC/本单：commit · GHA run · sha256 → 标 **READY**。  
-3. **禁止本机 assemble**。
-
-**真机侧：**
-
-- B34–B36（`7896a6c` / `aa34e473…`）**已 FAIL**，不必再测该包修设置类。  
-- B37 出包并 READY 后再装新 APK，按 §4 复测。
+- 本波代码与 GHA 已完成；无本机 assemble。  
+- 真机 FAIL 再开下一波 PLAN。
 
 ---
 
@@ -27,7 +35,7 @@
 
 | 项 | 值 |
 |----|-----|
-| 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（已被 B37 覆盖） |
 | 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-7896a6c-standard-debug.apk` |
 | 状态 | **真机 FAIL**（设置 RPC stale thread） |
 | sha256 | `aa34e473d781302247188bc925425893fe8e1b7a0ce9e3ad219a412437e6d9a8` |
@@ -54,20 +62,24 @@
 
 ---
 
-## 3. 当前波 · B37（READY-for-push）
+## 3. 当前波 · B37 READY（pending device retest）
 
 | 项 | 值 |
 |----|-----|
-| 状态 | **READY-for-push**（代码已落 · 待 push/GHA） |
+| 状态 | **READY** · **pending device retest** |
 | 计划 | `PLAN-2026-07-17-b37-stale-thread-settings.md` |
 | EXEC | `EXEC-2026-07-17-b37-stale-thread.md` |
-| 功能 commit | _TBD_ |
-| HEAD | _TBD_ |
-| GHA | _TBD_ · workflow `baseline-standard-debug` |
-| APK sha256 | _TBD_ |
-| stage | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` + `…-<shortsha>-…` |
+| 功能 commit | `1220a4d`（stale-thread + soft conf harden + model display + auto-compact） |
+| 编译修 | `898dc26`（base abstract for auto-compact compile fix） |
+| HEAD | `898dc26` |
+| 首包 GHA | [#29593369757](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29593369757) **FAILED**（cross-mixin private compile） |
+| GHA | [Baseline Standard Debug #29594207043](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29594207043) · **SUCCESS** · head `898dc26` |
+| APK sha256 | `9c560e73b461cee69ac0a9b2ceb93fa8551fd7b8e0b43bbc2b5473257164fd68` |
+| stage | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| 版本副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-898dc26-9c560e73.apk` |
+| 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
 
-### 本波已实现（待 push）
+### 本波已实现
 
 | ID | 修复 |
 |----|------|
@@ -91,6 +103,8 @@
 | 8 | model_list | wire ids 仍加载 |
 | 9 | 使用 5–10 min | reconnect 不误杀；MissingPlugin 偶发可记日志 |
 
+**设备优先复测：** permission mode · model switch · model labels · Fast/auto-compact toggles after goal clear / resume。
+
 ---
 
 ## 5. 状态勾选
@@ -98,9 +112,9 @@
 - [x] B34–B36 实现 + GHA SUCCESS + APK stage  
 - [x] 真机复测 → **FAIL**（stale thread settings）  
 - [x] B37 PLAN / EXEC 文档  
-- [x] B37 实现（代码已落 · 待 push）  
-- [ ] push mine · GHA SUCCESS  
-- [ ] APK stage · 填 sha256 / shortsha  
+- [x] B37 实现 · `1220a4d` + `898dc26`  
+- [x] push mine · GHA #29594207043 SUCCESS  
+- [x] APK stage · sha256 `9c560e73…` / shortsha `898dc26`  
 - [ ] 真机 §4 PASS  
 
 ---
