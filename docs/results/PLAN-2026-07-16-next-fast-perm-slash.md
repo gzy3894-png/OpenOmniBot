@@ -4,7 +4,7 @@
 > 真源：`codex-cli-core-implementation-logic.zh-CN.md` + `/tmp/codex-schema.PDR9ft/v2/*` + 本机 `/root/.codex/config.toml` + 设备日志 `Download/OmniBotLogs/omnibot-debug-20260716.log`  
 > 仓：`omnibot-product` · `secondary/s1-baseline` · push **仅 mine**  
 > 上一包：`ee07854` / GHA 29438529208 / APK s1-standard-debug READY  
-> 本文件：**只列缺口与修法，不在本轮实现**
+> 本文件：缺口真源；**已实现并 READY**（见 DELIVERY · `4902430`）
 
 ---
 
@@ -137,7 +137,7 @@ Wave3：GHA + stage + DELIVERY + 真机关 Fast 计费回归。
 - [x] 本轮用户缺口整理
 - [x] Fast 根因只读定位（代码+日志+本机 config）
 - [x] 下阶段实现（B14–B21 工作树已落地；Wave3 ship）
-- [ ] 真机计费回归
+- [ ] 真机计费回归（DELIVERY READY，等用户）
 
 ---
 
