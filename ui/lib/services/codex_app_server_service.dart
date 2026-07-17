@@ -74,6 +74,9 @@ class CodexLocalConfig {
     /// Mirror of config.toml `[features].fast_mode`. Null means unknown /
     /// not provided and does **not** enable Fast by itself (default off).
     this.fastMode,
+    /// Mirror of config.toml `[features].auto_compaction`. Null means unknown
+    /// / not provided (UI defaults on for B27 discoverability).
+    this.autoCompaction,
     this.modelReasoningEffort = '',
     this.defaultGoal = '',
     this.remoteEnabled = false,
@@ -92,6 +95,9 @@ class CodexLocalConfig {
 
   /// Explicit `[features].fast_mode` from config. Null/false do not enable Fast.
   final bool? fastMode;
+
+  /// Explicit `[features].auto_compaction` from config. Null means unknown.
+  final bool? autoCompaction;
   final String modelReasoningEffort;
   final String defaultGoal;
   final bool remoteEnabled;
@@ -111,6 +117,9 @@ class CodexLocalConfig {
     return fastMode == true;
   }
 
+  /// Auto compaction UI default: on when key is missing (Codex-ish default).
+  bool get isAutoCompactionEnabled => autoCompaction ?? true;
+
   factory CodexLocalConfig.fromMap(Map<dynamic, dynamic>? map) {
     final source = map ?? const <dynamic, dynamic>{};
     return CodexLocalConfig(
@@ -121,6 +130,8 @@ class CodexLocalConfig {
       serviceTier: _stringOrNull(source['serviceTier']) ?? '',
       fastMode: _boolOrNull(source['fastMode']) ??
           _boolOrNull(source['fast_mode']),
+      autoCompaction: _boolOrNull(source['autoCompaction']) ??
+          _boolOrNull(source['auto_compaction']),
       modelReasoningEffort:
           _stringOrNull(source['modelReasoningEffort']) ?? '',
       defaultGoal: _stringOrNull(source['defaultGoal']) ?? '',
@@ -592,12 +603,17 @@ class CodexAppServerService {
   /// - on: `fastMode: true`, `serviceTier: 'fast'`
   /// - off: `fastMode: false`, `serviceTier: ''` (explicit off; never omit
   ///   fastMode to mean off)
+  ///
+  /// [autoCompaction] is optional. When provided, writes
+  /// `features.auto_compaction = true|false` without wiping other features.
+  /// When omitted, native preserves the existing key.
   static Future<CodexLocalConfig> writeLocalConfig({
     required String baseUrl,
     required String model,
     required String apiKey,
     String? serviceTier,
     bool? fastMode,
+    bool? autoCompaction,
     String modelReasoningEffort = '',
     String defaultGoal = '',
     bool remoteEnabled = false,
@@ -611,6 +627,7 @@ class CodexAppServerService {
       'apiKey': apiKey.trim(),
       if (serviceTier != null) 'serviceTier': serviceTier.trim(),
       if (fastMode != null) 'fastMode': fastMode,
+      if (autoCompaction != null) 'autoCompaction': autoCompaction,
       'modelReasoningEffort': modelReasoningEffort.trim(),
       'defaultGoal': defaultGoal.trim(),
       'remoteEnabled': remoteEnabled,

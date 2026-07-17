@@ -18,12 +18,9 @@ const List<Color> _kDarkComposerFlowGradientColors = <Color>[
   Color(0xFF8C775D),
 ];
 
-const List<String> _kDefaultCodexReasoningEfforts = <String>[
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-];
+// B26: do not invent low..xhigh when catalog is empty — show empty effort
+// row / last-known options from settings.reasoningEffortOptions only.
+const List<String> _kDefaultCodexReasoningEfforts = <String>[];
 
 const String _kCodexRunSettingsProviderId = '__codex_run_settings__';
 
@@ -206,6 +203,7 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
         _ContextUsageRingButton(
           ratio: contextUsageRatio,
           tooltipMessage: widget.contextUsageTooltipMessage,
+          onTap: widget.onTapContextUsageRing,
           onLongPress: widget.onLongPressContextUsageRing,
         ),
         const SizedBox(width: 4),
@@ -772,6 +770,7 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
           _ContextUsageRingButton(
             ratio: contextUsageRatio,
             tooltipMessage: widget.contextUsageTooltipMessage,
+            onTap: widget.onTapContextUsageRing,
             onLongPress: widget.onLongPressContextUsageRing,
           ),
           const SizedBox(width: 4),
@@ -1145,6 +1144,7 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
   String _codexReasoningEffortLabel(String effort, {bool compact = false}) {
     final normalized = effort.trim().toLowerCase();
     final english = Localizations.localeOf(context).languageCode == 'en';
+    // B26: max/ultra (and other catalog tokens) stay visible; raw string OK.
     return switch (normalized) {
       'none' || 'no' => english ? 'No reasoning' : (compact ? '无' : '无推理'),
       'minimal' || 'min' => english ? 'Minimal' : '极低',
@@ -1156,6 +1156,8 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       'extra-high' ||
       'very_high' ||
       'very-high' => english ? 'XHigh' : '超高',
+      'max' || 'maximum' => english ? 'Max' : 'Max',
+      'ultra' => english ? 'Ultra' : 'Ultra',
       _ => effort.trim().isEmpty ? (english ? 'Reasoning' : '推理') : effort,
     };
   }

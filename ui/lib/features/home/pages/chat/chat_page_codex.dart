@@ -5,6 +5,11 @@ const String _kCodexReasoningEffortPreferenceKey = 'reasoning_effort';
 const String _kCodexCollaborationModePreferenceKey = 'collaboration_mode';
 const String _kCodexServiceTierPreferenceKey = 'service_tier';
 const String _kCodexPreferenceStoragePrefix = 'chat_codex_command_preference';
+// B26: persisted modelId → supported efforts catalog (JSON map).
+const String _kCodexModelEffortCatalogStorageKey =
+    'codex_model_effort_catalog_v1';
+const String _kCodexModelDefaultEffortCatalogStorageKey =
+    'codex_model_default_effort_catalog_v1';
 // Known effort labels for option lists only — never a silent UI default.
 const String _kKnownCodexReasoningEffortXHigh = 'xhigh';
 const String _kCodexFastServiceTier = 'fast';
@@ -293,9 +298,25 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       fastEnabled = _isCodexFastServiceTier(serviceTier);
     }
     if (!mounted) return;
+    // B26: restore last model→effort catalog so UI is not stuck on fake low..xhigh.
+    final restoredCatalog = _readPersistedCodexModelEffortCatalog();
+    final restoredDefaults = _readPersistedCodexModelDefaultEffortCatalog();
+    final activeModel = (model ?? '').trim();
+    final restoredOptions = activeModel.isEmpty
+        ? const <String>[]
+        : (restoredCatalog[activeModel] ?? const <String>[]);
     setState(() {
+      if (restoredCatalog.isNotEmpty) {
+        _codexModelEffortCatalog = restoredCatalog;
+      }
+      if (restoredDefaults.isNotEmpty) {
+        _codexModelDefaultEffortCatalog = restoredDefaults;
+      }
       _activeCodexModelId = model;
       _activeCodexReasoningEffort = _normalizeCodexReasoningEffort(effort);
+      if (restoredOptions.isNotEmpty && _codexReasoningEffortOptions.isEmpty) {
+        _codexReasoningEffortOptions = restoredOptions;
+      }
       _activeCodexCollaborationMode = collaborationMode;
       _activeCodexFastEnabled = fastEnabled;
     });
@@ -377,31 +398,71 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final effectiveModel = activeModel.isNotEmpty
           ? activeModel
           : preferredModel;
-      final modelDefaultEffort = _extractCodexModelDefaultReasoningEffort(
-        response,
-        effectiveModel,
+      // B26: per-model supportedReasoningEfforts + defaults (not a global union).
+      final parsedCatalog = _extractCodexModelEffortCatalog(response);
+      final parsedDefaults = _extractCodexModelDefaultEffortCatalog(response);
+      final modelDefaultEffort =
+          (effectiveModel != null
+              ? parsedDefaults[effectiveModel]
+              : null) ??
+          _extractCodexModelDefaultReasoningEffort(response, effectiveModel);
+      final modelEfforts = _lookupCodexModelEfforts(
+        catalog: parsedCatalog,
+        modelId: effectiveModel,
       );
+      // Prefer per-model list; if empty keep prior catalog for that model /
+      // empty — never invent low..xhigh.
       final effortOptions = _mergeCodexReasoningEffortOptions(
-        current: configSettings.reasoningEffort ?? modelDefaultEffort,
-        options: _extractCodexReasoningEffortOptions(response),
+        current: null,
+        options: modelEfforts.isNotEmpty
+            ? modelEfforts
+            : _lookupCodexModelEfforts(
+                catalog: _codexModelEffortCatalog,
+                modelId: effectiveModel,
+              ),
+      );
+      final nextActiveEffort = _clampCodexReasoningEffortToOptions(
+        preferred:
+            (_activeCodexReasoningEffort ?? '').trim().isNotEmpty
+            ? _activeCodexReasoningEffort
+            : (configSettings.reasoningEffort ?? modelDefaultEffort),
+        options: effortOptions,
+        modelDefault: modelDefaultEffort,
       );
       if (!mounted) return;
       setState(() {
+        if (parsedCatalog.isNotEmpty) {
+          _codexModelEffortCatalog = {
+            ..._codexModelEffortCatalog,
+            ...parsedCatalog,
+          };
+        }
+        if (parsedDefaults.isNotEmpty) {
+          _codexModelDefaultEffortCatalog = {
+            ..._codexModelDefaultEffortCatalog,
+            ...parsedDefaults,
+          };
+        }
         _codexModelOptions = modelOptions;
         if ((_activeCodexModelId ?? '').trim().isEmpty &&
             preferredModel != null) {
           _activeCodexModelId = preferredModel;
         }
-        if ((_activeCodexReasoningEffort ?? '').trim().isEmpty) {
-          // Prefer config/model defaults; leave unset when unknown so UI does
-          // not pretend the session is running at a hard-coded effort.
-          _activeCodexReasoningEffort =
-              configSettings.reasoningEffort ?? modelDefaultEffort;
-        }
+        _activeCodexReasoningEffort = nextActiveEffort;
         _codexReasoningEffortOptions = effortOptions;
         _isCodexModelListLoading = false;
         _codexModelListError = null;
       });
+      if (parsedCatalog.isNotEmpty) {
+        unawaited(_persistCodexModelEffortCatalog(_codexModelEffortCatalog));
+      }
+      if (parsedDefaults.isNotEmpty) {
+        unawaited(
+          _persistCodexModelDefaultEffortCatalog(
+            _codexModelDefaultEffortCatalog,
+          ),
+        );
+      }
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -499,18 +560,76 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       }
     }
     if (!mounted) return;
+    // B26: rebind effort options to the newly selected model's supported set.
+    final modelEfforts = _lookupCodexModelEfforts(
+      catalog: _codexModelEffortCatalog,
+      modelId: normalized,
+    );
+    final effortOptions = _mergeCodexReasoningEffortOptions(
+      current: null,
+      options: modelEfforts,
+    );
+    final modelDefault = _normalizeCodexReasoningEffort(
+      _codexModelDefaultEffortCatalog[normalized],
+    );
+    final previousEffort = (_activeCodexReasoningEffort ?? '').trim();
+    final clampedEffort = _clampCodexReasoningEffortToOptions(
+      preferred: previousEffort.isEmpty ? null : previousEffort,
+      options: effortOptions,
+      modelDefault: modelDefault,
+    );
+    final effortChanged =
+        previousEffort.isNotEmpty &&
+        clampedEffort != null &&
+        previousEffort != clampedEffort;
+    final effortCleared =
+        previousEffort.isNotEmpty &&
+        clampedEffort == null &&
+        effortOptions.isNotEmpty;
     setState(() {
       _activeCodexModelId = normalized;
+      _codexReasoningEffortOptions = effortOptions;
+      if (effortOptions.isNotEmpty) {
+        _activeCodexReasoningEffort = clampedEffort;
+      }
+      // When catalog empty (still loading), keep prior effort cautiously.
     });
     unawaited(
       DebugFileLog.logModel(
         'select',
         model: normalized,
         previous: previous.isEmpty ? null : previous,
+        effort: (_activeCodexReasoningEffort ?? '').trim().isEmpty
+            ? null
+            : (_activeCodexReasoningEffort ?? '').trim(),
       ),
     );
     // Local preference is a cache for cold start / pre-thread UI only.
     await _writeCodexPreference(_kCodexModelPreferenceKey, normalized);
+    if (effortChanged || effortCleared) {
+      final nextEffort = (_activeCodexReasoningEffort ?? '').trim();
+      if (nextEffort.isEmpty) {
+        unawaited(_clearCodexPreference(_kCodexReasoningEffortPreferenceKey));
+      } else {
+        unawaited(
+          _writeCodexPreference(_kCodexReasoningEffortPreferenceKey, nextEffort),
+        );
+      }
+      // Live thread: clamp effort on server when model change invalidates it.
+      final threadId = (_activeCodexThreadId ?? '').trim();
+      if (threadId.isNotEmpty && nextEffort.isNotEmpty && effortChanged) {
+        try {
+          await CodexAppServerService.updateThreadSettings(
+            threadId: threadId,
+            effort: nextEffort,
+          );
+        } catch (error) {
+          debugPrint(
+            'Clamp Codex effort after model switch failed: $error',
+          );
+        }
+      }
+    }
     if (clearComposer) {
       _messageController.clear();
       _hideSlashCommandPanel();
@@ -554,7 +673,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       return;
     }
 
-    // B19: refuse values outside the model-supported option list (no RPC).
+    // B26: accept only efforts in the *current model's* supported set.
+    // Empty options (catalog still loading) → allow normalized token cautiously.
     final allowed = _codexReasoningEffortOptions
         .map((e) => e.trim().toLowerCase())
         .where((e) => e.isNotEmpty)
@@ -731,6 +851,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
+  /// B25: resolve cwd for workspaceWrite.writableRoots (never empty).
+  /// Prefer remoteCwd → cwd → `/workspace` (Kotlin DEFAULT_WORKSPACE_CWD).
+  String get _codexResolvedWritableRoot {
+    for (final candidate in <String?>[
+      _codexStatus.remoteCwd,
+      _codexStatus.cwd,
+    ]) {
+      final path = (candidate ?? '').trim();
+      if (path.startsWith('/')) {
+        return path;
+      }
+    }
+    return '/workspace';
+  }
+
   @override
   Future<void> _setCodexPermissionMode(CodexPermissionMode mode) async {
     if (_codexPermissionMode == mode) {
@@ -740,8 +875,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final threadId = (_activeCodexThreadId ?? '').trim();
     final approvalPolicy = mode.approvalPolicy;
     final approvalsReviewer = mode.approvalsReviewer;
-    final sandboxPolicy = mode.sandboxPolicy;
-    final sandboxType = sandboxPolicy?['type']?.toString();
+    final sandboxPolicy = mode.sandboxPolicy(
+      writableRoot: _codexResolvedWritableRoot,
+    );
+    final sandboxType =
+        sandboxPolicy?['type']?.toString() ?? mode.sandboxType;
 
     // Optimistic UI; roll back on settings RPC failure.
     if (!mounted) return;
@@ -1149,7 +1287,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     });
   }
 
-  Future<void> _setCodexGoalModeEnabled(bool enabled) async {
+  /// B24: [clearThreadGoal] only for bar X / explicit clear; toggle OFF keeps
+  /// thread goal and only drops compose mode chrome.
+  Future<void> _setCodexGoalModeEnabled(
+    bool enabled, {
+    bool clearThreadGoal = false,
+  }) async {
     if (enabled) {
       if (!mounted) {
         return;
@@ -1168,6 +1311,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _openClawPanelExpanded = false;
         _slashCommandExpandedByMode[_activeMode] = false;
       });
+      // May restore an existing thread goal; must not kill fresh empty enable.
       await _refreshCodexActiveGoalText();
       return;
     }
@@ -1176,9 +1320,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     setState(() {
       _codexGoalModeEnabled = false;
-      _codexActiveGoalText = null;
     });
-    await _executeCodexClearGoalCommand();
+    if (clearThreadGoal) {
+      await _executeCodexClearGoalCommand();
+    }
   }
 
   Future<void> _refreshCodexActiveGoalText() async {
@@ -1205,8 +1350,6 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           (_extractCodexGoalStatus(response) ?? '').trim().toLowerCase();
       // B2: ThreadGoal.status 含 complete；agent 可能保留 objective 但标 complete。
       final isComplete = statusNorm == 'complete';
-      final goalExplicitlyNull =
-          response.containsKey('goal') && response['goal'] == null;
       final hasActiveGoal = trimmedObjective.isNotEmpty && !isComplete;
       unawaited(
         DebugFileLog.logGoal(
@@ -1219,14 +1362,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       setState(() {
         if (hasActiveGoal) {
           _codexActiveGoalText = trimmedObjective;
+          // B24: thread with an active goal → show mode chrome (incl. switch).
+          _codexGoalModeEnabled = true;
           return;
         }
         // Server has no active objective (empty / complete / cleared).
         _codexActiveGoalText = null;
-        // Only auto-disable when a previously-known local goal was
-        // cleared/completed, or server reports complete/null goal. Keep mode
-        // on when the user just enabled empty 目标模式 and never had a goal.
-        if (hadLocalGoal || isComplete || goalExplicitlyNull) {
+        // B24 H1: Do NOT auto-disable solely because goal == null.
+        // Fresh enable of empty 目标模式 gets goal:null from get and must stick.
+        // Auto-disable only when: had local goal that disappeared, or complete.
+        // Live clear events + user OFF/X handle the remaining paths.
+        if (hadLocalGoal || isComplete) {
           _codexGoalModeEnabled = false;
         }
       });
@@ -1276,7 +1422,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         serviceTier: threadServiceTier ?? 'omitted',
         effort: _activeCodexReasoningEffort,
         approvalPolicy: _codexPermissionMode.approvalPolicy,
-        sandboxType: _codexPermissionMode.sandboxPolicy?['type']?.toString(),
+        sandboxType: _codexPermissionMode.sandboxType,
         conversationId: remoteCodex ? null : conversationId,
         model: _activeCodexModelId,
       ),
@@ -1323,11 +1469,16 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (!mounted) {
       return;
     }
-    if (cleared || goal == null) {
+    // B24: live clear / complete still kill mode; bare null payload must not
+    // sticky-kill a just-enabled empty 目标模式 (parse miss on updated).
+    if (cleared) {
       setState(() {
         _codexActiveGoalText = null;
         _codexGoalModeEnabled = false;
       });
+      return;
+    }
+    if (goal == null) {
       return;
     }
     final objective = (_asCodexString(goal['objective']) ?? '').trim();
@@ -1568,6 +1719,25 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       preferred: normalized,
       options: _codexModelOptions,
     );
+    // B26: rebind effort options for the server-selected model.
+    final modelEfforts = _lookupCodexModelEfforts(
+      catalog: _codexModelEffortCatalog,
+      modelId: normalized,
+    );
+    if (modelEfforts.isNotEmpty) {
+      final effortOptions = _mergeCodexReasoningEffortOptions(
+        current: null,
+        options: modelEfforts,
+      );
+      _codexReasoningEffortOptions = effortOptions;
+      _activeCodexReasoningEffort = _clampCodexReasoningEffortToOptions(
+        preferred: _activeCodexReasoningEffort,
+        options: effortOptions,
+        modelDefault: _normalizeCodexReasoningEffort(
+          _codexModelDefaultEffortCatalog[normalized],
+        ),
+      );
+    }
     unawaited(_writeCodexPreference(_kCodexModelPreferenceKey, normalized));
   }
 
@@ -1576,14 +1746,19 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (normalized == null) {
       return;
     }
+    // B26: accept server effort if in active model set, or when options empty
+    // (still loading catalog — keep server truth cautiously).
+    final allowed = _codexReasoningEffortOptions
+        .map((e) => e.trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    if (allowed.isNotEmpty && !allowed.contains(normalized)) {
+      return;
+    }
     if ((_activeCodexReasoningEffort ?? '').trim() == normalized) {
       return;
     }
     _activeCodexReasoningEffort = normalized;
-    _codexReasoningEffortOptions = _mergeCodexReasoningEffortOptions(
-      current: normalized,
-      options: _codexReasoningEffortOptions,
-    );
     unawaited(
       _writeCodexPreference(_kCodexReasoningEffortPreferenceKey, normalized),
     );
@@ -2664,7 +2839,9 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         target: reviewTarget,
         approvalPolicy: _codexPermissionMode.approvalPolicy,
         approvalsReviewer: _codexPermissionMode.approvalsReviewer,
-        sandboxPolicy: _codexPermissionMode.sandboxPolicy,
+        sandboxPolicy: _codexPermissionMode.sandboxPolicy(
+          writableRoot: _codexResolvedWritableRoot,
+        ),
         model: _activeCodexModelId,
         effort: _activeCodexReasoningEffort,
         collaborationMode: _activeCodexCollaborationMode,
@@ -3053,8 +3230,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final turnServiceTier = _activeCodexServiceTierOrNull;
     final turnEffort = _activeCodexReasoningEffort;
     final turnApprovalPolicy = _codexPermissionMode.approvalPolicy;
-    final turnSandboxType =
-        _codexPermissionMode.sandboxPolicy?['type']?.toString();
+    final turnSandboxType = _codexPermissionMode.sandboxType;
     final turnModel = modelOverride ?? _activeCodexModelId;
     final turnThreadId = _activeCodexThreadId;
     final turnConversationId = remoteCodex ? null : resolvedConversationId;
@@ -3086,7 +3262,9 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         text: turnText,
         approvalPolicy: _codexPermissionMode.approvalPolicy,
         approvalsReviewer: _codexPermissionMode.approvalsReviewer,
-        sandboxPolicy: _codexPermissionMode.sandboxPolicy,
+        sandboxPolicy: _codexPermissionMode.sandboxPolicy(
+          writableRoot: _codexResolvedWritableRoot,
+        ),
         model: modelOverride ?? _activeCodexModelId,
         effort: _activeCodexReasoningEffort,
         collaborationMode: collaborationModeForTurn,
@@ -6870,9 +7048,99 @@ String? _extractCodexConfigReasoningEffort(Map<String, dynamic> response) {
   return null;
 }
 
+/// B26: modelId → supportedReasoningEfforts from model/list (per model, not union).
+Map<String, List<String>> _extractCodexModelEffortCatalog(
+  Map<String, dynamic> response,
+) {
+  final catalog = <String, List<String>>{};
+  for (final item in _collectCodexListItems(
+    response,
+    _kCodexModelListResponseKeys,
+  )) {
+    final map = _asCodexMap(item);
+    if (map == null) {
+      continue;
+    }
+    final modelId = _codexOptionId(map);
+    if (modelId == null || modelId.isEmpty) {
+      continue;
+    }
+    final efforts = _extractCodexEffortListFromModelItem(map);
+    if (efforts.isEmpty) {
+      continue;
+    }
+    catalog[modelId] = efforts;
+  }
+  return catalog;
+}
+
+/// B26: modelId → defaultReasoningEffort from model/list.
+Map<String, String> _extractCodexModelDefaultEffortCatalog(
+  Map<String, dynamic> response,
+) {
+  final catalog = <String, String>{};
+  for (final item in _collectCodexListItems(
+    response,
+    _kCodexModelListResponseKeys,
+  )) {
+    final map = _asCodexMap(item);
+    if (map == null) {
+      continue;
+    }
+    final modelId = _codexOptionId(map);
+    if (modelId == null || modelId.isEmpty) {
+      continue;
+    }
+    final effort = _normalizeCodexReasoningEffort(
+      map['defaultReasoningEffort'] ??
+          map['default_reasoning_effort'] ??
+          map['defaultReasoningLevel'] ??
+          map['default_reasoning_level'],
+    );
+    if (effort == null) {
+      continue;
+    }
+    catalog[modelId] = effort;
+  }
+  return catalog;
+}
+
+List<String> _extractCodexEffortListFromModelItem(Map<String, dynamic> map) {
+  final rawItems = <dynamic>[];
+  for (final key in const <String>[
+    'supportedReasoningEfforts',
+    'supported_reasoning_efforts',
+    'reasoningEfforts',
+    'reasoning_efforts',
+    'efforts',
+    'modelReasoningEfforts',
+    'model_reasoning_efforts',
+  ]) {
+    final value = map[key];
+    if (value is List) {
+      rawItems.addAll(value);
+    }
+  }
+  return _normalizeCodexEffortList(rawItems);
+}
+
+/// Legacy: union of efforts across response (avoid for UI options; B26 uses per-model).
 List<String> _extractCodexReasoningEffortOptions(
   Map<String, dynamic> response,
 ) {
+  final catalog = _extractCodexModelEffortCatalog(response);
+  if (catalog.isNotEmpty) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final efforts in catalog.values) {
+      for (final effort in efforts) {
+        if (seen.add(effort)) {
+          result.add(effort);
+        }
+      }
+    }
+    return result;
+  }
   final rawItems = <dynamic>[];
   for (final key in const <String>[
     'reasoningEfforts',
@@ -6915,6 +7183,10 @@ List<String> _extractCodexReasoningEffortOptions(
       }
     }
   }
+  return _normalizeCodexEffortList(rawItems);
+}
+
+List<String> _normalizeCodexEffortList(Iterable<dynamic> rawItems) {
   final seen = <String>{};
   final result = <String>[];
   for (final item in rawItems) {
@@ -6936,11 +7208,58 @@ List<String> _extractCodexReasoningEffortOptions(
   return result;
 }
 
+List<String> _lookupCodexModelEfforts({
+  required Map<String, List<String>> catalog,
+  String? modelId,
+}) {
+  final id = modelId?.trim() ?? '';
+  if (id.isEmpty || catalog.isEmpty) {
+    return const <String>[];
+  }
+  final direct = catalog[id];
+  if (direct != null && direct.isNotEmpty) {
+    return List<String>.from(direct);
+  }
+  // Case-insensitive fallback for slug variants.
+  final lower = id.toLowerCase();
+  for (final entry in catalog.entries) {
+    if (entry.key.toLowerCase() == lower && entry.value.isNotEmpty) {
+      return List<String>.from(entry.value);
+    }
+  }
+  return const <String>[];
+}
+
+/// Prefer [preferred] if in [options]; else model default; else first option; else null.
+String? _clampCodexReasoningEffortToOptions({
+  String? preferred,
+  required List<String> options,
+  String? modelDefault,
+}) {
+  final allowed = options
+      .map((e) => _normalizeCodexReasoningEffort(e))
+      .whereType<String>()
+      .toList(growable: false);
+  if (allowed.isEmpty) {
+    // Empty catalog: keep preferred cautiously (loading / last-known).
+    return _normalizeCodexReasoningEffort(preferred);
+  }
+  final preferredNorm = _normalizeCodexReasoningEffort(preferred);
+  if (preferredNorm != null && allowed.contains(preferredNorm)) {
+    return preferredNorm;
+  }
+  final defaultNorm = _normalizeCodexReasoningEffort(modelDefault);
+  if (defaultNorm != null && allowed.contains(defaultNorm)) {
+    return defaultNorm;
+  }
+  return allowed.first;
+}
+
 List<String> _mergeCodexReasoningEffortOptions({
   String? current,
   required List<String> options,
 }) {
-  // B19: options come from model catalog / supported list only.
+  // B26: options come from the *active* model's supported list only.
   // Do not hard-pad low..xhigh. Do not re-inject an illegal [current].
   final seen = <String>{};
   final result = <String>[];
@@ -6955,8 +7274,7 @@ List<String> _mergeCodexReasoningEffortOptions({
   for (final option in options) {
     add(option);
   }
-  // Only surface [current] when it already normalized into the allow-list of
-  // known efforts AND options were empty (cold path before model/list).
+  // Only surface [current] when options empty (cold path before model/list).
   if (result.isEmpty) {
     final normalizedCurrent = _normalizeCodexReasoningEffort(current);
     if (normalizedCurrent != null) {
@@ -6966,12 +7284,96 @@ List<String> _mergeCodexReasoningEffortOptions({
   return result;
 }
 
+Map<String, List<String>> _readPersistedCodexModelEffortCatalog() {
+  try {
+    final decoded = StorageService.getJson<dynamic>(
+      _kCodexModelEffortCatalogStorageKey,
+    );
+    if (decoded is! Map) {
+      return const <String, List<String>>{};
+    }
+    final result = <String, List<String>>{};
+    decoded.forEach((key, value) {
+      final modelId = key?.toString().trim() ?? '';
+      if (modelId.isEmpty || value is! List) {
+        return;
+      }
+      final efforts = _normalizeCodexEffortList(value);
+      if (efforts.isEmpty) {
+        return;
+      }
+      result[modelId] = efforts;
+    });
+    return result;
+  } catch (error) {
+    debugPrint('Read codex model effort catalog failed: $error');
+    return const <String, List<String>>{};
+  }
+}
+
+Map<String, String> _readPersistedCodexModelDefaultEffortCatalog() {
+  try {
+    final decoded = StorageService.getJson<dynamic>(
+      _kCodexModelDefaultEffortCatalogStorageKey,
+    );
+    if (decoded is! Map) {
+      return const <String, String>{};
+    }
+    final result = <String, String>{};
+    decoded.forEach((key, value) {
+      final modelId = key?.toString().trim() ?? '';
+      final effort = _normalizeCodexReasoningEffort(value);
+      if (modelId.isEmpty || effort == null) {
+        return;
+      }
+      result[modelId] = effort;
+    });
+    return result;
+  } catch (error) {
+    debugPrint('Read codex model default effort catalog failed: $error');
+    return const <String, String>{};
+  }
+}
+
+Future<void> _persistCodexModelEffortCatalog(
+  Map<String, List<String>> catalog,
+) async {
+  if (catalog.isEmpty) {
+    return;
+  }
+  try {
+    await StorageService.setJson(
+      _kCodexModelEffortCatalogStorageKey,
+      catalog.map((key, value) => MapEntry(key, value)),
+    );
+  } catch (error) {
+    debugPrint('Persist codex model effort catalog failed: $error');
+  }
+}
+
+Future<void> _persistCodexModelDefaultEffortCatalog(
+  Map<String, String> catalog,
+) async {
+  if (catalog.isEmpty) {
+    return;
+  }
+  try {
+    await StorageService.setJson(
+      _kCodexModelDefaultEffortCatalogStorageKey,
+      catalog,
+    );
+  } catch (error) {
+    debugPrint('Persist codex model default effort catalog failed: $error');
+  }
+}
+
 String? _normalizeCodexReasoningEffort(dynamic value) {
   final text = value?.toString().trim().toLowerCase() ?? '';
   if (text.isEmpty) {
     return null;
   }
-  // B19: unknown values (max/ultra/...) → null; never infinite-pass via `_ => text`.
+  // B26 undo B19 global ban: alias-normalize only; keep catalog tokens
+  // including max/ultra. Acceptance is gated by active model's supported set.
   return switch (text) {
     'no' || 'none' || 'off' => 'none',
     'min' || 'minimal' || 'minimum' => 'minimal',
@@ -6985,7 +7387,10 @@ String? _normalizeCodexReasoningEffort(dynamic value) {
     'x-high' ||
     'x high' ||
     'xhigh' => 'xhigh',
-    _ => null,
+    'max' || 'maximum' => 'max',
+    'ultra' => 'ultra',
+    // Pass through other catalog-shaped tokens (e.g. future model efforts).
+    _ => RegExp(r'^[a-z0-9][a-z0-9_-]{0,31}$').hasMatch(text) ? text : null,
   };
 }
 
@@ -7066,16 +7471,30 @@ extension _CodexPermissionModePayload on CodexPermissionMode {
     };
   }
 
-  Map<String, dynamic>? get sandboxPolicy {
+  /// Policy type string for logs (camelCase SandboxPolicy.type).
+  String get sandboxType {
+    return switch (this) {
+      CodexPermissionMode.fullAccess => 'dangerFullAccess',
+      CodexPermissionMode.defaultMode ||
+      CodexPermissionMode.autoReview => 'workspaceWrite',
+    };
+  }
+
+  /// B20/B25: default + autoReview send explicit workspaceWrite (not null).
+  /// B25: NEVER emit empty [writableRoots] — empty list overrides native
+  /// cwd-rooted default and blocks exec / approval popups.
+  Map<String, dynamic>? sandboxPolicy({required String writableRoot}) {
+    final root = writableRoot.trim().isNotEmpty
+        ? writableRoot.trim()
+        : '/workspace';
     return switch (this) {
       CodexPermissionMode.fullAccess => const <String, dynamic>{
         'type': 'dangerFullAccess',
       },
-      // B20: default + autoReview must send explicit workspaceWrite (not null).
       CodexPermissionMode.defaultMode ||
-      CodexPermissionMode.autoReview => const <String, dynamic>{
+      CodexPermissionMode.autoReview => <String, dynamic>{
         'type': 'workspaceWrite',
-        'writableRoots': <String>[],
+        'writableRoots': <String>[root],
         'networkAccess': true,
         'excludeTmpdirEnvVar': false,
         'excludeSlashTmp': false,

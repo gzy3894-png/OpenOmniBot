@@ -47,6 +47,88 @@ class CodexAppServerProtocolPayloadTest {
     }
 
     @Test
+    fun resolveCodexSandboxModeUsesKebabSandboxModeString() {
+        assertEquals(
+            "workspace-write",
+            resolveCodexSandboxMode(mapOf("sandbox" to "workspace-write")),
+        )
+        assertEquals(
+            "danger-full-access",
+            resolveCodexSandboxMode(mapOf("sandbox" to "danger-full-access")),
+        )
+        assertEquals(
+            "read-only",
+            resolveCodexSandboxMode(mapOf("sandbox" to "read-only")),
+        )
+        assertEquals(
+            "danger-full-access",
+            resolveCodexSandboxMode(
+                mapOf("sandboxPolicy" to mapOf("type" to "dangerFullAccess")),
+            ),
+        )
+        assertEquals(
+            "workspace-write",
+            resolveCodexSandboxMode(
+                mapOf(
+                    "sandboxPolicy" to mapOf(
+                        "type" to "workspaceWrite",
+                        "writableRoots" to emptyList<String>(),
+                    ),
+                ),
+            ),
+        )
+        // Prefer explicit sandbox over policy object.
+        assertEquals(
+            "read-only",
+            resolveCodexSandboxMode(
+                mapOf(
+                    "sandbox" to "read-only",
+                    "sandboxPolicy" to mapOf("type" to "dangerFullAccess"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun resolveCodexSandboxPolicyFillsEmptyWritableRootsFromCwd() {
+        val policy = resolveCodexSandboxPolicy(
+            mapOf(
+                "type" to "workspaceWrite",
+                "writableRoots" to emptyList<String>(),
+                "networkAccess" to true,
+                "excludeTmpdirEnvVar" to false,
+                "excludeSlashTmp" to false,
+            ),
+            "/workspace/project",
+        )
+
+        assertEquals("workspaceWrite", policy["type"])
+        assertEquals(listOf("/workspace/project"), policy["writableRoots"])
+        assertEquals(true, policy["networkAccess"])
+    }
+
+    @Test
+    fun resolveCodexSandboxPolicyPreservesNonEmptyRootsAndFullAccess() {
+        val kept = resolveCodexSandboxPolicy(
+            mapOf(
+                "type" to "workspaceWrite",
+                "writableRoots" to listOf("/custom/root"),
+                "networkAccess" to false,
+            ),
+            "/workspace",
+        )
+        assertEquals(listOf("/custom/root"), kept["writableRoots"])
+        assertEquals(false, kept["networkAccess"])
+
+        val full = resolveCodexSandboxPolicy(
+            mapOf("type" to "dangerFullAccess"),
+            "/workspace",
+        )
+        assertEquals("dangerFullAccess", full["type"])
+        assertNull(full["writableRoots"])
+    }
+
+    @Test
     fun addCodexOptionalRunParamsForwardsModelAndPlanMode() {
         val params = linkedMapOf<String, Any?>("threadId" to "thread-1")
 
@@ -309,7 +391,43 @@ class CodexAppServerProtocolPayloadTest {
     }
 
     @Test
-    fun buildCodexConfigTomlWritesFastModeTrueAndServiceTierFast() {
+    
+    @Test
+    fun buildCodexFeaturesTomlSectionWritesAutoCompactionExplicitly() {
+        val off = buildCodexFeaturesTomlSection(
+            fastMode = false,
+            autoCompaction = false,
+            existingFeatures = mapOf(
+                "auto_compaction" to "true",
+                "hooks" to "true",
+                "goals" to "true",
+            ),
+        ).joinToString("\n")
+        assertTrue(off.contains("auto_compaction = false"))
+        assertTrue(off.contains("hooks = true"))
+        assertTrue(off.contains("goals = true"))
+        assertTrue(off.contains("fast_mode = false"))
+
+        val on = buildCodexFeaturesTomlSection(
+            fastMode = true,
+            autoCompaction = true,
+            existingFeatures = mapOf("hooks" to "false"),
+        ).joinToString("\n")
+        assertTrue(on.contains("auto_compaction = true"))
+        assertTrue(on.contains("hooks = false"))
+        assertTrue(on.contains("fast_mode = true"))
+
+        // null autoCompaction preserves existing, does not invent the key.
+        val keep = buildCodexFeaturesTomlSection(
+            fastMode = false,
+            autoCompaction = null,
+            existingFeatures = mapOf("auto_compaction" to "true", "goals" to "true"),
+        ).joinToString("\n")
+        assertTrue(keep.contains("auto_compaction = true"))
+        assertTrue(keep.contains("goals = true"))
+    }
+
+        fun buildCodexConfigTomlWritesFastModeTrueAndServiceTierFast() {
         val toml = buildCodexConfigToml(
             baseUrl = "https://example.test/v1",
             model = "gpt-test",

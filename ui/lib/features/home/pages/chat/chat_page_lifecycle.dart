@@ -278,6 +278,9 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     if (_activeConversationMode == ChatPageMode.codex) {
       await _refreshCodexCommandPreferences();
       if (isStaleRequest()) return;
+      // B24: per-thread goal chrome after switch (state already reset above).
+      await _refreshCodexActiveGoalText();
+      if (isStaleRequest()) return;
     }
     await _applyStagedSharedDraftIfNeeded(effectiveTarget);
     if (isStaleRequest()) return;

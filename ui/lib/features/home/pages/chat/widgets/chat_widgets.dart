@@ -2633,6 +2633,7 @@ class ChatInputWrapper extends StatelessWidget {
   final VoidCallback? onClearSelectedModelOverride;
   final double? contextUsageRatio;
   final String? contextUsageTooltipMessage;
+  final VoidCallback? onTapContextUsageRing;
   final VoidCallback? onLongPressContextUsageRing;
   final ValueChanged<double>? onInputHeightChanged;
   final ChatModelPickerSettings? modelPickerSettings;
@@ -2677,6 +2678,7 @@ class ChatInputWrapper extends StatelessWidget {
     this.onClearSelectedModelOverride,
     this.contextUsageRatio,
     this.contextUsageTooltipMessage,
+    this.onTapContextUsageRing,
     this.onLongPressContextUsageRing,
     this.onInputHeightChanged,
     this.modelPickerSettings,
@@ -2728,6 +2730,7 @@ class ChatInputWrapper extends StatelessWidget {
             onClearSelectedModelOverride: onClearSelectedModelOverride,
             contextUsageRatio: contextUsageRatio,
             contextUsageTooltipMessage: contextUsageTooltipMessage,
+            onTapContextUsageRing: onTapContextUsageRing,
             onLongPressContextUsageRing: onLongPressContextUsageRing,
             modelPickerSettings: modelPickerSettings,
             codexRunSettings: codexRunSettings,

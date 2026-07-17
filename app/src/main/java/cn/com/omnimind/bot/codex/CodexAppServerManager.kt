@@ -29,6 +29,8 @@ class CodexAppServerManager private constructor(
     private val bindingRepository = CodexThreadBindingRepository(appContext)
     private val remoteConfigStore = CodexRemoteBridgeConfigStore(appContext)
     private val activeTurnsByThreadId = ConcurrentHashMap<String, String>()
+    /** Single-fire guard: threadId -> terminal token (turnId or synthetic). */
+    private val finishedNotifyOnceByThread = ConcurrentHashMap<String, String>()
 
     @Volatile
     private var pendingThreadStartConversationId: Long? = null
@@ -81,6 +83,7 @@ class CodexAppServerManager private constructor(
             session = null
             activeRuntime = null
             activeTurnsByThreadId.clear()
+            finishedNotifyOnceByThread.clear()
             val nextSession = CodexAppServerSession(
                 context = appContext,
                 scope = scope,
@@ -120,6 +123,7 @@ class CodexAppServerManager private constructor(
             session = null
             activeRuntime = null
             activeTurnsByThreadId.clear()
+            finishedNotifyOnceByThread.clear()
         }
         return status()
     }
@@ -175,10 +179,12 @@ class CodexAppServerManager private constructor(
         val shouldBindLocally = shouldSyncLocalThreadBindings()
         val cwd = sanitizeCodexAbsolutePath(args.stringValue("cwd")) ?: resolveDefaultCwd()
         val conversationId = args.longValue("conversationId")
+        // B25: ThreadStartParams uses SandboxMode kebab string field `sandbox`
+        // (not sandboxPolicy object). Keep approvalPolicy + approvalsReviewer.
         val params = linkedMapOf<String, Any?>(
             "cwd" to cwd,
             "approvalPolicy" to (args.stringValue("approvalPolicy") ?: "on-request"),
-            "sandboxPolicy" to (args["sandboxPolicy"] ?: buildDefaultCodexSandboxPolicy(cwd))
+            "sandbox" to resolveCodexSandboxMode(args)
         )
         args.stringValue("approvalsReviewer")?.let {
             params["approvalsReviewer"] = it
@@ -395,9 +401,19 @@ class CodexAppServerManager private constructor(
             mapOf("threadId" to threadId, "turnId" to turnId)
         ) as Map<String, Any?>
         activeTurnsByThreadId.remove(threadId)
+        val localConversationId = localConversationIdForThread(threadId)
+        // Interrupt RPC may complete before turn_aborted event; single-fire guard
+        // prevents a second status-bar notification when the event also arrives.
+        notifyCodexTurnTerminalOnce(
+            threadId = threadId,
+            turnId = turnId,
+            title = "Codex task stopped",
+            message = "The Codex turn was stopped. Tap to view details.",
+            conversationId = localConversationId
+        )
         return response.withLocalIds(
             threadId = threadId,
-            conversationId = localConversationIdForThread(threadId),
+            conversationId = localConversationId,
             turnId = turnId
         )
     }
@@ -463,6 +479,9 @@ class CodexAppServerManager private constructor(
         val fastMode = extractTomlBoolean(featuresBody, "fast_mode")
             ?: extractTomlBoolean(configToml, "fast_mode")
             ?: false
+        // B27: expose features.auto_compaction for settings toggle.
+        val autoCompaction = extractTomlBoolean(featuresBody, "auto_compaction")
+            ?: extractTomlBoolean(configToml, "auto_compaction")
         return buildCodexLocalConfigPayload(
             model = extractTomlString(configToml, "model").orEmpty(),
             baseUrl = extractTomlString(configToml, "base_url").orEmpty(),
@@ -471,6 +490,7 @@ class CodexAppServerManager private constructor(
             modelReasoningEffort = modelReasoningEffort,
             defaultGoal = defaultGoal,
             fastMode = fastMode,
+            autoCompaction = autoCompaction,
             remoteConfig = remoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -490,6 +510,8 @@ class CodexAppServerManager private constructor(
                 .orEmpty()
         val defaultGoal = args.stringValue("defaultGoal").orEmpty().trim()
         val requestedFastMode = args.booleanValue("fastMode") ?: args.booleanValue("fast_mode")
+        val requestedAutoCompaction =
+            args.booleanValue("autoCompaction") ?: args.booleanValue("auto_compaction")
         val serviceTierArgPresent =
             args.containsKey("serviceTier") || args.containsKey("service_tier")
         val remoteConfig = CodexRemoteBridgeConfig(
@@ -510,16 +532,17 @@ class CodexAppServerManager private constructor(
             ""
         }
         val existingFeatures = extractTomlTableEntries(existingToml, "features")
-        val existingFastMode = extractTomlBoolean(
-            extractTomlTableBody(existingToml, "features"),
-            "fast_mode"
-        )
+        val featuresBodyForWrite = extractTomlTableBody(existingToml, "features")
+        val existingFastMode = extractTomlBoolean(featuresBodyForWrite, "fast_mode")
+        val existingAutoCompaction = extractTomlBoolean(featuresBodyForWrite, "auto_compaction")
         val fastMode = resolveCodexFastMode(
             requestedFastMode = requestedFastMode,
             serviceTier = serviceTier,
             serviceTierArgPresent = serviceTierArgPresent,
             existingFastMode = existingFastMode
         )
+        // B27: only force auto_compaction when caller provides it; otherwise preserve.
+        val autoCompaction = requestedAutoCompaction ?: existingAutoCompaction
         // Fast off must never persist service_tier=fast; other tiers stay independent.
         val effectiveServiceTier =
             if (!fastMode && serviceTier == "fast") null else serviceTier
@@ -531,6 +554,7 @@ class CodexAppServerManager private constructor(
                 modelReasoningEffort = modelReasoningEffort,
                 defaultGoal = defaultGoal,
                 fastMode = fastMode,
+                autoCompaction = autoCompaction,
                 existingFeatures = existingFeatures,
                 existingToml = existingToml
             )
@@ -564,6 +588,7 @@ class CodexAppServerManager private constructor(
             session = null
             activeRuntime = null
             activeTurnsByThreadId.clear()
+            finishedNotifyOnceByThread.clear()
         }
         return buildCodexLocalConfigPayload(
             model = model,
@@ -573,6 +598,7 @@ class CodexAppServerManager private constructor(
             modelReasoningEffort = modelReasoningEffort,
             defaultGoal = defaultGoal,
             fastMode = fastMode,
+            autoCompaction = autoCompaction,
             remoteConfig = savedRemoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -681,7 +707,8 @@ class CodexAppServerManager private constructor(
             "input" to resolveInput(args),
             "cwd" to cwd,
             "approvalPolicy" to (args.stringValue("approvalPolicy") ?: "on-request"),
-            "sandboxPolicy" to (args["sandboxPolicy"] ?: buildDefaultCodexSandboxPolicy(cwd))
+            // B25: turn/start uses sandboxPolicy object; never pass empty writableRoots.
+            "sandboxPolicy" to resolveCodexSandboxPolicy(args["sandboxPolicy"], cwd)
         )
         args.stringValue("approvalsReviewer")?.let {
             params["approvalsReviewer"] = it
@@ -701,7 +728,8 @@ class CodexAppServerManager private constructor(
             "delivery" to (args.stringValue("delivery") ?: "inline"),
             "cwd" to cwd,
             "approvalPolicy" to (args.stringValue("approvalPolicy") ?: "on-request"),
-            "sandboxPolicy" to (args["sandboxPolicy"] ?: buildDefaultCodexSandboxPolicy(cwd))
+            // B25: review path same as turn — fill empty writableRoots from cwd.
+            "sandboxPolicy" to resolveCodexSandboxPolicy(args["sandboxPolicy"], cwd)
         )
         args.stringValue("approvalsReviewer")?.let {
             params["approvalsReviewer"] = it
@@ -811,12 +839,15 @@ class CodexAppServerManager private constructor(
                 protocolEventType == "task_started" ||
                 protocolEventType == "turn_started")) {
             activeTurnsByThreadId[threadId] = turnId
+            // New turn may notify again after a prior terminal state for this thread.
+            finishedNotifyOnceByThread.remove(threadId)
             TaskRuntimeSettings.onTaskStarted(appContext)
         }
         if (!threadId.isNullOrBlank() && method == "thread/status/changed") {
             val active = codexThreadActivity(message)
             if (active == true && !turnId.isNullOrBlank()) {
                 activeTurnsByThreadId[threadId] = turnId
+                finishedNotifyOnceByThread.remove(threadId)
             } else if (active == false) {
                 activeTurnsByThreadId.remove(threadId)
             }
@@ -839,20 +870,43 @@ class CodexAppServerManager private constructor(
         }
         if (!threadId.isNullOrBlank() && method == "thread/closed") {
             activeTurnsByThreadId.remove(threadId)
+            finishedNotifyOnceByThread.remove(threadId)
         }
 
         val localConversationId = syncMessage(method, message, params, threadId)
-        if (method == "turn/completed" ||
-            protocolEventType == "task_complete" ||
-            protocolEventType == "turn_complete") {
-            TaskRuntimeSettings.onTaskFinished(appContext)
-            TaskRuntimeSettings.notifyTaskFinished(
-                context = appContext,
-                title = "Codex task completed",
-                message = "Tap to view the completed Codex turn.",
-                conversationId = localConversationId,
-                conversationMode = "codex"
-            )
+        when {
+            method == "turn/completed" ||
+                protocolEventType == "task_complete" ||
+                protocolEventType == "turn_complete" -> {
+                notifyCodexTurnTerminalOnce(
+                    threadId = threadId,
+                    turnId = turnId,
+                    title = "Codex task completed",
+                    message = "Tap to view the completed Codex turn.",
+                    conversationId = localConversationId
+                )
+            }
+            protocolEventType == "turn_aborted" ||
+                method == "turn/interrupted" ||
+                method == "turn/interrupt/completed" -> {
+                notifyCodexTurnTerminalOnce(
+                    threadId = threadId,
+                    turnId = turnId,
+                    title = "Codex task stopped",
+                    message = "The Codex turn was stopped. Tap to view details.",
+                    conversationId = localConversationId
+                )
+            }
+            (method == "error" || method == "turn/failed") &&
+                params["willRetry"] != true -> {
+                notifyCodexTurnTerminalOnce(
+                    threadId = threadId,
+                    turnId = turnId,
+                    title = "Codex task failed",
+                    message = "The Codex turn failed. Tap to view details.",
+                    conversationId = localConversationId
+                )
+            }
         }
         emitEvent(
             linkedMapOf(
@@ -865,6 +919,36 @@ class CodexAppServerManager private constructor(
                 "message" to message
             )
         )
+    }
+
+    /**
+     * B29: fire onTaskFinished + status-bar notify at most once per thread turn terminal.
+     * Covers complete / stop(abort+interrupt RPC) / fail without double-notify when both
+     * interrupt RPC and turn_aborted (or error + turn/failed) arrive for the same turn.
+     */
+    private fun notifyCodexTurnTerminalOnce(
+        threadId: String?,
+        turnId: String?,
+        title: String,
+        message: String,
+        conversationId: Long?
+    ): Boolean {
+        if (!threadId.isNullOrBlank()) {
+            val token = turnId?.takeIf { it.isNotBlank() } ?: "terminal"
+            val previous = finishedNotifyOnceByThread.putIfAbsent(threadId, token)
+            if (previous != null) {
+                return false
+            }
+        }
+        TaskRuntimeSettings.onTaskFinished(appContext)
+        TaskRuntimeSettings.notifyTaskFinished(
+            context = appContext,
+            title = title,
+            message = message,
+            conversationId = conversationId,
+            conversationMode = "codex"
+        )
+        return true
     }
 
     private suspend fun syncMessage(
@@ -1141,6 +1225,83 @@ internal fun buildDefaultCodexSandboxPolicy(cwd: String): Map<String, Any?> {
     )
 }
 
+/**
+ * B25: ThreadStartParams / ThreadResumeParams / ThreadForkParams use
+ * SandboxMode kebab string (`sandbox`), not SandboxPolicy object.
+ */
+internal fun resolveCodexSandboxMode(args: Map<String, Any?>): String {
+    val explicit = args.stringValue("sandbox")?.trim().orEmpty()
+    if (explicit.isNotEmpty()) {
+        return normalizeCodexSandboxMode(explicit)
+    }
+    val policyType = (args["sandboxPolicy"] as? Map<*, *>)
+        ?.get("type")
+        ?.toString()
+    return sandboxModeFromPolicyType(policyType)
+}
+
+internal fun normalizeCodexSandboxMode(raw: String): String {
+    val trimmed = raw.trim()
+    when (trimmed) {
+        "dangerFullAccess" -> return "danger-full-access"
+        "readOnly" -> return "read-only"
+        "workspaceWrite" -> return "workspace-write"
+    }
+    return when (trimmed.lowercase().replace('_', '-')) {
+        "danger-full-access", "dangerfullaccess" -> "danger-full-access"
+        "read-only", "readonly" -> "read-only"
+        "workspace-write", "workspacewrite" -> "workspace-write"
+        else -> "workspace-write"
+    }
+}
+
+internal fun sandboxModeFromPolicyType(type: String?): String {
+    val normalized = type?.trim().orEmpty()
+    return when (normalized) {
+        "dangerFullAccess" -> "danger-full-access"
+        "readOnly" -> "read-only"
+        "workspaceWrite", "" -> "workspace-write"
+        else -> normalizeCodexSandboxMode(normalized)
+    }
+}
+
+/**
+ * B25: For turn/start and settings that take SandboxPolicy object — never emit
+ * empty writableRoots (overrides native cwd-rooted default → no exec / no popup).
+ */
+internal fun resolveCodexSandboxPolicy(policy: Any?, cwd: String): Map<String, Any?> {
+    val source = policy as? Map<*, *>
+    if (source == null) {
+        return buildDefaultCodexSandboxPolicy(cwd)
+    }
+    val type = source["type"]?.toString()?.trim().orEmpty()
+    if (type == "dangerFullAccess") {
+        return linkedMapOf("type" to "dangerFullAccess")
+    }
+    if (type == "readOnly") {
+        val out = linkedMapOf<String, Any?>("type" to "readOnly")
+        (source["networkAccess"] as? Boolean)?.let { out["networkAccess"] = it }
+        return out
+    }
+    // workspaceWrite (default) or unknown — ensure non-empty roots.
+    val roots = when (val raw = source["writableRoots"]) {
+        is List<*> -> raw.mapNotNull { item ->
+            item?.toString()?.trim()?.takeIf { it.startsWith("/") }
+        }
+        else -> emptyList()
+    }
+    val fallbackRoot = sanitizeCodexAbsolutePath(cwd)
+        ?: CodexAppServerDefaults.DEFAULT_WORKSPACE_CWD
+    val effectiveRoots = if (roots.isEmpty()) listOf(fallbackRoot) else roots
+    return linkedMapOf(
+        "type" to if (type.isEmpty()) "workspaceWrite" else type,
+        "writableRoots" to effectiveRoots,
+        "networkAccess" to (source["networkAccess"] as? Boolean ?: true),
+        "excludeTmpdirEnvVar" to (source["excludeTmpdirEnvVar"] as? Boolean ?: false),
+        "excludeSlashTmp" to (source["excludeSlashTmp"] as? Boolean ?: false)
+    )
+}
+
 internal fun addCodexOptionalRunParams(
     params: MutableMap<String, Any?>,
     args: Map<String, Any?>
@@ -1213,6 +1374,7 @@ private fun buildCodexLocalConfigPayload(
     modelReasoningEffort: String = "",
     defaultGoal: String = "",
     fastMode: Boolean = false,
+    autoCompaction: Boolean? = null,
     remoteConfig: CodexRemoteBridgeConfig,
     runtime: String
 ): Map<String, Any?> {
@@ -1225,6 +1387,7 @@ private fun buildCodexLocalConfigPayload(
         "modelReasoningEffort" to modelReasoningEffort,
         "defaultGoal" to defaultGoal,
         "fastMode" to fastMode,
+        "autoCompaction" to autoCompaction,
         "remoteEnabled" to remoteConfig.enabled,
         "remoteBridgeUrl" to remoteConfig.bridgeUrl,
         "remoteBridgeToken" to remoteConfig.authToken,
@@ -1239,7 +1402,8 @@ private fun buildCodexLocalConfigPayload(
  *
  * Managed keys are rewritten; [features] is merged so unrelated feature flags
  * (auto_compaction/hooks/goals/...) survive. fast_mode is always written as a
- * boolean — never "deleted to mean off".
+ * boolean — never "deleted to mean off". auto_compaction is written only when
+ * the caller provides an explicit value (or an existing value is preserved).
  */
 internal fun buildCodexConfigToml(
     baseUrl: String,
@@ -1248,6 +1412,7 @@ internal fun buildCodexConfigToml(
     modelReasoningEffort: String = "",
     defaultGoal: String = "",
     fastMode: Boolean = false,
+    autoCompaction: Boolean? = null,
     existingFeatures: Map<String, String> = emptyMap(),
     existingToml: String = ""
 ): String {
@@ -1282,7 +1447,11 @@ internal fun buildCodexConfigToml(
         lines += preservedTopLevel
     }
     lines += ""
-    lines += buildCodexFeaturesTomlSection(fastMode = fastMode, existingFeatures = existingFeatures)
+    lines += buildCodexFeaturesTomlSection(
+        fastMode = fastMode,
+        autoCompaction = autoCompaction,
+        existingFeatures = existingFeatures,
+    )
     lines += listOf(
         "",
         "[model_providers.omnimind]",
@@ -1327,21 +1496,32 @@ internal fun resolveCodexFastMode(
 /**
  * Emit a [features] table that always includes fast_mode = true|false and
  * preserves other known feature keys from the previous config body.
+ *
+ * When [autoCompaction] is non-null, force-write `auto_compaction = true|false`
+ * without wiping hooks/goals/other features. When null, keep any existing value.
  */
 internal fun buildCodexFeaturesTomlSection(
     fastMode: Boolean,
+    autoCompaction: Boolean? = null,
     existingFeatures: Map<String, String> = emptyMap()
 ): List<String> {
     val merged = linkedMapOf<String, String>()
     existingFeatures.forEach { (key, value) ->
         val normalizedKey = key.trim()
-        if (normalizedKey.isEmpty() || normalizedKey.equals("fast_mode", ignoreCase = true)) {
+        if (normalizedKey.isEmpty() ||
+            normalizedKey.equals("fast_mode", ignoreCase = true) ||
+            (autoCompaction != null &&
+                normalizedKey.equals("auto_compaction", ignoreCase = true))
+        ) {
             return@forEach
         }
         merged[normalizedKey] = value.trim()
     }
     // Always write an explicit boolean. Deleting the key is not allowed for "off".
     merged["fast_mode"] = if (fastMode) "true" else "false"
+    if (autoCompaction != null) {
+        merged["auto_compaction"] = if (autoCompaction) "true" else "false"
+    }
     val lines = mutableListOf("[features]")
     // Stable-ish order: preserve discovery order of existing keys, then fast_mode last
     // if it was not present; but since we force-set fast_mode after copy, put common
@@ -1371,14 +1551,30 @@ internal fun normalizeCodexServiceTier(raw: String?): String? {
     }
 }
 
+/**
+ * B26: allow catalog tokens including max/ultra when writing config.toml.
+ * Alias-only normalization; unknown garbage still drops to null.
+ */
 private fun normalizeCodexReasoningEffort(raw: String?): String? {
     val normalized = raw?.trim()?.lowercase().orEmpty()
     if (normalized.isEmpty()) {
         return null
     }
     return when (normalized) {
-        "low", "medium", "high", "xhigh" -> normalized
-        else -> null
+        "no", "none", "off" -> "none"
+        "min", "minimal", "minimum" -> "minimal"
+        "low" -> "low"
+        "med", "medium" -> "medium"
+        "high" -> "high"
+        "extra_high", "extra-high", "very_high", "very-high", "x-high", "x high", "xhigh" -> "xhigh"
+        "max", "maximum" -> "max"
+        "ultra" -> "ultra"
+        // Pass through other catalog-shaped tokens so model/list efforts survive TOML write.
+        else -> if (normalized.matches(Regex("^[a-z0-9][a-z0-9_-]{0,31}$"))) {
+            normalized
+        } else {
+            null
+        }
     }
 }
 

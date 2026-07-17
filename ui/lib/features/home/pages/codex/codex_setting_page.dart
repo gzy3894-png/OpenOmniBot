@@ -42,6 +42,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   bool _obscureBridgeToken = true;
   bool _remoteEnabled = false;
   bool _fastEnabled = false;
+  bool _autoCompactionEnabled = true;
   String _codexHome = _defaultCodexHome;
   String _runtime = 'local';
   String? _error;
@@ -136,6 +137,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       // Default Fast UI off unless config explicitly has fast_mode or
       // service_tier=fast (see CodexLocalConfig.isFastEnabled).
       _fastEnabled = config.isFastEnabled;
+      // B27: auto_compaction defaults on when key missing.
+      _autoCompactionEnabled = config.isAutoCompactionEnabled;
     } finally {
       _isSyncing = false;
     }
@@ -150,6 +153,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     required String remoteCwd,
     required bool remoteEnabled,
     required bool fastEnabled,
+    required bool autoCompactionEnabled,
     required String defaultGoal,
   }) {
     return [
@@ -161,6 +165,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       remoteBridgeToken.trim(),
       remoteCwd.trim(),
       fastEnabled ? 'fast' : 'off',
+      autoCompactionEnabled ? 'auto_compaction' : 'auto_compaction_off',
       defaultGoal.trim(),
     ].join('\n');
   }
@@ -175,6 +180,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       remoteCwd: _bridgeCwdController.text,
       remoteEnabled: _remoteEnabled,
       fastEnabled: _fastEnabled,
+      autoCompactionEnabled: _autoCompactionEnabled,
       defaultGoal: _defaultGoalController.text,
     );
   }
@@ -281,6 +287,26 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
   }
 
+  void _setAutoCompactionEnabled(bool value) {
+    if (_autoCompactionEnabled == value) return;
+    setState(() {
+      _autoCompactionEnabled = value;
+      _error = null;
+      _status = value
+          ? _localeText(
+              zh: '自动压缩已开启，即将自动保存。',
+              en: 'Auto compaction enabled. Autosave pending.',
+            )
+          : _localeText(
+              zh: '自动压缩已关闭，即将自动保存。',
+              en: 'Auto compaction disabled. Autosave pending.',
+            );
+    });
+    if (_hasCompleteInput && _currentSignature() != _lastSavedSignature) {
+      _scheduleAutoSave(delay: const Duration(milliseconds: 300));
+    }
+  }
+
   void _scheduleAutoSave({Duration delay = _autoSaveDelay}) {
     _saveDebounce?.cancel();
     _saveDebounce = Timer(delay, () => unawaited(_saveConfig()));
@@ -359,6 +385,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         apiKey: _apiKeyController.text.trim(),
         fastMode: _fastEnabled,
         serviceTier: _fastEnabled ? 'fast' : '',
+        autoCompaction: _autoCompactionEnabled,
         defaultGoal: _defaultGoalController.text.trim(),
         remoteEnabled: _remoteEnabled,
         remoteBridgeUrl: _bridgeUrlController.text.trim(),
@@ -375,6 +402,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         remoteCwd: saved.remoteCwd,
         remoteEnabled: saved.remoteEnabled,
         fastEnabled: saved.isFastEnabled,
+        autoCompactionEnabled: saved.isAutoCompactionEnabled,
         defaultGoal: saved.defaultGoal,
       );
       if (_currentSignature() == savingSignature) {
@@ -579,6 +607,13 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     return _buildSimpleSwitch(
       value: _fastEnabled,
       onChanged: _setFastEnabled,
+    );
+  }
+
+  Widget _buildAutoCompactionSwitch() {
+    return _buildSimpleSwitch(
+      value: _autoCompactionEnabled,
+      onChanged: _setAutoCompactionEnabled,
     );
   }
 
@@ -949,6 +984,46 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                               ),
                             ),
                             _buildFastSwitch(),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _localeText(
+                                      zh: '自动压缩',
+                                      en: 'Auto compaction',
+                                    ),
+                                    style: TextStyle(
+                                      color: _primaryTextColor,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      fontFamily: 'PingFang SC',
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _localeText(
+                                      zh:
+                                          '上下文自动压缩：开=features.auto_compaction=true；关=显式 false。缺省开。',
+                                      en:
+                                          'Context auto-compaction: on writes features.auto_compaction=true; off writes false. Default on.',
+                                    ),
+                                    style: TextStyle(
+                                      color: _secondaryTextColor,
+                                      fontSize: 12,
+                                      height: 1.35,
+                                      fontFamily: 'PingFang SC',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            _buildAutoCompactionSwitch(),
                           ],
                         ),
                         const SizedBox(height: 12),

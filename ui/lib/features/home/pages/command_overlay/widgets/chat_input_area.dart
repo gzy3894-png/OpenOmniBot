@@ -140,6 +140,9 @@ class ChatInputArea extends StatefulWidget {
   final VoidCallback? onClearSelectedModelOverride;
   final double? contextUsageRatio;
   final String? contextUsageTooltipMessage;
+  /// Tap on context ring (B27: primary way to open threshold sheet).
+  final VoidCallback? onTapContextUsageRing;
+  /// Long-press on context ring (optional same action as tap).
   final VoidCallback? onLongPressContextUsageRing;
   final ChatModelPickerSettings? modelPickerSettings;
   final CodexRunSettings? codexRunSettings;
@@ -186,6 +189,7 @@ class ChatInputArea extends StatefulWidget {
     this.onClearSelectedModelOverride,
     this.contextUsageRatio,
     this.contextUsageTooltipMessage,
+    this.onTapContextUsageRing,
     this.onLongPressContextUsageRing,
     this.modelPickerSettings,
     this.codexRunSettings,
@@ -259,11 +263,13 @@ class _ContextUsageRingButton extends StatefulWidget {
   const _ContextUsageRingButton({
     required this.ratio,
     this.tooltipMessage,
+    this.onTap,
     this.onLongPress,
   });
 
   final double ratio;
   final String? tooltipMessage;
+  final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
   @override
@@ -336,15 +342,19 @@ class _ContextUsageRingButtonState extends State<_ContextUsageRingButton> {
     );
     final tooltip = widget.tooltipMessage?.trim() ?? '';
     final hasTooltip = tooltip.isEmpty == false;
-    if (!hasTooltip && widget.onLongPress == null) {
+    // Prefer sheet action on tap (B27); fall back to long-press as same action;
+    // tooltip only when no open-sheet callback is wired.
+    final openSheet = widget.onTap ?? widget.onLongPress;
+    if (!hasTooltip && openSheet == null) {
       return ring;
     }
     return Builder(
       builder: (anchorContext) {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: hasTooltip ? () => _showTooltip(anchorContext, tooltip) : null,
-          onLongPress: widget.onLongPress,
+          onTap: openSheet ??
+              (hasTooltip ? () => _showTooltip(anchorContext, tooltip) : null),
+          onLongPress: widget.onLongPress ?? widget.onTap,
           child: ring,
         );
       },

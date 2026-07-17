@@ -443,12 +443,15 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   String? _codexModelListError;
   String? _codexCollaborationModeListError;
   List<String> _codexModelOptions = const <String>[];
-  List<String> _codexReasoningEffortOptions = const <String>[
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-  ];
+  // B26: efforts for the *active* model only. Cold start empty (or last catalog
+  // restore) — never fake low..xhigh as universal truth.
+  List<String> _codexReasoningEffortOptions = const <String>[];
+  // modelId → supportedReasoningEfforts from model/list (in-memory + optional persist).
+  Map<String, List<String>> _codexModelEffortCatalog =
+      const <String, List<String>>{};
+  // modelId → defaultReasoningEffort from model/list (best-effort).
+  Map<String, String> _codexModelDefaultEffortCatalog =
+      const <String, String>{};
   List<String> _codexCollaborationModes = const <String>[];
   CodexPermissionMode _codexPermissionMode = CodexPermissionMode.defaultMode;
   ChatBrowserSessionSnapshot? _liveBrowserSessionSnapshot;
@@ -1646,6 +1649,10 @@ abstract class _ChatPageStateBase extends State<ChatPage>
       _activeCodexRemoteRuntimeId = null;
       _activeCodexThreadId = null;
       _activeCodexTurnId = null;
+      // B24: drop sticky goal chrome so the next thread cannot inherit a
+      // null-kill or mode-on from the previous conversation.
+      _codexGoalModeEnabled = false;
+      _codexActiveGoalText = null;
     }
     if (mode == ChatPageMode.normal) {
       _conversationModelOverride = null;
@@ -1798,8 +1805,14 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   /// Session permission mode change (local tip only; not a model turn).
   Future<void> _setCodexPermissionMode(CodexPermissionMode mode);
 
-  /// Goal-mode session toggle (composer prefix + bar + clearGoal on off).
-  Future<void> _setCodexGoalModeEnabled(bool enabled);
+  /// Goal-mode session toggle (composer chrome).
+  ///
+  /// [clearThreadGoal] true (bar X / explicit clear): also RPC clearGoal.
+  /// Plain OFF only drops mode chrome and keeps the thread goal.
+  Future<void> _setCodexGoalModeEnabled(
+    bool enabled, {
+    bool clearThreadGoal = false,
+  });
 
   Future<void> _activateCodexPlanMode({
     bool persistOnly = false,

@@ -245,10 +245,15 @@ class ConversationModel {
   bool get isScheduledChild =>
       parentConversationId != null && parentConversationId! > 0;
 
+  /// Context usage ring fill ratio for normal chat.
+  ///
+  /// Returns null only when there is no threshold (ring hidden). When
+  /// [promptTokenThreshold] > 0, returns 0.0 even before any token usage is
+  /// recorded so the ring stays discoverable (B27).
   double? get contextUsageRatio {
     if (promptTokenThreshold <= 0) return null;
     if (latestPromptTokensUpdatedAt <= 0 && latestPromptTokens <= 0) {
-      return null;
+      return 0.0;
     }
     return latestPromptTokens / promptTokenThreshold;
   }

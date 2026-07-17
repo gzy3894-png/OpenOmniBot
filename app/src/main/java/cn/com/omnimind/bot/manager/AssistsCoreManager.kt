@@ -5767,6 +5767,20 @@ class AssistsCoreManager(private val context: Context) : OnMessagePushListener {
                                 )
                             }
                         }
+                        // B29: terminal agent error/stop should surface status-bar notify
+                        // (onComplete already notifies success/end; retryable paths still
+                        // end the current run here with willRetry=false on the stream event).
+                        if (scheduledSubagentMeta == null) {
+                            TaskRuntimeSettings.notifyTaskFinished(
+                                context = context,
+                                title = "Agent 任务已结束",
+                                message = finalText.ifBlank {
+                                    errorText.ifBlank { "任务已结束，点击查看详情" }
+                                },
+                                conversationId = conversationId ?: currentConversationId,
+                                conversationMode = resolvedConversationMode
+                            )
+                        }
                         sendStreamEvent(
                             kind = "error",
                             entryId = errorEntryId,

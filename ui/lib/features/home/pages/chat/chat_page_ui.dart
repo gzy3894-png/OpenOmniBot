@@ -402,8 +402,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                   ? 'On: type an objective and send to set goal'
                   : '开启后输入目标并发送')
             : (isEnglish
-                  ? 'Off: clear goal mode and thread goal'
-                  : '关闭清除目标模式与线程目标'),
+                  ? 'Off: leave goal mode (thread goal kept; X clears)'
+                  : '关闭仅退出模式（线程目标保留；X 清除）'),
         progress: goalModeEnabled
             ? (isEnglish
                   ? ((_codexActiveGoalText ?? '').trim().isEmpty
@@ -1536,9 +1536,17 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       useAttachmentPickerForPlus: true,
                       onPickAttachment: _pickAttachments,
                       onTriggerSlashCommand: _triggerSlashCommandPanel,
+                      // B22: @ second press collapses skills list (toggle).
                       onTriggerSkillMention: _activeMode == ChatPageMode.codex
                           ? () {
-                              unawaited(_openCodexSkillsPanel());
+                              if (_codexSkillsPanelVisible &&
+                                  _showSlashCommandPanel) {
+                                _hideSlashCommandPanel();
+                                // B18 pattern: keep keyboard after hide.
+                                _requestComposerFocus(showKeyboard: true);
+                              } else {
+                                unawaited(_openCodexSkillsPanel());
+                              }
                             }
                           : null,
                       attachments: _pendingAttachments,
@@ -1554,10 +1562,14 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                               visible: true,
                               onHeightChanged: _handleCodexGoalBarHeightChanged,
                               onClear: () {
-                                // Cross-mixin: use base abstract API (Codex
-                                // mixin private _executeCodexClearGoalCommand
-                                // is not visible on _ChatPageUiMixin).
-                                unawaited(_setCodexGoalModeEnabled(false));
+                                // B24: bar X = clear thread goal + leave mode.
+                                // Toggle OFF alone keeps thread goal.
+                                unawaited(
+                                  _setCodexGoalModeEnabled(
+                                    false,
+                                    clearThreadGoal: true,
+                                  ),
+                                );
                               },
                             )
                           : null,
@@ -1572,6 +1584,11 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                       contextUsageTooltipMessage:
                           _activeMode == ChatPageMode.normal
                           ? _buildContextUsageTooltipMessage()
+                          : null,
+                      // B27: tap (primary) and long-press both open threshold sheet.
+                      onTapContextUsageRing:
+                          _activeMode == ChatPageMode.normal
+                          ? _handleContextUsageRingLongPress
                           : null,
                       onLongPressContextUsageRing:
                           _activeMode == ChatPageMode.normal
@@ -2306,15 +2323,15 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     if (conversation.latestPromptTokensUpdatedAt <= 0 &&
         conversation.latestPromptTokens <= 0) {
       return LegacyTextLocalizer.isEnglish
-          ? 'No context token statistics yet\nLong press to adjust threshold'
-          : '当前对话还没有上下文 token 统计\n长按可调整阈值';
+          ? 'No context token statistics yet\nTap to adjust threshold'
+          : '当前对话还没有上下文 token 统计\n点击可调整阈值';
     }
 
     final usedTokens = conversation.latestPromptTokens;
     final thresholdTokens = conversation.promptTokenThreshold;
     return '${_formatTokenCount(usedTokens)} / '
         '${_formatTokenCount(thresholdTokens)} tokens'
-        '\n${LegacyTextLocalizer.isEnglish ? 'Long press to adjust threshold' : '长按可调整阈值'}';
+        '\n${LegacyTextLocalizer.isEnglish ? 'Tap to adjust threshold' : '点击可调整阈值'}';
   }
 
   Future<void> _handleContextUsageRingLongPress() async {

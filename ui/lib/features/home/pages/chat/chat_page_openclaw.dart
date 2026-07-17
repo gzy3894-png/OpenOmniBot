@@ -8,6 +8,21 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
   void _triggerSlashCommandPanel() {
     final currentText = _messageController.text;
     final slashPrefixed = currentText.trimLeft().startsWith('/');
+    // B23: # second press collapses slash list (toggle).
+    // Only when slash route is already open (text starts with `/`), not skills.
+    if (_showSlashCommandPanel && slashPrefixed) {
+      // Clear bare `/` draft injected by the first press so send stays clean.
+      if (RegExp(r'^\s*/\s*$').hasMatch(currentText)) {
+        _messageController.value = const TextEditingValue(
+          text: '',
+          selection: TextSelection.collapsed(offset: 0),
+        );
+      }
+      _hideSlashCommandPanel();
+      // B18 pattern: keep keyboard after hide.
+      _requestComposerFocus(showKeyboard: true);
+      return;
+    }
     if (!slashPrefixed) {
       _messageController.value = const TextEditingValue(
         text: '/',
