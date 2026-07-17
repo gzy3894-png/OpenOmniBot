@@ -1144,10 +1144,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         remoteCwd: localConfig.remoteCwd,
       );
       if (!mounted) return;
-      setState(() {
-        _activeCodexAutoCompactionEnabled = next;
-        _codexLocalConfigHydrated = true;
-      });
+      // UI mirror lives on _ChatPageUiMixin; card path updates it via
+      // _setCodexAutoCompactionEnabled. Typed /auto-compact toast only.
       showToast(
         LegacyTextLocalizer.isEnglish
             ? (next
