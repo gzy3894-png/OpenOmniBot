@@ -1814,6 +1814,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
     bool clearThreadGoal = false,
   });
 
+  /// B24: refresh per-thread goal chrome (mode + active goal text).
+  Future<void> _refreshCodexActiveGoalText();
+
   Future<void> _activateCodexPlanMode({
     bool persistOnly = false,
     bool dismissPanel = true,
