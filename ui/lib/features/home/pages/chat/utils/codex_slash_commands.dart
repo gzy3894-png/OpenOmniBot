@@ -6,7 +6,12 @@ enum CodexSlashSubmitKind {
   startInit,
   togglePlan,
   startPlan,
+  /// Thread compact RPC only — never Fast / auto-compaction conf.
   startCompact,
+  /// B34: Fast mode toggle (`serviceTier` / conf `fast_mode`) — never compact.
+  toggleFast,
+  /// B33/B34: conf `features.auto_compaction` only — never thread compact RPC.
+  toggleAutoCompact,
   showStatus,
   showDiff,
   stopTurn,
@@ -82,6 +87,13 @@ CodexSlashSubmitIntent resolveCodexSlashSubmitIntent(String messageText) {
 
   if (normalized == '/compact') {
     return const CodexSlashSubmitIntent(CodexSlashSubmitKind.startCompact);
+  }
+  // B34: Fast / auto-compact / compact are three-way exclusive kinds.
+  if (normalized == '/fast') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.toggleFast);
+  }
+  if (normalized == '/auto-compact' || normalized == '/auto-compaction') {
+    return const CodexSlashSubmitIntent(CodexSlashSubmitKind.toggleAutoCompact);
   }
   if (normalized == '/status') {
     return const CodexSlashSubmitIntent(CodexSlashSubmitKind.showStatus);

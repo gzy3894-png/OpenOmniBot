@@ -533,9 +533,18 @@ class CodexAppServerManager private constructor(
             throw IllegalArgumentException("Remote Codex bridge URL and cwd are required.")
         }
 
+        // B36: compare hard identity before write so soft feature toggles
+        // (fast_mode / auto_compaction / service_tier / threshold) can skip
+        // session kill — avoids Fast path "thread not found" + reconnect heat.
+        val previousRemoteConfig = remoteConfigStore.read()
         val savedRemoteConfig = remoteConfigStore.write(remoteConfig)
         val existingToml = if (localComplete) {
             readExistingCodexConfigToml()
+        } else {
+            ""
+        }
+        val existingAuthJson = if (localComplete) {
+            readExistingCodexAuthJson()
         } else {
             ""
         }
@@ -598,12 +607,33 @@ class CodexAppServerManager private constructor(
                 )
             }
         }
-        sessionMutex.withLock {
-            session?.disconnect()
-            session = null
-            activeRuntime = null
-            activeTurnsByThreadId.clear()
-            finishedNotifyOnceByThread.clear()
+        // B36: only kill session when hard identity changes (provider/model/key/remote).
+        // Soft toggles (fast_mode, auto_compaction, service_tier, threshold, effort,
+        // defaultGoal) keep the live session so Fast no longer yields thread-not-found.
+        val existingModel = extractTomlString(existingToml, "model").orEmpty()
+        val existingBaseUrl = extractTomlString(existingToml, "base_url").orEmpty()
+        val existingApiKey = extractOpenAiApiKey(existingAuthJson).orEmpty()
+        val remoteHardChanged =
+            previousRemoteConfig.enabled != savedRemoteConfig.enabled ||
+                previousRemoteConfig.bridgeUrl.trim() != savedRemoteConfig.bridgeUrl.trim() ||
+                previousRemoteConfig.authToken.trim() != savedRemoteConfig.authToken.trim() ||
+                previousRemoteConfig.cwd.trim() != savedRemoteConfig.cwd.trim()
+        val localHardChanged = localComplete && (
+            existingModel != model ||
+                existingBaseUrl != baseUrl ||
+                existingApiKey != apiKey
+            )
+        // First-time local write (no prior toml identity) still needs a clean session.
+        val firstLocalBootstrap = localComplete && existingModel.isBlank() && existingBaseUrl.isBlank()
+        val shouldRestartSession = remoteHardChanged || localHardChanged || firstLocalBootstrap
+        if (shouldRestartSession) {
+            sessionMutex.withLock {
+                session?.disconnect()
+                session = null
+                activeRuntime = null
+                activeTurnsByThreadId.clear()
+                finishedNotifyOnceByThread.clear()
+            }
         }
         return buildCodexLocalConfigPayload(
             model = model,
@@ -631,6 +661,28 @@ class CodexAppServerManager private constructor(
             val result = TerminalManager.getInstance(appContext).executeHiddenCommand(
                 command = command,
                 executorKey = "codex-config-read-existing",
+                timeoutMs = 15_000L
+            )
+            if (!result.isOk || result.exitCode != 0) {
+                ""
+            } else {
+                result.output
+            }
+        }.getOrDefault("")
+    }
+
+    /** B36: read auth.json so soft conf writes can detect hard apiKey identity changes. */
+    private suspend fun readExistingCodexAuthJson(): String {
+        val authPath = "${CodexAppServerDefaults.CODEX_HOME}/auth.json"
+        val command = """
+            if [ -f ${shellQuote(authPath)} ]; then
+              cat ${shellQuote(authPath)}
+            fi
+        """.trimIndent()
+        return runCatching {
+            val result = TerminalManager.getInstance(appContext).executeHiddenCommand(
+                command = command,
+                executorKey = "codex-auth-read-existing",
                 timeoutMs = 15_000L
             )
             if (!result.isOk || result.exitCode != 0) {

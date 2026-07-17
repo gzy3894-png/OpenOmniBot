@@ -685,41 +685,42 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
         statusLabel: fastModeEnabled
             ? (isEnglish ? 'On' : '开启')
             : (isEnglish ? 'Off' : '关闭'),
+        // B34: 明确「加速/计费档」，勿与上下文压缩混淆。
         summary: fastModeEnabled
             ? (isEnglish
-                  ? 'Fast is on for this session'
-                  : '本会话已开启 Fast')
+                  ? 'Latency/billing tier on (serviceTier=fast); not context compaction'
+                  : '已开加速/计费档（serviceTier=fast），不压缩上下文')
             : (isEnglish
-                  ? 'Turn on lower-latency Fast for this session'
-                  : '为本会话开启低延迟 Fast'),
+                  ? 'Toggle Fast latency/billing tier only; does not compact context'
+                  : '仅切换加速/计费档，不压缩上下文'),
         progress: isEnglish
-            ? 'Toggles _activeCodexFastEnabled / serviceTier=fast'
-            : '切换 _activeCodexFastEnabled / serviceTier=fast',
+            ? 'Toggles serviceTier=fast / features.fast_mode only'
+            : '仅切换 serviceTier=fast / features.fast_mode',
         isToggle: true,
         toggleValue: fastModeEnabled,
         controlType: 'toggle',
       ),
-      // B33: auto-compaction toggle (conf features.auto_compaction).
+      // B33/B34: conf features.auto_compaction 开关；不立即执行 /compact。
       // Default on when conf key missing; /compact remains manual one-shot.
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-auto-compaction',
         toolTitle: '/auto-compact',
-        displayName: isEnglish ? 'Auto-compact' : '自动压缩',
-        toolTypeLabel: isEnglish ? 'Compact' : '压缩',
+        displayName: isEnglish ? 'Auto-compaction' : '上下文自动压缩',
+        toolTypeLabel: isEnglish ? 'Auto-compact' : '自动压缩',
         status: autoCompactionEnabled ? 'success' : 'running',
         statusLabel: autoCompactionEnabled
-            ? (isEnglish ? 'On' : '开启')
-            : (isEnglish ? 'Off' : '关闭'),
+            ? (isEnglish ? 'Conf on' : '配置开')
+            : (isEnglish ? 'Conf off' : '配置关'),
         summary: autoCompactionEnabled
             ? (isEnglish
-                  ? 'Auto-compaction is on in conf'
-                  : '配置中已开启自动压缩')
+                  ? 'Conf auto_compaction on; does not run /compact now'
+                  : '仅开关 conf 自动压缩，此刻不执行 /compact')
             : (isEnglish
-                  ? 'Auto-compaction is off in conf'
-                  : '配置中已关闭自动压缩'),
+                  ? 'Conf auto_compaction off; does not run /compact now'
+                  : '仅开关 conf 自动压缩，此刻不执行 /compact'),
         progress: isEnglish
-            ? 'Writes features.auto_compaction; new chats apply'
-            : '写入 features.auto_compaction；新开对话后生效',
+            ? 'Writes features.auto_compaction only; new chats apply'
+            : '仅写入 features.auto_compaction；新开对话后生效',
         isToggle: true,
         toggleValue: autoCompactionEnabled,
         controlType: 'toggle',
@@ -767,16 +768,16 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-compact',
         toolTitle: '/compact',
-        displayName: '/compact',
-        toolTypeLabel: isEnglish ? 'Compact' : '压缩',
+        displayName: isEnglish ? 'Manual compact' : '手动压缩对话',
+        toolTypeLabel: isEnglish ? 'Manual compact' : '手动压缩',
         status: 'running',
-        statusLabel: isEnglish ? 'Command' : '命令',
+        statusLabel: isEnglish ? 'Run now' : '立即执行',
         summary: isEnglish
-            ? 'Compact the current thread context'
-            : '压缩当前线程上下文',
+            ? 'Manually compact this Codex thread now (/compact)'
+            : '立即手动压缩当前 Codex 线程（/compact）',
         progress: isEnglish
-            ? 'Calls thread compact on the active Codex thread'
-            : '对当前 Codex 线程执行上下文压缩',
+            ? 'One-shot thread compact RPC; not Fast and not conf toggle'
+            : '一次性线程压缩 RPC；非 Fast、非 conf 开关',
         controlType: 'action',
       ),
     ];    // Bare `/` 展示白名单全量；继续输入时按 title/display/label/cardId 过滤。
@@ -1934,9 +1935,14 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                               unawaited(_setCodexFastEnabled(enabled));
                             }
                           : null,
-                      // B33: hide composer permission selector (no three-level UI).
-                      codexPermissionMode: null,
-                      onCodexPermissionModeChanged: null,
+                      // B35: re-wire permission selector props (B33 had set both to null).
+                      codexPermissionMode: _activeMode == ChatPageMode.codex
+                          ? _codexPermissionMode
+                          : null,
+                      onCodexPermissionModeChanged:
+                          _activeMode == ChatPageMode.codex
+                          ? (m) => unawaited(_setCodexPermissionMode(m))
+                          : null,
                       codexGoalModeEnabled: _activeMode == ChatPageMode.codex &&
                           _codexGoalModeEnabled,
                       codexGoalText: _activeMode == ChatPageMode.codex

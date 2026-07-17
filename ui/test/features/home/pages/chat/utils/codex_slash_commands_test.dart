@@ -52,6 +52,19 @@ void main() {
       resolveCodexSlashSubmitIntent('/compact').kind,
       CodexSlashSubmitKind.startCompact,
     );
+    // B34: Fast / auto-compact are exclusive from startCompact.
+    expect(
+      resolveCodexSlashSubmitIntent('/fast').kind,
+      CodexSlashSubmitKind.toggleFast,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/auto-compact').kind,
+      CodexSlashSubmitKind.toggleAutoCompact,
+    );
+    expect(
+      resolveCodexSlashSubmitIntent('/auto-compaction').kind,
+      CodexSlashSubmitKind.toggleAutoCompact,
+    );
     expect(
       resolveCodexSlashSubmitIntent('/status').kind,
       CodexSlashSubmitKind.showStatus,

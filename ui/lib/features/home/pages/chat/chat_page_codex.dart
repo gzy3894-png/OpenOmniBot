@@ -375,14 +375,23 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     try {
       final configSettings = await _readCodexRunSettingsFromServerConfig();
       final response = await CodexAppServerService.listModels();
-      // B32: options are pure model/list extract — never merge current/preferred.
-      final models = _extractCodexOptionIds(
-        response,
-        _kCodexModelListResponseKeys,
-      );
+      // B32/B34 residual: pure model/list wire ids (slug preferred over display_name).
+      // Never merge current/preferred; preserve model/list catalog order.
+      final models = _extractCodexModelOptionIds(response);
       if (models.isEmpty) {
         debugPrint(
           '[Codex] model/list returned no parseable models: ${jsonEncode(response)}',
+        );
+      } else {
+        unawaited(
+          DebugFileLog.log(
+            'model_list',
+            'loaded',
+            fields: <String, Object?>{
+              'count': models.length,
+              'models': models.join(','),
+            },
+          ),
         );
       }
       final preferredModel =
@@ -906,24 +915,50 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
 
   @override
   Future<void> _setCodexPermissionMode(CodexPermissionMode mode) async {
-    if (_codexPermissionMode == mode) {
-      return;
-    }
     final previous = _codexPermissionMode;
+    final sameMode = previous == mode;
     final threadId = (_activeCodexThreadId ?? '').trim();
+    // B35: defaultMode must stably send on-request + workspaceWrite + non-empty
+    // writableRoots (B25). Same payload shape as startTurn / plan tool path so
+    // requestApproval handoff remains reliable.
+    final writableRoot = _codexResolvedWritableRoot;
     final approvalPolicy = mode.approvalPolicy;
     final approvalsReviewer = mode.approvalsReviewer;
-    final sandboxPolicy = mode.sandboxPolicy(
-      writableRoot: _codexResolvedWritableRoot,
-    );
+    final sandboxPolicy = mode.sandboxPolicy(writableRoot: writableRoot);
     final sandboxType =
         sandboxPolicy?['type']?.toString() ?? mode.sandboxType;
+    final roots = sandboxPolicy?['writableRoots'];
+    final rootsLabel = roots is List
+        ? roots.map((e) => e.toString()).join(',')
+        : writableRoot;
+    // Guard: never push empty roots for on-request workspace modes.
+    if ((mode == CodexPermissionMode.defaultMode ||
+            mode == CodexPermissionMode.autoReview) &&
+        (roots is! List || roots.isEmpty)) {
+      debugPrint(
+        '[Codex] B35 abort permission set: empty writableRoots for ${mode.name}',
+      );
+      showToast(
+        LegacyTextLocalizer.isEnglish
+            ? 'Permission update blocked: empty writable roots'
+            : '权限更新已拦截：可写根目录为空',
+        type: ToastType.error,
+      );
+      return;
+    }
 
-    // Optimistic UI; roll back on settings RPC failure.
-    if (!mounted) return;
-    setState(() {
-      _codexPermissionMode = mode;
-    });
+    // Same mode + no live thread: nothing to re-assert.
+    if (sameMode && threadId.isEmpty) {
+      return;
+    }
+
+    // Optimistic UI only when mode actually changes.
+    if (!sameMode) {
+      if (!mounted) return;
+      setState(() {
+        _codexPermissionMode = mode;
+      });
+    }
 
     Object? settingsRpc = 'skipped';
     Object? rpcError;
@@ -939,19 +974,26 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       } catch (error) {
         settingsRpc = 'fail';
         rpcError = error;
-        if (!mounted) return;
-        setState(() {
-          _codexPermissionMode = previous;
-        });
+        if (!sameMode && mounted) {
+          setState(() {
+            _codexPermissionMode = previous;
+          });
+        }
         unawaited(
-          DebugFileLog.logPermissionSet(
-            mode: mode.name,
-            approvalPolicy: approvalPolicy,
-            approvalsReviewer: approvalsReviewer,
-            sandbox: sandboxType,
-            settingsRpc: settingsRpc,
-            threadId: threadId,
-            error: error,
+          DebugFileLog.log(
+            'permission_set',
+            'fail:${mode.name}',
+            fields: <String, Object?>{
+              'mode': mode.name,
+              'approvalPolicy': approvalPolicy,
+              'approvalsReviewer': approvalsReviewer,
+              'sandbox': sandboxType,
+              'writableRoots': rootsLabel,
+              'settingsRpc': settingsRpc,
+              'threadId': threadId,
+              'sameMode': sameMode,
+              'error': error.toString(),
+            },
           ),
         );
         showToast(
@@ -965,18 +1007,27 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
 
     unawaited(
-      DebugFileLog.logPermissionSet(
-        mode: mode.name,
-        approvalPolicy: approvalPolicy,
-        approvalsReviewer: approvalsReviewer,
-        sandbox: sandboxType,
-        settingsRpc: settingsRpc,
-        threadId: threadId.isEmpty ? null : threadId,
-        error: rpcError,
+      DebugFileLog.log(
+        'permission_set',
+        sameMode ? 'reassert:${mode.name}' : 'set:${mode.name}',
+        fields: <String, Object?>{
+          'mode': mode.name,
+          'approvalPolicy': approvalPolicy,
+          'approvalsReviewer': approvalsReviewer,
+          'sandbox': sandboxType,
+          'writableRoots': rootsLabel,
+          'settingsRpc': settingsRpc,
+          if (threadId.isNotEmpty) 'threadId': threadId,
+          'sameMode': sameMode,
+          if (rpcError != null) 'error': rpcError.toString(),
+        },
       ),
     );
 
-    // Local transcript tip only — never send as a model turn.
+    // Tip only when user actually switched mode (not silent re-assert).
+    if (sameMode) {
+      return;
+    }
     await _appendCodexLocalSystemTip(
       codexSessionTipPermission(
         _codexPermissionModeLabel(mode),
@@ -1002,6 +1053,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final threadId = (_activeCodexThreadId ?? '').trim();
     final prefValue =
         enabled ? _kCodexFastServiceTier : _kCodexOffServiceTier;
+
+    // B34 hard invariant: Fast path never touches compact RPC / agent compaction.
+    // (no beginContextCompaction / _executeCodexCompactCommand /
+    //  _executeManualContextCompactionCommand from this method.)
+    unawaited(
+      DebugFileLog.log(
+        'fast_set',
+        'begin',
+        fields: <String, Object?>{
+          'enabled': enabled,
+          'pref': prefValue,
+          'compactPath': 'none',
+          if (threadId.isNotEmpty) 'activeThreadId': threadId,
+        },
+      ),
+    );
 
     // Optimistic UI; any failure must tip error + roll back (no fake off/on).
     if (!mounted) return;
@@ -1122,9 +1189,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
-  /// B33: slash card / typed `/auto-compact` toggles `features.auto_compaction`.
-  /// Does **not** call thread compact RPC (`/compact`).
+  /// B33/B34: slash card / typed `/auto-compact` toggles `features.auto_compaction`.
+  /// Does **not** call thread compact RPC (`/compact`) or Fast tier toggles.
   Future<void> _toggleCodexAutoCompactionFromSlash() async {
+    unawaited(
+      DebugFileLog.log(
+        'auto_compact',
+        'toggle_begin',
+        fields: const <String, Object?>{
+          'compactPath': 'conf_only',
+          'fastPath': 'none',
+          'threadCompact': false,
+        },
+      ),
+    );
     try {
       final localConfig = await CodexAppServerService.readLocalConfig();
       final next = !localConfig.isAutoCompactionEnabled;
@@ -1143,6 +1221,16 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         remoteBridgeToken: localConfig.remoteBridgeToken,
         remoteCwd: localConfig.remoteCwd,
       );
+      unawaited(
+        DebugFileLog.log(
+          'auto_compact',
+          next ? 'on' : 'off',
+          fields: const <String, Object?>{
+            'compactPath': 'conf_only',
+            'threadCompact': false,
+          },
+        ),
+      );
       if (!mounted) return;
       // UI mirror lives on _ChatPageUiMixin; card path updates it via
       // _setCodexAutoCompactionEnabled. Typed /auto-compact toast only.
@@ -1155,6 +1243,13 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         type: ToastType.success,
       );
     } catch (error) {
+      unawaited(
+        DebugFileLog.log(
+          'auto_compact',
+          'toggle_fail',
+          fields: <String, Object?>{'error': error.toString()},
+        ),
+      );
       if (!mounted) return;
       showToast(
         LegacyTextLocalizer.isEnglish
@@ -1672,6 +1767,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       case CodexSlashSubmitKind.togglePlan:
       case CodexSlashSubmitKind.startPlan:
       case CodexSlashSubmitKind.startCompact:
+      case CodexSlashSubmitKind.toggleFast:
+      case CodexSlashSubmitKind.toggleAutoCompact:
       case CodexSlashSubmitKind.showStatus:
       case CodexSlashSubmitKind.showDiff:
       case CodexSlashSubmitKind.stopTurn:
@@ -2026,17 +2123,39 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _requestComposerFocus(showKeyboard: true);
       return;
     }
+    // B34: Fast card → Fast only (never compact / auto-compact conf).
     if (cardId == 'slash-command-codex-fast-mode' || command == '/fast') {
       _hideSlashCommandPanel();
+      unawaited(
+        DebugFileLog.log(
+          'slash_card',
+          'fast',
+          fields: const <String, Object?>{
+            'path': 'setCodexFastEnabled',
+            'compactPath': 'none',
+          },
+        ),
+      );
       await _setCodexFastEnabled(!_activeCodexFastEnabled);
       _requestComposerFocus(showKeyboard: true);
       return;
     }
-    // B33: toggle features.auto_compaction via conf (not /compact thread RPC).
+    // B33/B34: conf auto_compaction only — never Fast, never thread compact RPC.
     if (cardId == 'slash-command-codex-auto-compaction' ||
         command == '/auto-compact' ||
         command == '/auto-compaction') {
       _hideSlashCommandPanel();
+      unawaited(
+        DebugFileLog.log(
+          'slash_card',
+          'auto_compact',
+          fields: const <String, Object?>{
+            'path': 'toggleCodexAutoCompactionFromSlash',
+            'threadCompact': false,
+            'fastPath': 'none',
+          },
+        ),
+      );
       await _toggleCodexAutoCompactionFromSlash();
       _requestComposerFocus(showKeyboard: true);
       return;
@@ -2086,8 +2205,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _requestComposerFocus(showKeyboard: true);
       return;
     }
+    // B34: /compact card → Codex thread compact only (not Fast / conf auto).
     if (command == '/compact') {
       _hideSlashCommandPanel();
+      unawaited(
+        DebugFileLog.log(
+          'slash_card',
+          'compact',
+          fields: const <String, Object?>{
+            'path': 'executeCodexCompactCommand',
+            'fastPath': 'none',
+            'autoCompactConf': false,
+          },
+        ),
+      );
       await _executeCodexCompactCommand();
       _requestComposerFocus(showKeyboard: true);
       return;
@@ -2141,15 +2272,6 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   @override
   Future<bool> _tryHandleCodexSlashCommand(String messageText) async {
     final trimmed = messageText.trim();
-    // B33: typed `/auto-compact` (resolver has no dedicated kind yet).
-    final trimmedLower = trimmed.toLowerCase();
-    if (trimmedLower == '/auto-compact' ||
-        trimmedLower == '/auto-compaction') {
-      _messageController.clear();
-      _hideSlashCommandPanel();
-      await _toggleCodexAutoCompactionFromSlash();
-      return true;
-    }
     final intent = resolveCodexSlashSubmitIntent(trimmed);
     switch (intent.kind) {
       case CodexSlashSubmitKind.none:
@@ -2187,10 +2309,53 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
               _activeCodexCollaborationMode ?? _resolveCodexPlanMode(const []),
         );
         return true;
+      // B34 three-way exclusive: compact RPC only.
       case CodexSlashSubmitKind.startCompact:
         _messageController.clear();
         _hideSlashCommandPanel();
+        unawaited(
+          DebugFileLog.log(
+            'slash_typed',
+            'compact',
+            fields: const <String, Object?>{
+              'path': 'executeCodexCompactCommand',
+              'fastPath': 'none',
+            },
+          ),
+        );
         await _executeCodexCompactCommand();
+        return true;
+      // B34: Fast toggle only — never compact.
+      case CodexSlashSubmitKind.toggleFast:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        unawaited(
+          DebugFileLog.log(
+            'slash_typed',
+            'fast',
+            fields: const <String, Object?>{
+              'path': 'setCodexFastEnabled',
+              'compactPath': 'none',
+            },
+          ),
+        );
+        await _setCodexFastEnabled(!_activeCodexFastEnabled);
+        return true;
+      // B34: conf auto_compaction only — never compact RPC / Fast.
+      case CodexSlashSubmitKind.toggleAutoCompact:
+        _messageController.clear();
+        _hideSlashCommandPanel();
+        unawaited(
+          DebugFileLog.log(
+            'slash_typed',
+            'auto_compact',
+            fields: const <String, Object?>{
+              'path': 'toggleCodexAutoCompactionFromSlash',
+              'threadCompact': false,
+            },
+          ),
+        );
+        await _toggleCodexAutoCompactionFromSlash();
         return true;
       case CodexSlashSubmitKind.showStatus:
         _messageController.clear();
@@ -2267,6 +2432,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
 
   Future<void> _executeCodexCompactCommand() async {
     final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    // B34: Codex compact is thread RPC only — never agent manual compact.
+    unawaited(
+      DebugFileLog.log(
+        'compact',
+        'begin',
+        fields: <String, Object?>{
+          if (conversationId != null) 'conversationId': conversationId,
+          'threadId': (_activeCodexThreadId ?? '').trim(),
+          'path': 'codex_thread_compact',
+          'agentManualCompact': false,
+          'fastPath': 'none',
+        },
+      ),
+    );
     // B12/B17: force a real threadId; connect first; tip + DebugFileLog always.
     try {
       await _ensureCodexConnectedForSlashCommand();
@@ -6923,6 +7102,54 @@ List<String> _extractCodexOptionIds(
   return result;
 }
 
+/// B32 residual: model/list wire ids only — prefer slug over pretty display_name
+/// (e.g. `gpt-5.6-sol` not `GPT-5.6-Sol`). Preserves catalog / list order.
+List<String> _extractCodexModelOptionIds(Map<String, dynamic> response) {
+  final rawItems = _collectCodexModelListItems(response);
+  final seen = <String>{};
+  final result = <String>[];
+  for (final item in rawItems) {
+    final id = _codexModelWireId(item);
+    if (id == null || !seen.add(id)) {
+      continue;
+    }
+    result.add(id);
+  }
+  return result;
+}
+
+/// Prefer top-level model list keys in declared order; avoid deep nested
+/// pollution (service_tiers / efforts masquerading as models).
+List<dynamic> _collectCodexModelListItems(Map<String, dynamic> response) {
+  final preferredKeys = _kCodexModelListResponseKeys
+      .map(_normalizeCodexResponseKey)
+      .toList(growable: false);
+
+  // 1) Exact top-level keys in priority order.
+  for (final key in _kCodexModelListResponseKeys) {
+    final value = response[key];
+    if (value is List && value.isNotEmpty) {
+      return List<dynamic>.from(value);
+    }
+  }
+
+  // 2) Case/underscore-insensitive top-level match (still no deep walk).
+  for (final preferred in preferredKeys) {
+    for (final entry in response.entries) {
+      if (_normalizeCodexResponseKey(entry.key) != preferred) {
+        continue;
+      }
+      final value = entry.value;
+      if (value is List && value.isNotEmpty) {
+        return List<dynamic>.from(value);
+      }
+    }
+  }
+
+  // 3) Fallback: existing deep collector (legacy envelopes).
+  return _collectCodexListItems(response, _kCodexModelListResponseKeys);
+}
+
 /// B32: pure options passthrough. [current]/[preferred] are ignored so
 /// callers cannot inject list-foreign ids into model catalogs.
 List<String> _mergeCodexOptionIds({
@@ -7000,7 +7227,7 @@ String? _extractCodexPreferredOptionId(Map<String, dynamic> response) {
     'model',
     'modelId',
   ]) {
-    final id = _codexOptionId(response[key]);
+    final id = _codexModelWireId(response[key]);
     if (id != null) {
       return id;
     }
@@ -7013,7 +7240,7 @@ String? _extractCodexPreferredOptionId(Map<String, dynamic> response) {
   ]) {
     final value = response[key];
     if (value is Map) {
-      final id = _codexOptionId(value);
+      final id = _codexModelWireId(value);
       if (id != null) {
         return id;
       }
@@ -7023,10 +7250,7 @@ String? _extractCodexPreferredOptionId(Map<String, dynamic> response) {
 }
 
 String? _extractCodexDefaultModelId(Map<String, dynamic> response) {
-  for (final item in _collectCodexListItems(
-    response,
-    _kCodexModelListResponseKeys,
-  )) {
+  for (final item in _collectCodexModelListItems(response)) {
     final map = _asCodexMap(item);
     if (map == null) {
       continue;
@@ -7035,7 +7259,7 @@ String? _extractCodexDefaultModelId(Map<String, dynamic> response) {
     if (!isDefault) {
       continue;
     }
-    final id = _codexOptionId(map);
+    final id = _codexModelWireId(map);
     if (id != null) {
       return id;
     }
@@ -7048,10 +7272,7 @@ String? _extractCodexModelDefaultReasoningEffort(
   String? modelId,
 ) {
   final normalizedModelId = modelId?.trim();
-  for (final item in _collectCodexListItems(
-    response,
-    _kCodexModelListResponseKeys,
-  )) {
+  for (final item in _collectCodexModelListItems(response)) {
     final map = _asCodexMap(item);
     if (map == null) {
       continue;
@@ -7080,14 +7301,17 @@ bool _codexModelItemMatches(
   Map<String, dynamic> item,
   String normalizedModelId,
 ) {
+  // Prefer wire slug/id; still allow display_name match for legacy active ids.
   for (final key in const <String>[
-    'id',
-    'model',
+    'slug',
     'modelId',
     'model_id',
-    'slug',
+    'model',
+    'id',
     'value',
     'name',
+    'displayName',
+    'display_name',
   ]) {
     final text = item[key]?.toString().trim();
     if (text == normalizedModelId) {
@@ -7098,7 +7322,7 @@ bool _codexModelItemMatches(
 }
 
 String? _extractCodexConfigModelId(Map<String, dynamic> response) {
-  final direct = _codexOptionId(response['model'] ?? response['modelId']);
+  final direct = _codexModelWireId(response['model'] ?? response['modelId']);
   if (direct != null) {
     return direct;
   }
@@ -7112,7 +7336,7 @@ String? _extractCodexConfigModelId(Map<String, dynamic> response) {
   ]) {
     final value = response[key];
     if (value is Map) {
-      final id = _codexOptionId(value['model'] ?? value['modelId']);
+      final id = _codexModelWireId(value['model'] ?? value['modelId']);
       if (id != null) {
         return id;
       }
@@ -7165,15 +7389,13 @@ Map<String, List<String>> _extractCodexModelEffortCatalog(
   Map<String, dynamic> response,
 ) {
   final catalog = <String, List<String>>{};
-  for (final item in _collectCodexListItems(
-    response,
-    _kCodexModelListResponseKeys,
-  )) {
+  for (final item in _collectCodexModelListItems(response)) {
     final map = _asCodexMap(item);
     if (map == null) {
       continue;
     }
-    final modelId = _codexOptionId(map);
+    // Same wire id as model options so effort maps key-match the UI list.
+    final modelId = _codexModelWireId(map);
     if (modelId == null || modelId.isEmpty) {
       continue;
     }
@@ -7191,15 +7413,12 @@ Map<String, String> _extractCodexModelDefaultEffortCatalog(
   Map<String, dynamic> response,
 ) {
   final catalog = <String, String>{};
-  for (final item in _collectCodexListItems(
-    response,
-    _kCodexModelListResponseKeys,
-  )) {
+  for (final item in _collectCodexModelListItems(response)) {
     final map = _asCodexMap(item);
     if (map == null) {
       continue;
     }
-    final modelId = _codexOptionId(map);
+    final modelId = _codexModelWireId(map);
     if (modelId == null || modelId.isEmpty) {
       continue;
     }
@@ -7512,17 +7731,59 @@ String? _codexOptionId(dynamic item) {
     return text.isEmpty ? null : text;
   }
   if (item is Map) {
+    // B32 residual: prefer wire slug/id over pretty display_name globally.
     for (final key in const <String>[
+      'slug',
       'id',
       'modelId',
       'model_id',
-      'slug',
       'value',
       'model',
       'name',
+      'mode',
       'displayName',
       'display_name',
-      'mode',
+    ]) {
+      final text = item[key]?.toString().trim() ?? '';
+      if (text.isNotEmpty) {
+        return text;
+      }
+    }
+    return null;
+  }
+  if (item is Iterable) {
+    return null;
+  }
+  final text = item?.toString().trim() ?? '';
+  return text.isEmpty ? null : text;
+}
+
+/// Wire model id for selection / config (slug first). Never prefer pretty
+/// `display_name` when a slug/model/id exists — fixes GPT-5.6-Sol vs gpt-5.6-sol.
+String? _codexModelWireId(dynamic item) {
+  if (item is String) {
+    final text = item.trim();
+    return text.isEmpty ? null : text;
+  }
+  if (item is Map) {
+    for (final key in const <String>[
+      'slug',
+      'modelId',
+      'model_id',
+      'model',
+      'id',
+      'value',
+    ]) {
+      final text = item[key]?.toString().trim() ?? '';
+      if (text.isNotEmpty) {
+        return text;
+      }
+    }
+    // Last resort only — display labels (may be title-cased).
+    for (final key in const <String>[
+      'name',
+      'displayName',
+      'display_name',
     ]) {
       final text = item[key]?.toString().trim() ?? '';
       if (text.isNotEmpty) {

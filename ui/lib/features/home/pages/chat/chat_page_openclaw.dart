@@ -406,6 +406,14 @@ mixin _ChatPageOpenClawMixin on _ChatPageStateBase {
 
   @override
   Future<void> _executeManualContextCompactionCommand() async {
+    // B34 hard gate: Codex must never hit agent/manual context compaction.
+    // Codex `/compact` uses thread compact RPC (`_executeCodexCompactCommand`).
+    if (_activeMode == ChatPageMode.codex) {
+      _messageController.clear();
+      _hideSlashCommandPanel();
+      await _executeCodexCompactCommand();
+      return;
+    }
     if (!_supportsManualContextCompaction) {
       _messageController.clear();
       _hideSlashCommandPanel();

@@ -807,8 +807,10 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     );
   }
 
-  // B33: hide 3-level permission UI entirely (even if parent still wires mode).
-  bool get _shouldShowCodexPermissionSelector => false;
+  // B35: restore permission selector gate (B33 hard-disabled; parent wires when ready).
+  bool get _shouldShowCodexPermissionSelector =>
+      widget.codexPermissionMode != null &&
+      widget.onCodexPermissionModeChanged != null;
 
   bool get _shouldShowCodexRunSettingsSelector =>
       widget.codexRunSettings != null &&
@@ -1317,9 +1319,9 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     final english = Localizations.localeOf(context).languageCode == 'en';
     return switch (mode) {
       CodexPermissionMode.defaultMode =>
-        english ? 'Default permissions' : '默认权限',
-      CodexPermissionMode.autoReview => english ? 'Auto review' : '自动审查',
-      CodexPermissionMode.fullAccess => english ? 'Full access' : '完全访问权限',
+        english ? 'Request approval' : '请求审批',
+      CodexPermissionMode.autoReview => english ? 'Auto review' : '自动审',
+      CodexPermissionMode.fullAccess => english ? 'Full access' : '全放行',
     };
   }
 
