@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -22,6 +23,7 @@ void main() {
   late Directory tempDir;
   late File imageFile;
   late List<MethodCall> fileChannelCalls;
+  late Completer<MethodCall> shareFileCall;
   late Uint8List largePngBytes;
   late Uint8List smallPngBytes;
   late Uint8List widePngBytes;
@@ -36,6 +38,7 @@ void main() {
     imageFile = File('${tempDir.path}/preview.png');
     await imageFile.writeAsBytes(largePngBytes);
     fileChannelCalls = <MethodCall>[];
+    shareFileCall = Completer<MethodCall>();
 
     OmnibotResourceService.debugSetWorkspacePaths(_workspacePaths);
     final messenger =
@@ -49,8 +52,11 @@ void main() {
       }
     });
     messenger.setMockMethodCallHandler(_fileChannel, (call) async {
-      fileChannelCalls.add(call);
       if (call.method == 'shareFile') {
+        fileChannelCalls.add(call);
+        if (!shareFileCall.isCompleted) {
+          shareFileCall.complete(call);
+        }
         return true;
       }
       return null;
@@ -188,27 +194,26 @@ void main() {
       ),
     );
     expect(gestureDetector, findsOneWidget);
-    tester.widget<GestureDetector>(gestureDetector).onLongPress!();
-    for (
-      var attempt = 0;
-      attempt < 20 && fileChannelCalls.isEmpty;
-      attempt++
-    ) {
-      await tester.pump(const Duration(milliseconds: 50));
-    }
+    final detector = tester.widget<GestureDetector>(gestureDetector);
+    final call =
+        (await tester.runAsync<MethodCall>(() async {
+          detector.onLongPress!();
+          return shareFileCall.future.timeout(const Duration(seconds: 3));
+        }))!;
+    await tester.pump();
 
     expect(fileChannelCalls, hasLength(1));
-    expect(fileChannelCalls.single.method, 'shareFile');
+    expect(call.method, 'shareFile');
     expect(
-      fileChannelCalls.single.arguments,
+      call.arguments,
       containsPair('sourcePath', imageFile.path),
     );
     expect(
-      fileChannelCalls.single.arguments,
+      call.arguments,
       containsPair('fileName', 'preview.png'),
     );
     expect(
-      fileChannelCalls.single.arguments,
+      call.arguments,
       containsPair('mimeType', 'image/png'),
     );
   });
@@ -219,8 +224,41 @@ Future<void> _waitForPreviewBounds(
   required Finder boundsFinder,
   required Size expectedSize,
 }) async {
+  final imageFinder = find.descendant(
+    of: find.byType(OmnibotInteractiveImageView),
+    matching: find.byType(Image),
+  );
+  final image = tester.widget<Image>(imageFinder);
+  final context = tester.element(imageFinder);
+
+  await tester.runAsync<void>(() async {
+    final stream = image.image.resolve(
+      createLocalImageConfiguration(context),
+    );
+    final decoded = Completer<void>();
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (_, __) {
+        if (!decoded.isCompleted) {
+          decoded.complete();
+        }
+      },
+      onError: (Object error, StackTrace? stackTrace) {
+        if (!decoded.isCompleted) {
+          decoded.completeError(error, stackTrace);
+        }
+      },
+    );
+    stream.addListener(listener);
+    try {
+      await decoded.future.timeout(const Duration(seconds: 3));
+    } finally {
+      stream.removeListener(listener);
+    }
+  });
+
   Size? actualSize;
-  for (var attempt = 0; attempt < 20; attempt++) {
+  for (var attempt = 0; attempt < 5; attempt++) {
     await tester.pump(const Duration(milliseconds: 16));
     actualSize = tester.getSize(boundsFinder);
     if (actualSize == expectedSize) {
@@ -229,7 +267,7 @@ Future<void> _waitForPreviewBounds(
   }
   fail(
     'Preview bounds did not settle at $expectedSize '
-    'after 20 pumps; last size was $actualSize.',
+    'after 5 pumps; last size was $actualSize.',
   );
 }
 
