@@ -1,6 +1,6 @@
 # 当前交付单
 
-> 更新：2026-07-18 · 当前 hardening 候选 **IMPLEMENTED · REMOTE TEST PENDING**
+> 更新：2026-07-18 · 当前 hardening 候选 **APK_STAGED**
 > 旧 B38 APK/日志证据集：**DEVICE_PARTIAL**；不得拿旧 GHA/APK 给当前候选提级
 > **B38 真源：** `docs/results/PLAN-2026-07-18-b38-models-api-and-regressions.md`  
 > **唯一实时账本：** `docs/results/EXEC-2026-07-18-b38-approval-models.md`
@@ -8,11 +8,11 @@
 > **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
 > **主线程只调度/验收** · ≥8 并发工作线 · push **仅 mine** · 最终九路远端门禁 · 禁本机编译测试
 > 状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
-> 当前源码整合基线：`249d519f50417385596d4d6624030028565b4ca9`；本机未编译、未测试，九路远端门禁未运行。
+> 当前源码整合基线：`dad70e8f2dd00238c7a85c68a3e25235d7885ba0`；本机未编译、未测试，同 HEAD 九路远端门禁 `#29656072103` **SUCCESS（9/9 + summary）**，签名 APK 已 stage，设备矩阵待测。
 
 ---
 
-## 0. 当前波 · B38 hardening（IMPLEMENTED · REMOTE TEST PENDING）
+## 0. 当前波 · B38 hardening（APK_STAGED）
 
 | 工作线 | 状态 | topic → integration | 备注 |
 |--------|------|---------------------|------|
@@ -26,21 +26,22 @@
 | Flutter startup request FIFO | `IMPLEMENTED` | `a853cb7` → `249d519` | request-owned pending→terminal 延后路由；不同请求互不阻塞 |
 | Models catalog isolation | `IMPLEMENTED` | `86cec55` → `5194d9b` | latest-wins、empty/ghost、effort、Overlay |
 | Models empty reload | `IMPLEMENTED` | `97d1a18` → `f30508b` | empty/no-effort catalog 不重复拉取 |
-| 八路质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 工作流源码已落地，尚未远端运行 |
-| 第九路 source-policy | `IMPLEMENTED` | `522c346` → `1ec0353` | 工作流源码已落地，尚未远端运行 |
+| 八路质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 工作流源码已落地；最终九路 run `#29656072103` 成功 |
+| 第九路 source-policy | `IMPLEMENTED` | `522c346` → `1ec0353` | 工作流源码已落地；最终 source-policy 成功 |
 | SDK license pipefail | `IMPLEMENTED` | `99b5dbc` → `27d8051` | 修正 SIGPIPE=141 假失败 |
 | 文档/证据治理 | `IMPLEMENTED` | `43ec7a7` → `bf67855` | 状态与证据边界已落地 |
 
-当前没有可交付的新 APK。以下字段全部待最终整合后按顺序回填：
+当前 hardening 候选已完成同 HEAD 九路远端门禁并落位签名 APK；设备矩阵尚未执行：
 
 | 字段 | 状态 |
 |------|------|
-| 当前源码整合 HEAD（本文档基线） | `249d519f50417385596d4d6624030028565b4ca9` |
-| 最终远端触发 HEAD | 待主线程合入本次文档提交并推送后回填 |
-| 九路 GHA run ID / URL / result | 待运行；不得预写 SUCCESS |
-| APK artifact / stage path | 待 `REMOTE_VERIFIED` 后产出 |
-| APK SHA-256 / cert SHA-256 | 待回填 |
-| AP1–AP7 / M1–M3 / F1 / A1 / R1 | 待同一 APK 真机验证 |
+| 当前源码整合 HEAD（本文档基线） | `dad70e8f2dd00238c7a85c68a3e25235d7885ba0` |
+| 最终远端触发 HEAD | `dad70e8f2dd00238c7a85c68a3e25235d7885ba0` |
+| 九路 GHA run ID / URL / result | `29656072103` · [Baseline Standard Debug #29656072103](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29656072103) · **SUCCESS（9/9 + summary）** |
+| APK artifact / stage path | `omnibot-standard-debug-apk` · artifact ID `8433013672`; stable `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`; immutable `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-dad70e8-364b70d9.apk` |
+| APK SHA-256 / cert SHA-256 | APK `364b70d9e8859f21200a907dbd02fa708164d62192f5afcf935b16f005c9432b`; cert `6D79D352E68FC7E1956FE14C41B6AFFAD2A1403EB22AF9E76B4E213FA10244C6` |
+| Hardening trail | `3624e23` → `55152e7` → `d9e6774` → `57ece40` → `e54378d` → `2a8f6a0` → `85094ea` → `628e7b5` → `dad70e8` |
+| AP1–AP7 / M1–M3 / F1 / A1 / R1 | 待用上述同一 SHA 的 staged APK 真机验证；当前状态止于 `APK_STAGED` |
 
 门禁纪律：
 
@@ -96,9 +97,9 @@
 
 ## 2. 历史装机指令（SUPERSEDED）
 
-以下路径只保留证据追溯，**不是当前装机动作**。当前 hardening 候选尚未远端验证、尚未出包。
+以下字段只保留旧候选的证据追溯，**不是当前装机动作**。当前 hardening 候选的 staged APK 与 provenance 只认 §0。
 
-- 历史 stage：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`
+- 历史曾用 stable alias：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（现已由 §0 的 `dad70e8` 候选覆盖）
 - 历史副本：`…-68c1b79-847c4aab.apk`
 - 历史 SHA-256：`847c4aaba2b3e6c2251be1f098d8310858ab4909904a3eb0ef57d17604265bd8`
 
@@ -108,7 +109,7 @@
 
 | 项 | 值 |
 |----|-----|
-| 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（已被 B37 覆盖） |
+| 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（历史 alias；当前内容见 §0） |
 | 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-7896a6c-standard-debug.apk` |
 | 状态 | **DEVICE_PARTIAL / 真机 FAIL**（设置 RPC stale thread） |
 | sha256 | `aa34e473d781302247188bc925425893fe8e1b7a0ce9e3ad219a412437e6d9a8` |
@@ -195,10 +196,10 @@
 - [x] B38 push mine · GHA `#29641064531` **SUCCESS**  
 - [x] B38 APK stage · sha256 `847c4aab…` / shortsha `68c1b79`  
 - [x] 旧 B38 `68c1b79` 证据重分类为 `DEVICE_PARTIAL`
-- [x] 当前 hardening topic 实现完成，状态仅 `IMPLEMENTED`
+- [x] 当前 hardening topic 实现完成，工作线状态保留 `IMPLEMENTED`
 - [x] 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入源码基线 `249d519`
-- [ ] 最终远端触发 HEAD + 九路 `REMOTE_VERIFIED`
-- [ ] 当前候选 `APK_STAGED` + SHA/cert 回填
+- [x] 最终远端触发 HEAD `dad70e8` + 九路 `REMOTE_VERIFIED` · `#29656072103` **SUCCESS（9/9 + summary）**
+- [x] 当前候选 `APK_STAGED` + artifact/path/SHA/cert 回填
 - [ ] 当前候选 AP1–AP7 / M1–R1 达 `DEVICE_PASS`
 
 ---
@@ -207,7 +208,7 @@
 
 - Remote 2s poll、每 event `debugPrint`：仍未改  
 - hard 字段（baseUrl / model / apiKey）变更仍应 reconnect  
-- topic commits 已汇成源码基线 `249d519`，但本机没有编译/测试，Native/Flutter 运行时联调与九路远端结果仍未知
+- topic commits 已汇成起始源码基线 `249d519`，hardening trail 最终到 `dad70e8`；本机没有编译/测试，但同 HEAD 九路远端门禁已 **SUCCESS（9/9 + summary）**，Native/Flutter 真机设备矩阵仍待测
 - **P2 · Nonterminal DB upsert in-flight**：卡仍 mounted 时已发出的非终态 conversation-history DB upsert 无法在 await 期间因 dispose 而取消；后续 response cache 写会被阻止，但已开始的 DB 写不能回滚
 - **P2 · Terminal tombstone replay residual**：EventChannel 完全无 listener 时到达的 `resolved/invalidated` 没有 Native tombstone，后续 stream 无法 replay 终态；pending 投递前已有 PENDING 复核，终态后不会重投同一 pending，因此不应把该残余描述成审批卡被重新创建
-- **当前 hardening 完成前**：审批 tip ≠ Codex 审批 PASS；远端和设备证据均待回填
+- **当前 hardening APK_STAGED 后**：审批 tip 仍不等于 Codex 审批 PASS；远端与 APK 证据已闭合，AP1–AP7 / M1–M3 / F1 / A1 / R1 设备矩阵仍待测

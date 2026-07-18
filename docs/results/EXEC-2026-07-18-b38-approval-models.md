@@ -1,6 +1,6 @@
 # EXEC · B38 · 2026-07-18
 
-> 当前 hardening 候选：**IMPLEMENTED · REMOTE TEST PENDING**。禁止提前写 `REMOTE_VERIFIED`、`APK_STAGED`、`DEVICE_PASS` 或 `READY`。
+> 当前 hardening 候选：**APK_STAGED**。同一最终 HEAD 的远端九路门禁与 APK stage 证据已闭合；禁止提前写 `DEVICE_PARTIAL`、`DEVICE_PASS` 或 `READY`。
 > 旧 B38 APK/日志证据集：**DEVICE_PARTIAL**；旧 GHA/APK 字段保留，但不能证明当前候选。
 > 真源：`PLAN-2026-07-18-b38-models-api-and-regressions.md`  
 > 本文件是 B38 **唯一实时账本**；`HANDOFF-2026-07-18-b38-approval-models.md` 已 superseded。
@@ -19,7 +19,7 @@
 
 ### 当前 hardening 候选
 
-当前源码整合基线为 `249d519f50417385596d4d6624030028565b4ca9`。下表只证明 topic 已进入同一源码树并完成主线程静态审查；本机没有运行 Flutter、Dart、Gradle 或 Android 编译/测试，远端九路也尚未运行。
+当前源码整合基线为 `dad70e8f2dd00238c7a85c68a3e25235d7885ba0`。下表中的 topic 已进入同一源码树并完成主线程静态审查；同一 HEAD 的远端九路门禁与 summary 已全部成功，APK 已 stage。本机没有运行 Flutter、Dart、Gradle 或 Android 编译/测试。
 
 | 工作线 | 状态 | topic → integration | 源码级边界 |
 |--------|------|---------------------|------------|
@@ -33,23 +33,25 @@
 | Flutter 启动期 request replay FIFO | `IMPLEMENTED` | `a853cb7` → `249d519` | 按 request identity 延后路由；同请求 pending→terminal FIFO，不同请求互不阻塞，conversation target 就绪后 drain |
 | Models/UI catalog 隔离 | `IMPLEMENTED` | `86cec55` → `5194d9b` | latest-wins、authoritative empty/ghost、effort clamp/omit、原子 model+effort、Overlay refresh |
 | Models 空目录去重 | `IMPLEMENTED` | `97d1a18` → `f30508b` | authoritative empty/no-effort 也完成 catalog generation，避免重复拉取 |
-| 八路远端质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 4 Flutter test shard + analyze + Android unit/lint/APK；仅工作流源码已落地 |
-| 第九路 source-policy | `IMPLEMENTED` | `522c346` → `1ec0353` | commit/source/evidence、applicationId 与品牌不变量；尚未远端执行 |
+| 八路远端质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 4 Flutter test shard + analyze + Android unit/lint/APK；最终 run `#29656072103` 为 8/8 SUCCESS |
+| 第九路 source-policy | `IMPLEMENTED` | `522c346` → `1ec0353` | commit/source/evidence、applicationId 与品牌不变量；同一 run / HEAD 为 1/1 SUCCESS |
 | Android SDK license 假失败修复 | `IMPLEMENTED` | `99b5dbc` → `27d8051` | 避免 `yes` 在 `pipefail` 下因 SIGPIPE=141 把 license 接受误判失败 |
 | 文档与证据治理 | `IMPLEMENTED` | `43ec7a7` → `bf67855` | 状态机、ignore、审计报告与 AGENTS 真源校准 |
 
-### 当前候选待回填字段
+### 当前候选交付字段
 
 | 字段 | 当前值 |
 |------|--------|
-| 当前源码整合 HEAD（本次文档基线） | `249d519f50417385596d4d6624030028565b4ca9` |
+| 当前源码整合 HEAD（本次文档基线） | `dad70e8f2dd00238c7a85c68a3e25235d7885ba0` |
 | topic → integration 映射 | **已回填；见上表** |
-| 最终远端触发 HEAD | **待主线程合入本次文档提交并推送后回填** |
-| 九路 GHA run ID / URL | **待回填；未运行** |
-| 九路 GHA 结果 | **待回填；不得预写 SUCCESS** |
-| APK artifact / stage path | **待回填；当前候选未出包** |
-| APK SHA-256 / cert SHA-256 | **待回填** |
-| AP1–AP7 / M1–M3 / F1 / A1 / R1 | **待同一候选 APK 真机验证** |
+| 最终远端触发 HEAD | `dad70e8f2dd00238c7a85c68a3e25235d7885ba0` |
+| 九路 GHA run ID / URL | `29656072103` · [Baseline Standard Debug #29656072103](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29656072103) |
+| 九路 GHA 结果 | **SUCCESS** · 9/9 gates + summary success |
+| APK artifact / stage path | `omnibot-standard-debug-apk` · artifact id `8433013672`<br>stable：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`<br>immutable：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-dad70e8-364b70d9.apk` |
+| APK SHA-256 / cert SHA-256 | `364b70d9e8859f21200a907dbd02fa708164d62192f5afcf935b16f005c9432b`<br>`6D79D352E68FC7E1956FE14C41B6AFFAD2A1403EB22AF9E76B4E213FA10244C6` |
+| AP1–AP7 / M1–M3 / F1 / A1 / R1 | **APK 已 stage；真机验证待执行** |
+
+Post-`249d519` hardening trail：`3624e23` → `55152e7` → `d9e6774` → `57ece40` → `e54378d` → `2a8f6a0` → `85094ea` → `628e7b5` → `dad70e8`
 
 ### 历史证据集
 
@@ -123,48 +125,48 @@
 | APK sha256 | `847c4aaba2b3e6c2251be1f098d8310858ab4909904a3eb0ef57d17604265bd8` |
 | 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
 
-## 6. 当前 hardening 候选真机验收表（远端出包后填写）
+## 6. 当前 hardening 候选真机验收表（APK 已 stage，设备待测）
 
-依据 PLAN §6。当前候选尚未 `REMOTE_VERIFIED` / `APK_STAGED`，所以下表统一为待测；**tip 单独 ≠ PASS**。
+依据 PLAN §6。当前候选已达到 `APK_STAGED`，但尚未执行设备验收，所以下表统一为待测；**tip 单独 ≠ PASS**。
 
 ### AP · Codex 原生审批环（优先）
 
 | # | 操作 / 期望 | 结果 | 备注 / 日志摘录 |
 |---|-------------|------|-----------------|
-| **AP1** | default：触发 shell/写盘越界 → **Codex 审批卡** + 日志 `requestApproval` / `approval_prompt` | 待测 | 当前候选未出包 |
-| **AP2** | 卡上批准 → `respondToServerRequest` ok、动作续；拒绝 → 中止 | 待测 | 当前候选未出包 |
-| **AP3** | autoReview：日志 `approvalsReviewer=auto_review` + `on-request`；自动决策可观测（非仅 UI 标签） | 待测 | 当前候选未出包 |
-| **AP4** | fullAccess：`never` + `dangerFullAccess`；同任务 **不**弹人工审批卡 | 待测 | 当前候选未出包 |
-| **AP5** | 切三档：live thread 时 `permission_set settingsRpc=ok`；失败 **不得**假 tip 成功 | 待测 | 当前候选未出包 |
-| **AP6** | 双 Engine 竞争同一请求：单终态；另一端 `ALREADY_RESPONDED` → `handled_elsewhere` | 待测 | 当前候选未出包 |
-| **AP7** | 断连/重连或 generation 更新：旧卡失效；retryable 请求有界恢复 | 待测 | 当前候选未出包 |
+| **AP1** | default：触发 shell/写盘越界 → **Codex 审批卡** + 日志 `requestApproval` / `approval_prompt` | 待测 | APK 已 stage；设备待测 |
+| **AP2** | 卡上批准 → `respondToServerRequest` ok、动作续；拒绝 → 中止 | 待测 | APK 已 stage；设备待测 |
+| **AP3** | autoReview：日志 `approvalsReviewer=auto_review` + `on-request`；自动决策可观测（非仅 UI 标签） | 待测 | APK 已 stage；设备待测 |
+| **AP4** | fullAccess：`never` + `dangerFullAccess`；同任务 **不**弹人工审批卡 | 待测 | APK 已 stage；设备待测 |
+| **AP5** | 切三档：live thread 时 `permission_set settingsRpc=ok`；失败 **不得**假 tip 成功 | 待测 | APK 已 stage；设备待测 |
+| **AP6** | 双 Engine 竞争同一请求：单终态；另一端 `ALREADY_RESPONDED` → `handled_elsewhere` | 待测 | APK 已 stage；设备待测 |
+| **AP7** | 断连/重连或 generation 更新：旧卡失效；retryable 请求有界恢复 | 待测 | APK 已 stage；设备待测 |
 
 ### M · 模型真源
 
 | # | 操作 / 期望 | 结果 | 备注 / 日志摘录 |
 |---|-------------|------|-----------------|
-| **M1** | 菜单 id 集合 = `GET {baseUrl}/models` 的 `data[].id` | 待测 | 当前候选未出包 |
-| **M2** | 日志 `model_list source=http_v1 count=…` 与菜单一致 | 待测 | 当前候选未出包 |
-| **M3** | 切模型成功；无 `select_failed` | 待测 | 当前候选未出包 |
+| **M1** | 菜单 id 集合 = `GET {baseUrl}/models` 的 `data[].id` | 待测 | APK 已 stage；设备待测 |
+| **M2** | 日志 `model_list source=http_v1 count=…` 与菜单一致 | 待测 | APK 已 stage；设备待测 |
+| **M3** | 切模型成功；无 `select_failed` | 待测 | APK 已 stage；设备待测 |
 
 ### F / A / R · 回归
 
 | # | 操作 / 期望 | 结果 | 备注 / 日志摘录 |
 |---|-------------|------|-----------------|
-| **F1** | Fast 开/关稳定 | 待测 | 当前候选未出包 |
-| **A1** | 自动压缩卡与 slash 一致 | 待测 | 当前候选未出包 |
-| **R1** | 约 10 min 无成片 `thread not found`；MissingPlugin 不拖死开关 | 待测 | 当前候选未出包 |
+| **F1** | Fast 开/关稳定 | 待测 | APK 已 stage；设备待测 |
+| **A1** | 自动压缩卡与 slash 一致 | 待测 | APK 已 stage；设备待测 |
+| **R1** | 约 10 min 无成片 `thread not found`；MissingPlugin 不拖死开关 | 待测 | APK 已 stage；设备待测 |
 
 ## 7. 残余风险（主线程验收）
 
-1. 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入源码整合基线 `249d519`，但跨 Native/Flutter/CI 目前只有静态源码审查，没有编译、测试或运行时联调证据。
+1. 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入最终源码整合基线 `dad70e8`；同一 HEAD 的远端九路门禁与 summary 已全部成功，但设备运行时联调尚未执行。
 2. **P2 · Nonterminal DB upsert in-flight**：卡仍 mounted 时若已经发出非终态 conversation-history DB upsert，而 dispose 发生在该 await 期间，Flutter 无法取消底层在途写。当前门禁会阻止随后继续写 response cache 或在 RPC 返回后新发非终态持久化，但不能回滚已经开始的 DB upsert。
 3. **P2 · Terminal tombstone replay residual**：若 `serverRequest/resolved` 或 `serverRequest/invalidated` 恰在 EventChannel 完全无 listener 的窗口到达，Native 当前不会保存 terminal tombstone，后续新 stream 因而无法 replay 该终态。已实现的 pending replay 会在投递前复核 PENDING，终态后不会重投同一 pending；残余是既有 UI/历史卡可能无法自动收敛终态，而不是同请求被重新创建为可操作卡。
 4. 按本轮约束，Flutter/Dart/Gradle/Android 编译与测试均未在本机运行。
-5. 最终九路门禁尚未运行，签名证书、lint、分片测试与 source-policy 尚无同一 HEAD 的远端证据。
-6. 当前候选无 APK、SHA 或设备日志；所有 AP/M/F/A/R 项均未知。
+5. 同一最终 HEAD 的九路门禁、签名证书、APK SHA 与 stage 路径证据已经闭合；设备侧 AP1–AP7 / M1–M3 / F1 / A1 / R1 尚未执行。
+6. 当前候选已有 staged APK，但尚无本轮设备验收日志；所有 AP/M/F/A/R 项保持待测。
 7. 任何远端失败都保持 `IMPLEMENTED`；任何设备失败或未完成项最多到 `DEVICE_PARTIAL`。
 
 ## 8. READY 门禁
 
-仅当同一最终 HEAD 已依次取得 `REMOTE_VERIFIED`、`APK_STAGED` 和完整 `DEVICE_PASS` 证据，且本账本所有待回填字段闭合，才可写 `READY`。本 EXEC 当前只声明 `IMPLEMENTED`。
+仅当同一最终 HEAD 已依次取得 `REMOTE_VERIFIED`、`APK_STAGED` 和完整 `DEVICE_PASS` 证据，且本账本所有待回填字段闭合，才可写 `READY`。本 EXEC 当前只声明 `APK_STAGED`。

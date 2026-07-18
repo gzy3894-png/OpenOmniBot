@@ -1,8 +1,8 @@
 # HANDOFF · B38 · Codex 原生审批 + `/v1/models` · 2026-07-18
 
 > 文档生命周期：**SUPERSEDED**。本文件仅保留 2026-07-18 开工前的历史上下文，**不得再作为执行清单或状态真源**。
-> 当前状态只认 `EXEC-2026-07-18-b38-approval-models.md`：hardening 候选为 `IMPLEMENTED · REMOTE TEST PENDING`；旧 APK/日志为 `DEVICE_PARTIAL`。
-> 当前源码整合基线：`249d519f50417385596d4d6624030028565b4ca9`；只完成源码级静态审查，本机未编译、未测试，九路远端门禁未运行。
+> 当前状态只认 `EXEC-2026-07-18-b38-approval-models.md`：hardening 候选为 `APK_STAGED`；旧 APK/日志仍是历史 `DEVICE_PARTIAL`，不得用于当前候选提级。
+> 当前已验证源码 HEAD：`dad70e8f2dd00238c7a85c68a3e25235d7885ba0`；GHA `#29656072103` 同 HEAD **9/9 SUCCESS**，APK 已 stage，设备矩阵待测；本机未编译、未测试。
 > 统一状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`。
 > **用户裁定**：审批「只有 UI、没走 Codex 自身审批」= **真 bug（T6）**，优先级 ≥ 模型列表。
 
@@ -30,7 +30,7 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 
 **仓库路径**：`/root/workspace/omnibot-product`  
 
-**当前本地整合分支**：`codex/b38-integration`（源码基线 `249d519`）
+**当前本地整合分支**：`codex/b38-integration`（已验证源码 HEAD `dad70e8`）
 
 **目标远端分支**：`secondary/s1-b38-hardening`
 
@@ -62,7 +62,7 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 
 ## 2.1 当前 hardening 源码快照（后补）
 
-本节只用于把历史交接连接到当前实时账本，不改变本文件的 `SUPERSEDED` 生命周期。以下条目均为 `IMPLEMENTED`，不代表 GHA、APK 或设备 PASS。
+本节只用于把历史交接连接到当前实时账本，不改变本文件的 `SUPERSEDED` 生命周期。源码条目仍描述 `IMPLEMENTED` 范围；候选级 GHA/APK 证据只认 EXEC，且不代表设备 PASS。
 
 | 工作线 | topic → integration | 源码状态 |
 |--------|---------------------|----------|
@@ -76,10 +76,12 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 | Flutter startup request FIFO | `a853cb7` → `249d519` | request-owned pending→terminal FIFO 与延后路由已入树 |
 | Models catalog isolation | `86cec55` → `5194d9b` | catalog generation/latest-wins 已入树 |
 | Models empty reload | `97d1a18` → `f30508b` | empty/no-effort 去重已入树 |
-| 八路质量门禁 | `6e56dd9` → `4bf025c` | 工作流源码已入树；未运行 |
-| 第九路 source-policy | `522c346` → `1ec0353` | 工作流源码已入树；未运行 |
+| 八路质量门禁 | `6e56dd9` → `4bf025c` | GHA `#29656072103` @ `dad70e8f`：8/8 SUCCESS |
+| 第九路 source-policy | `522c346` → `1ec0353` | 同一 run / HEAD：1/1 SUCCESS |
 | SDK license pipefail | `99b5dbc` → `27d8051` | SIGPIPE 假失败修复已入树 |
 | 文档/证据治理 | `43ec7a7` → `bf67855` | 状态与证据规则已入树 |
+
+Post-hardening trail：`3624e23 → 55152e7 → d9e6774 → 57ece40 → e54378d → 2a8f6a0 → 85094ea → 628e7b5 → dad70e8`；完整证据与 artifact 字段见 EXEC。
 
 **P2 残余**：
 
@@ -180,9 +182,9 @@ B37 做了：soft conf harden、stale thread clear、本地 mode 继续、displa
 ## 8. 下一手第一件事
 
 1. **停止使用本 HANDOFF 做状态判断**；先读 EXEC §0 实时账本和 PLAN 冻结范围。
-2. 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入源码基线 `249d519`，当前仍只能标记 `IMPLEMENTED`；最终远端触发 HEAD 以主线程合入本次文档提交后的实际推送为准。
-3. 只在同一最终 HEAD 的九路远端门禁全绿并回填 run/HEAD 后升 `REMOTE_VERIFIED`；随后才允许 stage 同一 HEAD 的 APK。
-4. 设备证据不完整或有失败统一记 `DEVICE_PARTIAL`；完整 AP/M/F/A/R 通过后才可 `DEVICE_PASS → READY`。
+2. 当前候选源码 HEAD 为 `dad70e8f2dd00238c7a85c68a3e25235d7885ba0`；同 HEAD 九路远端门禁和 APK stage 均已完成，细节只在 EXEC 维护。
+3. 下一步执行同一 APK 的 AP1–AP7、M1–M3、F1、A1、R1 真机矩阵并回填原始日志证据。
+4. 当前设备矩阵仍为待测；本 HANDOFF 不声明 `DEVICE_PARTIAL`、`DEVICE_PASS` 或 `READY`。
 5. 不进入 S2，不改历史 commit/run/APK/log，不本机编译测试。
 
 ---
