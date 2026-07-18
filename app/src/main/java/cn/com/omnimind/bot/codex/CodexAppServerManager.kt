@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -26,6 +27,12 @@ class CodexAppServerManager private constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionMutex = Mutex()
     private val sessionStateLock = Any()
+    private val serverMessageBarrier = CodexServerMessageBarrier()
+    private val sessionGenerationLock = Any()
+    private val sessionGenerationPreferences = appContext.getSharedPreferences(
+        SESSION_GENERATION_PREFERENCES,
+        Context.MODE_PRIVATE,
+    )
     private val threadStartMutex = Mutex()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val bindingRepository = CodexThreadBindingRepository(appContext)
@@ -35,7 +42,6 @@ class CodexAppServerManager private constructor(
     private val nextEventStreamToken = AtomicLong(0L)
     private val serverRequests = CodexServerRequestRegistry()
     private val serverRequestResponder = CodexServerRequestResponder(serverRequests)
-    private val nextSessionGeneration = AtomicLong(0L)
     /** Single-fire guard: threadId -> terminal token (turnId or synthetic). */
     private val finishedNotifyOnceByThread = ConcurrentHashMap<String, String>()
 
@@ -82,7 +88,12 @@ class CodexAppServerManager private constructor(
 
     suspend fun status(): Map<String, Any?> {
         val runtime = resolveRuntime()
-        val connected = session?.isRunning == true && activeRuntime == runtime.kind
+        val (connected, sessionGeneration) = synchronized(sessionStateLock) {
+            Pair(
+                session?.isRunning == true && activeRuntime == runtime.kind,
+                activeSessionGeneration,
+            )
+        }
         val probe = when (runtime.kind) {
             CodexRuntimeKind.REMOTE -> probeRemoteCodex(runtime.remoteConfig)
             CodexRuntimeKind.LOCAL -> probeCodex()
@@ -103,7 +114,7 @@ class CodexAppServerManager private constructor(
             "remoteDesktopAvailable" to probe.details["desktopAppServerAvailable"],
             "remoteActiveConnections" to probe.details["activeConnections"],
             "remoteUptimeMs" to probe.details["uptimeMs"],
-            "sessionGeneration" to activeSessionGeneration,
+            "sessionGeneration" to sessionGeneration,
         )
     }
 
@@ -114,26 +125,28 @@ class CodexAppServerManager private constructor(
             if (existing?.isRunning == true && activeRuntime == runtime.kind) {
                 return status()
             }
-            synchronized(sessionStateLock) {
-                if (existing != null &&
-                    activeSessionGeneration != NO_SESSION_GENERATION
-                ) {
-                    invalidateServerRequestsLocked(
-                        generation = activeSessionGeneration,
-                        sessionIdentity = existing,
-                        reason = "session_replaced",
-                    )
+            serverMessageBarrier.run {
+                synchronized(sessionStateLock) {
+                    if (existing != null &&
+                        activeSessionGeneration != NO_SESSION_GENERATION
+                    ) {
+                        invalidateServerRequestsLocked(
+                            generation = activeSessionGeneration,
+                            sessionIdentity = existing,
+                            reason = "session_replaced",
+                        )
+                    }
+                    if (session === existing) {
+                        session = null
+                        activeSessionGeneration = NO_SESSION_GENERATION
+                    }
+                    activeRuntime = null
                 }
-                if (session === existing) {
-                    session = null
-                    activeSessionGeneration = NO_SESSION_GENERATION
-                }
-                activeRuntime = null
             }
             existing?.disconnect()
             activeTurnsByThreadId.clear()
             finishedNotifyOnceByThread.clear()
-            val generation = nextSessionGeneration.incrementAndGet()
+            val generation = allocateSessionGeneration()
             lateinit var nextSession: CodexAppServerSession
             nextSession = CodexAppServerSession(
                 context = appContext,
@@ -159,10 +172,12 @@ class CodexAppServerManager private constructor(
                     CodexRuntimeKind.LOCAL -> null
                 }
             )
-            synchronized(sessionStateLock) {
-                session = nextSession
-                activeSessionGeneration = generation
-                activeRuntime = runtime.kind
+            serverMessageBarrier.run {
+                synchronized(sessionStateLock) {
+                    session = nextSession
+                    activeSessionGeneration = generation
+                    activeRuntime = runtime.kind
+                }
             }
             Log.i(
                 TAG,
@@ -171,16 +186,18 @@ class CodexAppServerManager private constructor(
             try {
                 nextSession.start(clientVersion = BuildConfig.VERSION_NAME)
             } catch (error: Throwable) {
-                synchronized(sessionStateLock) {
-                    if (isCurrentSessionLocked(generation, nextSession)) {
-                        invalidateServerRequestsLocked(
-                            generation = generation,
-                            sessionIdentity = nextSession,
-                            reason = "connect_failed",
-                        )
-                        session = null
-                        activeSessionGeneration = NO_SESSION_GENERATION
-                        activeRuntime = null
+                serverMessageBarrier.run {
+                    synchronized(sessionStateLock) {
+                        if (isCurrentSessionLocked(generation, nextSession)) {
+                            invalidateServerRequestsLocked(
+                                generation = generation,
+                                sessionIdentity = nextSession,
+                                reason = "connect_failed",
+                            )
+                            session = null
+                            activeSessionGeneration = NO_SESSION_GENERATION
+                            activeRuntime = null
+                        }
                     }
                 }
                 throw error
@@ -193,20 +210,22 @@ class CodexAppServerManager private constructor(
         sessionMutex.withLock {
             val currentSession = session
             val currentGeneration = activeSessionGeneration
-            synchronized(sessionStateLock) {
-                if (currentSession != null &&
-                    currentGeneration != NO_SESSION_GENERATION
-                ) {
-                    invalidateServerRequestsLocked(
-                        generation = currentGeneration,
-                        sessionIdentity = currentSession,
-                        reason = "disconnect",
-                    )
-                }
-                if (session === currentSession) {
-                    session = null
-                    activeSessionGeneration = NO_SESSION_GENERATION
-                    activeRuntime = null
+            serverMessageBarrier.run {
+                synchronized(sessionStateLock) {
+                    if (currentSession != null &&
+                        currentGeneration != NO_SESSION_GENERATION
+                    ) {
+                        invalidateServerRequestsLocked(
+                            generation = currentGeneration,
+                            sessionIdentity = currentSession,
+                            reason = "disconnect",
+                        )
+                    }
+                    if (session === currentSession) {
+                        session = null
+                        activeSessionGeneration = NO_SESSION_GENERATION
+                        activeRuntime = null
+                    }
                 }
             }
             currentSession?.disconnect()
@@ -523,8 +542,9 @@ class CodexAppServerManager private constructor(
         val requestedMethod = args.stringValue("serverRequestMethod")
         val result = args["response"] ?: args["result"]
             ?: throw IllegalArgumentException("response is required")
-        val currentSession = session
-        val currentGeneration = activeSessionGeneration
+        val (currentSession, currentGeneration) = synchronized(sessionStateLock) {
+            Pair(session, activeSessionGeneration)
+        }
         val responseWriter: (suspend (Any, Any?) -> Unit)? =
             currentSession?.takeIf { it.isRunning }?.let { runningSession ->
                 { id, response -> runningSession.sendResponse(id, response) }
@@ -789,20 +809,22 @@ class CodexAppServerManager private constructor(
             sessionMutex.withLock {
                 val currentSession = session
                 val currentGeneration = activeSessionGeneration
-                synchronized(sessionStateLock) {
-                    if (currentSession != null &&
-                        currentGeneration != NO_SESSION_GENERATION
-                    ) {
-                        invalidateServerRequestsLocked(
-                            generation = currentGeneration,
-                            sessionIdentity = currentSession,
-                            reason = "session_replaced",
-                        )
-                    }
-                    if (session === currentSession) {
-                        session = null
-                        activeSessionGeneration = NO_SESSION_GENERATION
-                        activeRuntime = null
+                serverMessageBarrier.run {
+                    synchronized(sessionStateLock) {
+                        if (currentSession != null &&
+                            currentGeneration != NO_SESSION_GENERATION
+                        ) {
+                            invalidateServerRequestsLocked(
+                                generation = currentGeneration,
+                                sessionIdentity = currentSession,
+                                reason = "session_replaced",
+                            )
+                        }
+                        if (session === currentSession) {
+                            session = null
+                            activeSessionGeneration = NO_SESSION_GENERATION
+                            activeRuntime = null
+                        }
                     }
                 }
                 currentSession?.disconnect()
@@ -1061,14 +1083,14 @@ class CodexAppServerManager private constructor(
         sourceGeneration: Long,
         sourceSession: CodexAppServerSession,
         message: Map<String, Any?>,
-    ) {
+    ) = serverMessageBarrier.run {
         if (!isCurrentSession(sourceGeneration, sourceSession)) {
             Log.w(
                 TAG,
                 "server_message action=ignored_stale generation=$sourceGeneration " +
                     "method=${extractCodexServerMethod(message)}",
             )
-            return
+            return@run
         }
         val requestEnvelope = findCodexServerRequestEnvelope(message)
         val extractedMethod = extractCodexServerMethod(message)
@@ -1384,6 +1406,28 @@ class CodexAppServerManager private constructor(
         }
     }
 
+    private suspend fun allocateSessionGeneration(): Long =
+        withContext(Dispatchers.IO) {
+            synchronized(sessionGenerationLock) {
+                val previous = sessionGenerationPreferences.getLong(
+                    SESSION_GENERATION_KEY,
+                    NO_SESSION_GENERATION,
+                )
+                val generation = nextCodexSessionGeneration(
+                    previousPersisted = previous,
+                    nowMillis = System.currentTimeMillis(),
+                )
+                check(
+                    sessionGenerationPreferences.edit()
+                        .putLong(SESSION_GENERATION_KEY, generation)
+                        .commit(),
+                ) {
+                    "Failed to persist Codex session generation."
+                }
+                generation
+            }
+        }
+
     private fun isCurrentSession(
         generation: Long,
         sessionIdentity: CodexAppServerSession,
@@ -1629,6 +1673,9 @@ class CodexAppServerManager private constructor(
     companion object {
         private const val TAG = "CodexAppServerManager"
         private const val NO_SESSION_GENERATION = 0L
+        private const val SESSION_GENERATION_PREFERENCES =
+            "codex_app_server_lifecycle"
+        private const val SESSION_GENERATION_KEY = "last_session_generation"
         private const val SERVER_REQUEST_RESOLVED_METHOD = "serverRequest/resolved"
         private const val SERVER_REQUEST_INVALIDATED_METHOD = "serverRequest/invalidated"
 

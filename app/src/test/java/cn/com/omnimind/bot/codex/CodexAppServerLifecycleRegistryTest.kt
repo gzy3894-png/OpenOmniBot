@@ -1,6 +1,9 @@
 package cn.com.omnimind.bot.codex
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
@@ -312,6 +315,117 @@ class CodexAppServerLifecycleRegistryTest {
         assertEquals("CODEX_STALE_SERVER_REQUEST", error?.errorCode)
         assertEquals(0, writes)
         assertTrue(registry.find(51L, 6L)?.sessionIdentity === sourceSession)
+    }
+
+    @Test
+    fun serverMessageBarrierOrdersSessionTransitionAfterSuspendedMessage() =
+        runBlocking {
+            val barrier = CodexServerMessageBarrier()
+            val messageEntered = CompletableDeferred<Unit>()
+            val releaseMessage = CompletableDeferred<Unit>()
+            val transitionEntered = CompletableDeferred<Unit>()
+            val order = mutableListOf<String>()
+
+            val message = launch {
+                barrier.run {
+                    order += "message-start"
+                    messageEntered.complete(Unit)
+                    releaseMessage.await()
+                    order += "message-end"
+                }
+            }
+            messageEntered.await()
+            val transition = launch {
+                barrier.run {
+                    order += "transition"
+                    transitionEntered.complete(Unit)
+                }
+            }
+
+            yield()
+            assertTrue(!transitionEntered.isCompleted)
+            releaseMessage.complete(Unit)
+            message.join()
+            transition.join()
+
+            assertEquals(
+                listOf("message-start", "message-end", "transition"),
+                order,
+            )
+        }
+
+    @Test
+    fun persistedGenerationIsPositiveAndMonotonicAcrossClockRollback() {
+        val first = nextCodexSessionGeneration(
+            previousPersisted = 0L,
+            nowMillis = 1_000L,
+        )
+        val sameMillisecondRestart = nextCodexSessionGeneration(
+            previousPersisted = first,
+            nowMillis = 1_000L,
+        )
+        val clockRollbackRestart = nextCodexSessionGeneration(
+            previousPersisted = sameMillisecondRestart,
+            nowMillis = 900L,
+        )
+
+        assertEquals(1_000L, first)
+        assertEquals(1_001L, sameMillisecondRestart)
+        assertEquals(1_002L, clockRollbackRestart)
+        assertTrue(clockRollbackRestart > 0L)
+    }
+
+    @Test
+    fun responseWriteFailureRestoresPendingWithExactErrorCode() = runBlocking {
+        val registry = CodexServerRequestRegistry()
+        val responder = CodexServerRequestResponder(registry)
+        val session = Any()
+        registry.register(
+            61L,
+            session,
+            8L,
+            "item/commandExecution/requestApproval",
+            "thread-1",
+            "turn-1",
+        )
+
+        val failure = runCatching {
+            responder.respond(
+                61L,
+                61L,
+                session,
+                8L,
+                "item/commandExecution/requestApproval",
+                mapOf("decision" to "accept"),
+                responseWriter = { _, _ ->
+                    throw IllegalStateException("write failed")
+                },
+            )
+        }.exceptionOrNull() as? CodexServerRequestResponseException
+
+        assertEquals("CODEX_SERVER_RESPONSE_WRITE_FAILED", failure?.errorCode)
+        assertEquals(CodexServerRequestState.PENDING, registry.find(61L, 8L)?.state)
+    }
+
+    @Test
+    fun resolvedOrUnknownRequestReturnsExactNotPendingCode() = runBlocking {
+        val registry = CodexServerRequestRegistry()
+        val responder = CodexServerRequestResponder(registry)
+        val session = Any()
+
+        val error = runCatching {
+            responder.respond(
+                71L,
+                71L,
+                session,
+                9L,
+                "item/fileChange/requestApproval",
+                mapOf("decision" to "decline"),
+                responseWriter = { _, _ -> },
+            )
+        }.exceptionOrNull() as? CodexServerRequestResponseException
+
+        assertEquals("CODEX_SERVER_REQUEST_NOT_PENDING", error?.errorCode)
     }
 
     private fun dispatch(

@@ -1,6 +1,39 @@
 package cn.com.omnimind.bot.codex
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Orders session-owned message effects against explicit session transitions.
+ *
+ * A server message may suspend while synchronizing its thread binding. Session
+ * replacement must wait for that work to finish; once replacement commits,
+ * later messages from the old session fail the generation/identity check.
+ */
+internal class CodexServerMessageBarrier {
+    private val mutex = Mutex()
+
+    suspend fun <T> run(action: suspend () -> T): T {
+        return mutex.withLock { action() }
+    }
+}
+
+/**
+ * Returns a positive generation that remains monotonic when the wall clock
+ * moves backwards. The caller persists the returned value before publishing
+ * the corresponding session.
+ */
+internal fun nextCodexSessionGeneration(
+    previousPersisted: Long,
+    nowMillis: Long,
+): Long {
+    val previous = previousPersisted.coerceAtLeast(0L)
+    check(previous < Long.MAX_VALUE) {
+        "Codex session generation counter is exhausted."
+    }
+    return maxOf(previous + 1L, nowMillis.coerceAtLeast(1L))
+}
 
 internal data class CodexEventListenerRegistration(
     val engineToken: String,
