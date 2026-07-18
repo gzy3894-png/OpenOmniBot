@@ -31,11 +31,12 @@
 | 状态 | **GHA SUCCESS** · **APK STAGED** · 真机未测 |
 | 文档 commit | `c1e4341`（PLAN+HANDOFF） |
 | 功能 commit(s) | `68c1b79` |
-| HEAD（实现后） | `68c1b79` |
+| HEAD（实现后） | `68c1b79`（docs 最新 `92c0600`） |
 | GHA run id | `29641064531` |
-| GHA 结果 | **in progress** `29641064531` |
-| APK path | `_TBD_` |
-| APK sha256 | `_TBD_` |
+| GHA 结果 | **SUCCESS** [#29641064531](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29641064531) |
+| APK path | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| 版本副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-68c1b79-847c4aab.apk` |
+| APK sha256 | `847c4aaba2b3e6c2251be1f098d8310858ab4909904a3eb0ef57d17604265bd8` |
 | 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
 | 计划 / EXEC | `PLAN-2026-07-18-b38-models-api-and-regressions.md` · `EXEC-2026-07-18-b38-approval-models.md` |
 
@@ -56,23 +57,13 @@
 
 ## 1. 现在请你做
 
-**调度侧（本波）：**
+**用户真机（本波当前动作）：**
 
-1. push **mine** → 等 GHA `baseline-standard-debug` SUCCESS → stage Download → 回填 EXEC/DELIVERY 的 commit / run / sha256。  
-2. **禁止**在无 GHA SUCCESS 时写 READY/PASS；**禁止**本机 assemble。  
-3. 出包后用户优先 AP1–AP5，再 M1–R1。
-
-**若仍要装 B37 基线摸底（非 B38 包）：**
-
-1. 安装 §3 staged APK。  
-2. 知悉：B37 **未**修 T6/T3；权限 tip 成功 ≠ Codex 审批环。  
-3. 回传日志重点：`permission_set` / `requestApproval` / `model_list`。
-
-**B38 出包后：**
-
-1. 安装新 stage APK（路径/sha 见 EXEC 回填）。  
-2. 优先 AP1–AP5，再 M1–R1。  
-3. 结果写入 EXEC 真机表；全 PASS 后再把 DELIVERY 状态改为 READY。
+1. 安装 stage APK：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`  
+   （副本：`…-68c1b79-847c4aab.apk` · sha256 `847c4aab…04265bd8`）  
+2. **优先 AP1–AP5**（审批环），再 M1–R1（模型/回归）。  
+3. tip/setState **单独不算 PASS**；日志重点：`thread_start` triad、`permission_set`、`approval_prompt`/`approval_decision`、`model_list source=http_v1`。  
+4. 结果回填 EXEC 真机表；关键项有证据后再写 READY。
 
 ---
 
@@ -164,8 +155,8 @@
 - [x] B38 PLAN + HANDOFF 落盘 · `c1e4341`  
 - [x] B38 EXEC + 调度 A1–A7 实现  
 - [x] B38 功能实现 · `68c1b79`  
-- [x] B38 push mine · GHA `#29641064531` **in progress**  
-- [x] B38 GHA SUCCESS + APK stage + sha256 回填  
+- [x] B38 push mine · GHA `#29641064531` **SUCCESS**  
+- [x] B38 APK stage · sha256 `847c4aab…` / shortsha `68c1b79`  
 - [ ] 真机 B38 AP1–AP5 / M1–R1 PASS  
 
 ---

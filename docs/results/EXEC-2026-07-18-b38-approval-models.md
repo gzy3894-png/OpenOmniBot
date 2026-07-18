@@ -27,7 +27,7 @@
 | approval_prompt / approval_decision 埋点 | **已落地** | A4：reducer + request card |
 | HTTP `GET baseUrl/models` 换列表真源 | **已落地** | A5：HTTP 主路径 + app_server_fallback |
 | thread 分叉 / MissingPlugin 加固 | **已落地（有限）** | A6：retry + channel rebind + rebind-before-start |
-| push mine · GHA · stage APK | **完成** | GHA  SUCCESS · staged |
+| push mine · GHA · stage APK | **完成** | GHA `#29641064531` SUCCESS · staged |
 | 真机 AP1–AP5 / M1–R1 | **未开始** | 用户设备复测 |
 
 ## 代理分工
@@ -54,21 +54,22 @@
 - [x] `app/.../CodexAppServerManager.kt` — soft restart log
 - [x] `app/.../CodexAppServerChannel.kt` — setChannel tear-down before rebind
 - [x] 本 EXEC / DELIVERY
-- [x] push mine（`68c1b79`）· GHA run `29641064531` in progress · stage APK 待 SUCCESS
+- [x] push mine（`68c1b79`）· GHA `#29641064531` SUCCESS · stage APK + sha256 已回填
 - [ ] 真机 AP1–AP5 / M1–R1
 
-## 交付字段（GHA 后回填）
+## 交付字段
 
 | 项 | 值 |
 |----|-----|
 | 功能 commit(s) | `68c1b79` |
-| 编译/热修 commit（如有） | `_TBD_` |
-| HEAD | `68c1b791614e3447cd9faeeb5bd1a66ed922c6a7` |
+| 编译/热修 commit（如有） | 无 |
+| HEAD（功能） | `68c1b791614e3447cd9faeeb5bd1a66ed922c6a7` |
+| 文档回填 HEAD | 见 `docs(results): B38 GHA SUCCESS…` 提交 |
 | GHA run id | `29641064531` |
-| GHA 结果 | **SUCCESS** run `29641064531` |
-| APK path（stage） | `_TBD_` |
-| 版本副本 path | `_TBD_` |
-| APK sha256 | `_TBD_` |
+| GHA 结果 | **SUCCESS** · [Baseline Standard Debug #29641064531](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29641064531) |
+| APK path（stage） | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| 版本副本 path | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-68c1b79-847c4aab.apk` |
+| APK sha256 | `847c4aaba2b3e6c2251be1f098d8310858ab4909904a3eb0ef57d17604265bd8` |
 | 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
 
 ## 真机验收表（用户填 · 默认空白）
