@@ -37,7 +37,7 @@ void main() {
     );
 
     expect(bottomInset.padding, const EdgeInsets.only(bottom: 128));
-    expect(find.text('有什么可以帮助你的？'), findsOneWidget);
+    expect(find.text('你好👋，我是小万'), findsOneWidget);
   });
 
   testWidgets('notifies parent when an internal input gains focus', (
