@@ -35,6 +35,22 @@ internal fun nextCodexSessionGeneration(
     return maxOf(previous + 1L, nowMillis.coerceAtLeast(1L))
 }
 
+internal enum class CodexSessionReadiness {
+    DISCONNECTED,
+    STARTING,
+    READY,
+}
+
+internal fun isCodexSessionReadyForUse(
+    readiness: CodexSessionReadiness,
+    transportRunning: Boolean,
+    runtimeMatches: Boolean,
+): Boolean {
+    return readiness == CodexSessionReadiness.READY &&
+        transportRunning &&
+        runtimeMatches
+}
+
 internal data class CodexEventListenerRegistration(
     val engineToken: String,
     val streamToken: String,

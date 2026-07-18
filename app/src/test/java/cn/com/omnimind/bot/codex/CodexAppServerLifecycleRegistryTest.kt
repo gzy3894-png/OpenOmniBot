@@ -376,6 +376,31 @@ class CodexAppServerLifecycleRegistryTest {
     }
 
     @Test
+    fun sessionIsUsableOnlyAfterInitializeWithLiveMatchingTransport() {
+        assertTrue(
+            isCodexSessionReadyForUse(
+                readiness = CodexSessionReadiness.READY,
+                transportRunning = true,
+                runtimeMatches = true,
+            ),
+        )
+        listOf(
+            Triple(CodexSessionReadiness.STARTING, true, true),
+            Triple(CodexSessionReadiness.READY, false, true),
+            Triple(CodexSessionReadiness.READY, true, false),
+            Triple(CodexSessionReadiness.DISCONNECTED, true, true),
+        ).forEach { (readiness, transportRunning, runtimeMatches) ->
+            assertTrue(
+                !isCodexSessionReadyForUse(
+                    readiness = readiness,
+                    transportRunning = transportRunning,
+                    runtimeMatches = runtimeMatches,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun responseWriteFailureRestoresPendingWithExactErrorCode() = runBlocking {
         val registry = CodexServerRequestRegistry()
         val responder = CodexServerRequestResponder(registry)
