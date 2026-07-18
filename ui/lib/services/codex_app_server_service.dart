@@ -285,6 +285,201 @@ class CodexRemoteFilePayload {
   }
 }
 
+enum CodexApprovalRequestKind {
+  commandExecution,
+  fileChange,
+  permissions,
+}
+
+abstract class CodexApprovalResponsePayload {
+  const CodexApprovalResponsePayload();
+
+  Map<String, dynamic> toJson();
+}
+
+class CodexCommandExecutionApprovalResponsePayload
+    extends CodexApprovalResponsePayload {
+  const CodexCommandExecutionApprovalResponsePayload({
+    required this.decision,
+  });
+
+  final String decision;
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'decision': decision,
+      };
+}
+
+class CodexFileChangeApprovalResponsePayload
+    extends CodexApprovalResponsePayload {
+  const CodexFileChangeApprovalResponsePayload({
+    required this.decision,
+  });
+
+  final String decision;
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'decision': decision,
+      };
+}
+
+class CodexPermissionsApprovalResponsePayload
+    extends CodexApprovalResponsePayload {
+  const CodexPermissionsApprovalResponsePayload({
+    required this.permissions,
+    this.scope = 'turn',
+  });
+
+  final Map<String, dynamic> permissions;
+  final String scope;
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'permissions': permissions,
+        'scope': scope,
+      };
+}
+
+abstract class CodexApprovalRequestPayload {
+  const CodexApprovalRequestPayload({
+    required this.requestId,
+    required this.sessionGeneration,
+    required this.serverRequestMethod,
+    required this.params,
+  });
+
+  final Object requestId;
+  final int sessionGeneration;
+  final String serverRequestMethod;
+  final Map<String, dynamic> params;
+
+  CodexApprovalRequestKind get kind;
+
+  CodexApprovalResponsePayload responseFor({required bool accepted});
+
+  factory CodexApprovalRequestPayload.fromCardData(
+    Map<String, dynamic> cardData,
+  ) {
+    final requestId = cardData['requestId'];
+    if (requestId is! String && requestId is! num) {
+      throw const FormatException(
+        'Approval requestId must be a string or number',
+      );
+    }
+    final sessionGeneration = _intOrNull(cardData['sessionGeneration']);
+    if (sessionGeneration == null || sessionGeneration < 0) {
+      throw const FormatException(
+        'Approval sessionGeneration is missing or invalid',
+      );
+    }
+    final serverRequestMethod =
+        _stringOrNull(cardData['serverRequestMethod']);
+    if (serverRequestMethod == null) {
+      throw const FormatException('Approval serverRequestMethod is missing');
+    }
+    final params = _approvalParamsFromCardData(cardData);
+    return switch (serverRequestMethod) {
+      'item/commandExecution/requestApproval' =>
+        CodexCommandExecutionApprovalRequestPayload(
+          requestId: requestId,
+          sessionGeneration: sessionGeneration,
+          serverRequestMethod: serverRequestMethod,
+          params: params,
+        ),
+      'item/fileChange/requestApproval' =>
+        CodexFileChangeApprovalRequestPayload(
+          requestId: requestId,
+          sessionGeneration: sessionGeneration,
+          serverRequestMethod: serverRequestMethod,
+          params: params,
+        ),
+      'item/permissions/requestApproval' =>
+        CodexPermissionsApprovalRequestPayload(
+          requestId: requestId,
+          sessionGeneration: sessionGeneration,
+          serverRequestMethod: serverRequestMethod,
+          params: params,
+        ),
+      _ => throw FormatException(
+          'Unsupported approval method: $serverRequestMethod',
+        ),
+    };
+  }
+}
+
+class CodexCommandExecutionApprovalRequestPayload
+    extends CodexApprovalRequestPayload {
+  const CodexCommandExecutionApprovalRequestPayload({
+    required super.requestId,
+    required super.sessionGeneration,
+    required super.serverRequestMethod,
+    required super.params,
+  });
+
+  @override
+  CodexApprovalRequestKind get kind =>
+      CodexApprovalRequestKind.commandExecution;
+
+  @override
+  CodexApprovalResponsePayload responseFor({required bool accepted}) {
+    return CodexCommandExecutionApprovalResponsePayload(
+      decision: accepted ? 'accept' : 'decline',
+    );
+  }
+}
+
+class CodexFileChangeApprovalRequestPayload
+    extends CodexApprovalRequestPayload {
+  const CodexFileChangeApprovalRequestPayload({
+    required super.requestId,
+    required super.sessionGeneration,
+    required super.serverRequestMethod,
+    required super.params,
+  });
+
+  @override
+  CodexApprovalRequestKind get kind => CodexApprovalRequestKind.fileChange;
+
+  @override
+  CodexApprovalResponsePayload responseFor({required bool accepted}) {
+    return CodexFileChangeApprovalResponsePayload(
+      decision: accepted ? 'accept' : 'decline',
+    );
+  }
+}
+
+class CodexPermissionsApprovalRequestPayload
+    extends CodexApprovalRequestPayload {
+  CodexPermissionsApprovalRequestPayload({
+    required Object requestId,
+    required int sessionGeneration,
+    required String serverRequestMethod,
+    required Map<String, dynamic> params,
+  }) : requestedPermissions = _permissionsFromParams(params),
+       super(
+         requestId: requestId,
+         sessionGeneration: sessionGeneration,
+         serverRequestMethod: serverRequestMethod,
+         params: params,
+       );
+
+  final Map<String, dynamic> requestedPermissions;
+
+  @override
+  CodexApprovalRequestKind get kind => CodexApprovalRequestKind.permissions;
+
+  @override
+  CodexApprovalResponsePayload responseFor({required bool accepted}) {
+    return CodexPermissionsApprovalResponsePayload(
+      permissions: accepted
+          ? Map<String, dynamic>.from(requestedPermissions)
+          : <String, dynamic>{},
+    );
+  }
+}
+
 class CodexAppServerService {
   CodexAppServerService._();
 
@@ -296,12 +491,28 @@ class CodexAppServerService {
   );
 
   static final StreamController<Map<String, dynamic>> _eventController =
-      StreamController<Map<String, dynamic>>.broadcast();
+      StreamController<Map<String, dynamic>>.broadcast(
+        onListen: _ensureEventSubscription,
+        onCancel: _cancelEventSubscriptionWhenIdle,
+      );
   static StreamSubscription<dynamic>? _nativeEventSubscription;
+  static Timer? _eventRetryTimer;
+  static bool _eventSubscriptionStarting = false;
+  static int _eventRetryAttempt = 0;
 
   static Stream<Map<String, dynamic>> get events {
-    _ensureEventSubscription();
     return _eventController.stream;
+  }
+
+  static int get eventRetryAttemptForTesting => _eventRetryAttempt;
+
+  static bool get hasEventSubscriptionForTesting =>
+      _nativeEventSubscription != null || _eventSubscriptionStarting;
+
+  static Duration eventRetryDelayForAttempt(int attempt) {
+    final normalizedAttempt = attempt < 1 ? 1 : attempt;
+    final exponent = (normalizedAttempt - 1).clamp(0, 5).toInt();
+    return Duration(milliseconds: 250 * (1 << exponent));
   }
 
   static Future<CodexStatus> status() async {
@@ -879,58 +1090,162 @@ class CodexAppServerService {
   }
 
   static Future<Map<String, dynamic>> respondToApproval({
-    required Object requestId,
+    required CodexApprovalRequestPayload request,
     required bool accepted,
   }) {
-    return _invokeMap('respondToServerRequest', {
-      'requestId': requestId,
-      'response': {'decision': accepted ? 'accept' : 'decline'},
-    });
+    return _respondToServerRequest(
+      requestId: request.requestId,
+      sessionGeneration: request.sessionGeneration,
+      serverRequestMethod: request.serverRequestMethod,
+      response: request.responseFor(accepted: accepted).toJson(),
+    );
   }
 
   static Future<Map<String, dynamic>> respondToUserInput({
     required Object requestId,
+    required int sessionGeneration,
+    required String serverRequestMethod,
     required String questionId,
     required List<String> answers,
   }) {
-    return _invokeMap('respondToServerRequest', {
-      'requestId': requestId,
-      'response': {
+    return _respondToServerRequest(
+      requestId: requestId,
+      sessionGeneration: sessionGeneration,
+      serverRequestMethod: serverRequestMethod,
+      response: <String, dynamic>{
         'answers': {
           questionId: {'answers': answers},
         },
       },
-    });
+    );
   }
 
   static Future<Map<String, dynamic>> ignoreUserInput({
     required Object requestId,
+    required int sessionGeneration,
+    required String serverRequestMethod,
   }) {
+    return _respondToServerRequest(
+      requestId: requestId,
+      sessionGeneration: sessionGeneration,
+      serverRequestMethod: serverRequestMethod,
+      response: <String, dynamic>{'answers': <String, dynamic>{}},
+    );
+  }
+
+  static Future<Map<String, dynamic>> _respondToServerRequest({
+    required Object requestId,
+    required int sessionGeneration,
+    required String serverRequestMethod,
+    required Map<String, dynamic> response,
+  }) {
+    final normalizedMethod = serverRequestMethod.trim();
+    if (requestId is! String && requestId is! num) {
+      throw ArgumentError.value(
+        requestId,
+        'requestId',
+        'must be a string or number',
+      );
+    }
+    if (sessionGeneration < 0) {
+      throw ArgumentError.value(
+        sessionGeneration,
+        'sessionGeneration',
+        'must be non-negative',
+      );
+    }
+    if (normalizedMethod.isEmpty) {
+      throw ArgumentError.value(
+        serverRequestMethod,
+        'serverRequestMethod',
+        'must not be empty',
+      );
+    }
     return _invokeMap('respondToServerRequest', {
       'requestId': requestId,
-      'response': {'answers': <String, dynamic>{}},
+      'sessionGeneration': sessionGeneration,
+      'serverRequestMethod': normalizedMethod,
+      'response': response,
     });
   }
 
   static void _ensureEventSubscription() {
-    if (_nativeEventSubscription != null) return;
-    _nativeEventSubscription = _eventChannel.receiveBroadcastStream().listen(
-      (event) {
-        final normalized = _normalizeMap(event);
-        if (normalized != null) {
-          _eventController.add(normalized);
-        }
-      },
-      onError: (Object error, StackTrace stackTrace) {
-        _eventController.add({
+    if (_nativeEventSubscription != null ||
+        _eventSubscriptionStarting ||
+        !_eventController.hasListener) {
+      return;
+    }
+    _eventRetryTimer?.cancel();
+    _eventRetryTimer = null;
+    _eventSubscriptionStarting = true;
+    try {
+      final subscription = _eventChannel.receiveBroadcastStream().listen(
+        (event) {
+          _eventRetryAttempt = 0;
+          final normalized = _normalizeMap(event);
+          if (normalized != null) {
+            _eventController.add(normalized);
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          _handleNativeEventSubscriptionEnded(error: error);
+        },
+        onDone: () => _handleNativeEventSubscriptionEnded(),
+        cancelOnError: true,
+      );
+      _nativeEventSubscription = subscription;
+      _eventSubscriptionStarting = false;
+    } catch (error) {
+      _eventSubscriptionStarting = false;
+      _handleNativeEventSubscriptionEnded(error: error);
+    }
+  }
+
+  static void _handleNativeEventSubscriptionEnded({Object? error}) {
+    final subscription = _nativeEventSubscription;
+    _nativeEventSubscription = null;
+    _eventSubscriptionStarting = false;
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
+    if (error != null && _eventController.hasListener) {
+      _eventController.add({
+        'method': 'codex/flutterEventError',
+        'message': {
           'method': 'codex/flutterEventError',
-          'message': {
-            'method': 'codex/flutterEventError',
-            'params': {'error': error.toString()},
-          },
-        });
-      },
-    );
+          'params': {'error': error.toString()},
+        },
+      });
+    }
+    _scheduleEventSubscriptionRetry();
+  }
+
+  static void _scheduleEventSubscriptionRetry() {
+    if (!_eventController.hasListener || _eventRetryTimer != null) {
+      return;
+    }
+    _eventRetryAttempt =
+        _eventRetryAttempt >= 32 ? 32 : _eventRetryAttempt + 1;
+    final delay = eventRetryDelayForAttempt(_eventRetryAttempt);
+    _eventRetryTimer = Timer(delay, () {
+      _eventRetryTimer = null;
+      _ensureEventSubscription();
+    });
+  }
+
+  static void _cancelEventSubscriptionWhenIdle() {
+    if (_eventController.hasListener) {
+      return;
+    }
+    _eventRetryTimer?.cancel();
+    _eventRetryTimer = null;
+    _eventRetryAttempt = 0;
+    final subscription = _nativeEventSubscription;
+    _nativeEventSubscription = null;
+    _eventSubscriptionStarting = false;
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
   }
 
   static Future<Map<String, dynamic>> _invokeMap(
@@ -977,6 +1292,35 @@ void _putServiceTierArg(
   if (serviceTier != null && serviceTier.trim().isNotEmpty) {
     args['serviceTier'] = serviceTier.trim();
   }
+}
+
+Map<String, dynamic> _approvalParamsFromCardData(
+  Map<String, dynamic> cardData,
+) {
+  final direct = _normalizeMap(cardData['requestParams']);
+  if (direct != null) {
+    return direct;
+  }
+  final raw = cardData['rawParamsJson']?.toString().trim() ?? '';
+  if (raw.isEmpty) {
+    return <String, dynamic>{};
+  }
+  final decoded = jsonDecode(raw);
+  final params = _normalizeMap(decoded);
+  if (params == null) {
+    throw const FormatException('Approval params must be a JSON object');
+  }
+  return params;
+}
+
+Map<String, dynamic> _permissionsFromParams(Map<String, dynamic> params) {
+  final permissions = _normalizeMap(params['permissions']);
+  if (permissions == null) {
+    throw const FormatException(
+      'Permissions approval request is missing permissions',
+    );
+  }
+  return Map<String, dynamic>.unmodifiable(permissions);
 }
 
 Map<String, dynamic>? _normalizeMap(dynamic value) {

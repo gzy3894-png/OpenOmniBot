@@ -271,6 +271,15 @@ class DebugFileLog {
     String? decision,
     String? threadId,
     String? summary,
+    String? approvalKind,
+    String? serverRequestMethod,
+    int? sessionGeneration,
+    String? reviewId,
+    String? status,
+    String? decisionSource,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    String? sandboxType,
     bool? success,
     Object? error,
   }) {
@@ -303,6 +312,22 @@ class DebugFileLog {
         if (decision != null) 'decision': decision,
         if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
         if (summary != null && summary.isNotEmpty) 'summary': summary,
+        if (approvalKind != null && approvalKind.isNotEmpty)
+          'approvalKind': approvalKind,
+        if (serverRequestMethod != null && serverRequestMethod.isNotEmpty)
+          'serverRequestMethod': serverRequestMethod,
+        if (sessionGeneration != null)
+          'sessionGeneration': sessionGeneration,
+        if (reviewId != null && reviewId.isNotEmpty) 'reviewId': reviewId,
+        if (status != null && status.isNotEmpty) 'status': status,
+        if (decisionSource != null && decisionSource.isNotEmpty)
+          'decisionSource': decisionSource,
+        if (approvalPolicy != null && approvalPolicy.isNotEmpty)
+          'approvalPolicy': approvalPolicy,
+        if (approvalsReviewer != null && approvalsReviewer.isNotEmpty)
+          'approvalsReviewer': approvalsReviewer,
+        if (sandboxType != null && sandboxType.isNotEmpty)
+          'sandboxType': sandboxType,
         if (resolvedSuccess != null) 'success': resolvedSuccess,
         if (error != null) 'error': error.toString(),
       },

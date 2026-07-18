@@ -283,13 +283,177 @@ void main() {
       return <String, dynamic>{'ok': true};
     });
 
-    await CodexAppServerService.ignoreUserInput(requestId: 'request-1');
+    await CodexAppServerService.ignoreUserInput(
+      requestId: 'request-1',
+      sessionGeneration: 12,
+      serverRequestMethod: 'item/tool/requestUserInput',
+    );
 
     expect(capturedCall?.method, 'respondToServerRequest');
     expect(capturedCall?.arguments, {
       'requestId': 'request-1',
+      'sessionGeneration': 12,
+      'serverRequestMethod': 'item/tool/requestUserInput',
       'response': {'answers': <String, dynamic>{}},
     });
+  });
+
+  test('respondToUserInput forwards generation and request method', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.respondToUserInput(
+      requestId: 0,
+      sessionGeneration: 13,
+      serverRequestMethod: 'item/tool/requestUserInput',
+      questionId: 'mode',
+      answers: const <String>['Plan'],
+    );
+
+    expect(capturedCall?.arguments, {
+      'requestId': 0,
+      'sessionGeneration': 13,
+      'serverRequestMethod': 'item/tool/requestUserInput',
+      'response': {
+        'answers': {
+          'mode': {
+            'answers': <String>['Plan'],
+          },
+        },
+      },
+    });
+  });
+
+  test('builds typed command and file approval responses', () async {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return <String, dynamic>{
+        'ok': true,
+        'resolved': false,
+        'actionResult': 'response_sent',
+      };
+    });
+
+    final command = CodexApprovalRequestPayload.fromCardData(
+      <String, dynamic>{
+        'requestId': 0,
+        'sessionGeneration': 20,
+        'serverRequestMethod': 'item/commandExecution/requestApproval',
+        'rawParamsJson': '{"command":"rm tmp.txt"}',
+      },
+    );
+    final fileChange = CodexApprovalRequestPayload.fromCardData(
+      <String, dynamic>{
+        'requestId': '0',
+        'sessionGeneration': 20,
+        'serverRequestMethod': 'item/fileChange/requestApproval',
+        'rawParamsJson': '{"reason":"write outside workspace"}',
+      },
+    );
+
+    expect(
+      command,
+      isA<CodexCommandExecutionApprovalRequestPayload>(),
+    );
+    expect(fileChange, isA<CodexFileChangeApprovalRequestPayload>());
+    await CodexAppServerService.respondToApproval(
+      request: command,
+      accepted: true,
+    );
+    await CodexAppServerService.respondToApproval(
+      request: fileChange,
+      accepted: false,
+    );
+
+    expect(calls[0].arguments, {
+      'requestId': 0,
+      'sessionGeneration': 20,
+      'serverRequestMethod': 'item/commandExecution/requestApproval',
+      'response': {'decision': 'accept'},
+    });
+    expect(calls[1].arguments, {
+      'requestId': '0',
+      'sessionGeneration': 20,
+      'serverRequestMethod': 'item/fileChange/requestApproval',
+      'response': {'decision': 'decline'},
+    });
+  });
+
+  test('permissions approval returns granted profile or empty denial', () async {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return <String, dynamic>{'ok': true};
+    });
+    const permissions = <String, dynamic>{
+      'network': <String, dynamic>{'enabled': true},
+      'fileSystem': <String, dynamic>{
+        'write': <String>['/workspace'],
+      },
+    };
+    final request = CodexApprovalRequestPayload.fromCardData(
+      <String, dynamic>{
+        'requestId': 7,
+        'sessionGeneration': 21,
+        'serverRequestMethod': 'item/permissions/requestApproval',
+        'requestParams': <String, dynamic>{
+          'permissions': permissions,
+        },
+      },
+    );
+
+    expect(request, isA<CodexPermissionsApprovalRequestPayload>());
+    await CodexAppServerService.respondToApproval(
+      request: request,
+      accepted: true,
+    );
+    await CodexAppServerService.respondToApproval(
+      request: request,
+      accepted: false,
+    );
+
+    expect((calls[0].arguments as Map)['response'], {
+      'permissions': permissions,
+      'scope': 'turn',
+    });
+    expect((calls[1].arguments as Map)['response'], {
+      'permissions': <String, dynamic>{},
+      'scope': 'turn',
+    });
+  });
+
+  test('approval payload rejects missing generation before native call', () {
+    expect(
+      () => CodexApprovalRequestPayload.fromCardData(
+        <String, dynamic>{
+          'requestId': 1,
+          'serverRequestMethod': 'item/commandExecution/requestApproval',
+          'rawParamsJson': '{}',
+        },
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('event retry policy uses capped exponential backoff', () {
+    expect(CodexAppServerService.eventRetryAttemptForTesting, 0);
+    expect(CodexAppServerService.hasEventSubscriptionForTesting, isFalse);
+    expect(
+      CodexAppServerService.eventRetryDelayForAttempt(1),
+      const Duration(milliseconds: 250),
+    );
+    expect(
+      CodexAppServerService.eventRetryDelayForAttempt(4),
+      const Duration(seconds: 2),
+    );
+    expect(
+      CodexAppServerService.eventRetryDelayForAttempt(99),
+      const Duration(seconds: 8),
+    );
   });
 
   test('readThread requests turns by default', () async {

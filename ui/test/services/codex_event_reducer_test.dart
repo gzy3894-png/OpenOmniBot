@@ -1827,6 +1827,9 @@ diff --git a/lib/main.dart b/lib/main.dart
     reducer.reduce(
       runtime: runtime,
       event: {
+        'sessionGeneration': 4,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
         'message': {
           'id': 7,
           'method': 'item/commandExecution/requestApproval',
@@ -1839,12 +1842,341 @@ diff --git a/lib/main.dart b/lib/main.dart
     expect(cardData['type'], 'codex_request');
     expect(cardData['requestKind'], 'approval');
     expect(cardData['requestId'], 7);
+    expect(cardData['sessionGeneration'], 4);
+    expect(
+      cardData['serverRequestMethod'],
+      'item/commandExecution/requestApproval',
+    );
+    expect(cardData['approvalKind'], 'commandExecution');
+  });
+
+  test('maps all typed approval request kinds without inventing responses', () {
+    final cases = <(String, String, Map<String, dynamic>)>[
+      (
+        'item/commandExecution/requestApproval',
+        'commandExecution',
+        <String, dynamic>{'command': 'rm tmp.txt'},
+      ),
+      (
+        'item/fileChange/requestApproval',
+        'fileChange',
+        <String, dynamic>{'reason': 'write outside workspace'},
+      ),
+      (
+        'item/permissions/requestApproval',
+        'permissions',
+        <String, dynamic>{
+          'permissions': <String, dynamic>{
+            'fileSystem': <String, dynamic>{
+              'write': <String>['/workspace'],
+            },
+          },
+        },
+      ),
+    ];
+
+    for (var index = 0; index < cases.length; index += 1) {
+      final entry = cases[index];
+      reducer.reduce(
+        runtime: runtime,
+        event: {
+          'sessionGeneration': 10,
+          'serverRequestMethod': entry.$1,
+          'message': {
+            'id': index,
+            'method': entry.$1,
+            'params': entry.$3,
+          },
+        },
+      );
+    }
+
+    expect(runtime.messages, hasLength(3));
+    expect(
+      runtime.messages
+          .map((message) => message.cardData!['approvalKind'])
+          .toSet(),
+      <String>{'commandExecution', 'fileChange', 'permissions'},
+    );
+    for (final message in runtime.messages) {
+      expect(message.cardData!['status'], 'pending');
+      expect(message.cardData!.containsKey('response'), isFalse);
+    }
+  });
+
+  test('missing generation makes a restored approval non-actionable', () {
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'message': {
+          'id': 1,
+          'method': 'item/commandExecution/requestApproval',
+          'params': <String, dynamic>{'command': 'rm tmp.txt'},
+        },
+      },
+    );
+
+    expect(runtime.messages.single.cardData!['status'], 'invalidated');
+  });
+
+  test('serverRequest resolved requires matching generation and method', () {
+    final request = <String, dynamic>{
+      'sessionGeneration': 11,
+      'serverRequestMethod': 'item/commandExecution/requestApproval',
+      'message': {
+        'id': 1,
+        'method': 'item/commandExecution/requestApproval',
+        'params': <String, dynamic>{'command': 'rm tmp.txt'},
+      },
+    };
+    reducer.reduce(runtime: runtime, event: request);
+
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/resolved',
+        'sessionGeneration': 12,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
+        'params': <String, dynamic>{
+          'threadId': 'thread-1',
+          'requestId': 1,
+        },
+      },
+    );
+    expect(runtime.messages.single.cardData!['status'], 'pending');
+
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/resolved',
+        'sessionGeneration': 11,
+        'serverRequestMethod': 'item/fileChange/requestApproval',
+        'params': <String, dynamic>{
+          'threadId': 'thread-1',
+          'requestId': 1,
+        },
+      },
+    );
+    expect(runtime.messages.single.cardData!['status'], 'pending');
+
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/resolved',
+        'sessionGeneration': 11,
+        'params': <String, dynamic>{
+          'threadId': 'thread-1',
+          'requestId': 1,
+        },
+      },
+    );
+    expect(runtime.messages.single.cardData!['status'], 'resolved');
+    expect(runtime.messages.single.cardData!['resolved'], isTrue);
+  });
+
+  test('numeric and string JSON-RPC ids never share lifecycle state', () {
+    for (final requestId in <Object>[0, '0']) {
+      reducer.reduce(
+        runtime: runtime,
+        event: {
+          'sessionGeneration': 14,
+          'serverRequestMethod':
+              'item/commandExecution/requestApproval',
+          'message': {
+            'id': requestId,
+            'method': 'item/commandExecution/requestApproval',
+            'params': <String, dynamic>{'command': 'echo $requestId'},
+          },
+        },
+      );
+    }
+    expect(runtime.messages, hasLength(2));
+    expect(
+      runtime.messages.map((message) => message.id).toSet(),
+      hasLength(2),
+    );
+
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/resolved',
+        'sessionGeneration': 14,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
+        'params': <String, dynamic>{
+          'threadId': 'thread-1',
+          'requestId': 0,
+        },
+      },
+    );
+
+    final numeric = runtime.messages.singleWhere(
+      (message) => message.cardData!['requestId'] is num,
+    );
+    final string = runtime.messages.singleWhere(
+      (message) => message.cardData!['requestId'] is String,
+    );
+    expect(numeric.cardData!['status'], 'resolved');
+    expect(string.cardData!['status'], 'pending');
+  });
+
+  test('native invalidation targets old generation without touching current', () {
+    for (final generation in <int>[20, 21]) {
+      reducer.reduce(
+        runtime: runtime,
+        event: {
+          'sessionGeneration': generation,
+          'serverRequestMethod':
+              'item/commandExecution/requestApproval',
+          'message': {
+            'id': 1,
+            'method': 'item/commandExecution/requestApproval',
+            'params': const <String, dynamic>{'command': 'pwd'},
+          },
+        },
+      );
+    }
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/invalidated',
+        'sessionGeneration': 20,
+        'requestId': 1,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
+        'reason': 'session_replaced',
+        'actionResult': 'invalidated',
+      },
+    );
+
+    final oldCard = runtime.messages.singleWhere(
+      (message) => message.cardData!['sessionGeneration'] == 20,
+    );
+    final currentCard = runtime.messages.singleWhere(
+      (message) => message.cardData!['sessionGeneration'] == 21,
+    );
+    expect(oldCard.cardData!['status'], 'invalidated');
+    expect(currentCard.cardData!['status'], 'pending');
+  });
+
+  test('native invalidation disables the exact pending request', () {
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'sessionGeneration': 30,
+        'serverRequestMethod':
+            'item/fileChange/requestApproval',
+        'message': {
+          'id': 'request-1',
+          'method': 'item/fileChange/requestApproval',
+          'params': const <String, dynamic>{
+            'reason': 'write outside workspace',
+          },
+        },
+      },
+    );
+
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/invalidated',
+        'sessionGeneration': 30,
+        'oldGeneration': 30,
+        'requestId': 'request-1',
+        'serverRequestMethod': 'item/fileChange/requestApproval',
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'reason': 'disconnect',
+        'resolved': false,
+        'actionResult': 'invalidated',
+        'params': <String, dynamic>{
+          'sessionGeneration': 30,
+          'oldGeneration': 30,
+          'requestId': 'request-1',
+          'serverRequestMethod':
+              'item/fileChange/requestApproval',
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'reason': 'disconnect',
+          'resolved': false,
+          'actionResult': 'invalidated',
+        },
+      },
+    );
+
+    final cardData = runtime.messages.single.cardData!;
+    expect(cardData['status'], 'invalidated');
+    expect(cardData['resolved'], isFalse);
+    expect(cardData['actionResult'], 'invalidated');
+    expect(cardData['invalidationReason'], 'disconnect');
+  });
+
+  test('handles auto approval review lifecycle notifications', () {
+    final started = reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'item/autoApprovalReview/started',
+        'params': <String, dynamic>{
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'startedAtMs': 1000,
+          'reviewId': 'review-1',
+          'targetItemId': 'cmd-1',
+          'review': <String, dynamic>{
+            'status': 'inProgress',
+            'riskLevel': null,
+            'userAuthorization': null,
+            'rationale': null,
+          },
+          'action': <String, dynamic>{
+            'type': 'command',
+            'source': 'shell',
+            'command': 'rm tmp.txt',
+            'cwd': '/workspace',
+          },
+        },
+      },
+    );
+    final completed = reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'item/autoApprovalReview/completed',
+        'params': <String, dynamic>{
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'startedAtMs': 1000,
+          'completedAtMs': 1100,
+          'reviewId': 'review-1',
+          'targetItemId': 'cmd-1',
+          'decisionSource': 'agent',
+          'review': <String, dynamic>{
+            'status': 'approved',
+            'riskLevel': 'low',
+            'userAuthorization': null,
+            'rationale': 'Low risk',
+          },
+          'action': <String, dynamic>{
+            'type': 'command',
+            'source': 'shell',
+            'command': 'rm tmp.txt',
+            'cwd': '/workspace',
+          },
+        },
+      },
+    );
+
+    expect(started.handled, isTrue);
+    expect(completed.handled, isTrue);
+    expect(runtime.messages, isEmpty);
   });
 
   test('maps request user input into codex request card', () {
     reducer.reduce(
       runtime: runtime,
       event: {
+        'sessionGeneration': 5,
+        'serverRequestMethod': 'item/tool/requestUserInput',
         'message': {
           'id': 'request-1',
           'method': 'item/tool/requestUserInput',
@@ -1896,6 +2228,11 @@ diff --git a/lib/main.dart b/lib/main.dart
           'threadSettings': {
             'model': 'gpt-custom',
             'effort': 'high',
+            'approvalPolicy': 'on-request',
+            'approvalsReviewer': 'auto_review',
+            'sandboxPolicy': <String, dynamic>{
+              'type': 'workspaceWrite',
+            },
             'collaborationMode': {'mode': 'default'},
           },
         },
@@ -1915,6 +2252,8 @@ diff --git a/lib/main.dart b/lib/main.dart
       runtime: runtime,
       event: {
         'method': 'item/tool/requestUserInput',
+        'sessionGeneration': 6,
+        'serverRequestMethod': 'item/tool/requestUserInput',
         'threadId': 'thread-1',
         'turnId': 'turn-1',
         'message': {
@@ -1960,8 +2299,10 @@ diff --git a/lib/main.dart b/lib/main.dart
     expect(runtime.isAiResponding, isTrue);
   });
 
-  test('keeps submitted request user input status during event replay', () {
+  test('keeps response-sent user input status during event replay', () {
     final requestEvent = {
+      'sessionGeneration': 7,
+      'serverRequestMethod': 'item/tool/requestUserInput',
       'message': {
         'id': 'request-1',
         'method': 'item/tool/requestUserInput',
@@ -1982,14 +2323,14 @@ diff --git a/lib/main.dart b/lib/main.dart
     reducer.reduce(runtime: runtime, event: requestEvent);
     final existing = runtime.messages.single;
     final submittedCardData = Map<String, dynamic>.from(existing.cardData!)
-      ..['status'] = 'submitted';
+      ..['status'] = 'response_sent';
     runtime.messages[0] = existing.copyWith(
       content: {'cardData': submittedCardData, 'id': existing.id},
     );
 
     reducer.reduce(runtime: runtime, event: requestEvent);
 
-    expect(runtime.messages.single.cardData!['status'], 'submitted');
+    expect(runtime.messages.single.cardData!['status'], 'response_sent');
   });
 
   test('hydrates historical request user input as submitted request card', () {

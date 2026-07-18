@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:ui/models/conversation_model.dart';
 import 'package:ui/services/codex_app_server_service.dart';
 import 'package:ui/services/conversation_history_service.dart';
@@ -32,6 +33,8 @@ class _CodexRequestCardState extends State<CodexRequestCard>
   bool _isSubmitting = false;
   String? _localStatus;
   List<String> _localAnswers = const <String>[];
+  String? _localSubmittedAction;
+  String? _submitErrorMessage;
   String? _selectedOptionValue;
 
   @override
@@ -50,6 +53,8 @@ class _CodexRequestCardState extends State<CodexRequestCard>
         _requestRenderSignature(widget.cardData)) {
       _localStatus = null;
       _localAnswers = const <String>[];
+      _localSubmittedAction = null;
+      _submitErrorMessage = null;
       _selectedOptionValue = null;
       _answerController.clear();
       _syncDefaultSelection();
@@ -83,16 +88,24 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       title,
       (widget.cardData['detail'] ?? '').toString(),
     );
-    final cardStatus = _cardStatus(widget.cardData);
+    final rawCardStatus = _cardStatus(widget.cardData);
+    final cardStatus =
+        rawCardStatus == 'pending' &&
+            !_hasCompleteServerRequestIdentity(widget.cardData)
+        ? 'invalidated'
+        : rawCardStatus;
     final status = cardStatus == 'pending'
-        ? (_isTerminalRequestStatus(_localStatus) ? _localStatus! : 'pending')
-        : (_localStatus ?? cardStatus);
+        ? (_localStatus ?? 'pending')
+        : cardStatus;
     final isPending = status == 'pending' && !_isSubmitting;
     final options = _resolveRequestOptions(widget.cardData);
     final hasOptions = options.isNotEmpty;
     final answers = _localAnswers.isNotEmpty
         ? _localAnswers
         : _stringList(widget.cardData['submittedAnswers']);
+    final submittedAction =
+        _localSubmittedAction ??
+        _firstText([widget.cardData['submittedAction']]);
     final canSubmit =
         isPending &&
         (!hasOptions ||
@@ -202,10 +215,25 @@ class _CodexRequestCardState extends State<CodexRequestCard>
               const SizedBox(height: 8),
             ],
           ],
+          if (_submitErrorMessage != null && status == 'pending') ...[
+            Text(
+              _submitErrorMessage!,
+              key: const ValueKey('codex-request-submit-error'),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.error,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           _RequestFooter(
             kind: kind,
             status: status,
             answers: answers,
+            submittedAction: submittedAction,
             isPending: isPending,
             isSubmitting: _isSubmitting,
             canSubmit: canSubmit,
@@ -220,16 +248,21 @@ class _CodexRequestCardState extends State<CodexRequestCard>
   }
 
   Future<void> _respondApproval(bool accepted) async {
-    final requestId = widget.cardData['requestId'];
-    if (requestId == null) return;
     final decision = accepted ? 'accepted' : 'declined';
+    CodexApprovalRequestPayload request;
+    try {
+      request = CodexApprovalRequestPayload.fromCardData(widget.cardData);
+    } catch (_) {
+      await _markRequestInvalidated();
+      return;
+    }
     final threadId = (widget.cardData['threadId'] ?? '').toString().trim();
-    final requestIdText = requestId.toString();
+    final requestIdText = request.requestId.toString();
     Object? submitError;
     await _submit(() async {
       try {
         return await CodexAppServerService.respondToApproval(
-          requestId: requestId,
+          request: request,
           accepted: accepted,
         );
       } catch (e) {
@@ -245,6 +278,9 @@ class _CodexRequestCardState extends State<CodexRequestCard>
         requestId: requestIdText,
         decision: decision,
         threadId: threadId.isEmpty ? null : threadId,
+        approvalKind: request.kind.name,
+        serverRequestMethod: request.serverRequestMethod,
+        sessionGeneration: request.sessionGeneration,
         success: ok,
         error: submitError,
       ),
@@ -253,16 +289,34 @@ class _CodexRequestCardState extends State<CodexRequestCard>
 
   Future<void> _ignoreUserInput() async {
     final requestId = widget.cardData['requestId'];
-    if (requestId == null) return;
+    final sessionGeneration = _requestSessionGeneration(widget.cardData);
+    final serverRequestMethod = _requestServerMethod(widget.cardData);
+    if (requestId == null ||
+        sessionGeneration == null ||
+        serverRequestMethod == null) {
+      await _markRequestInvalidated();
+      return;
+    }
     await _submit(() {
-      return CodexAppServerService.ignoreUserInput(requestId: requestId);
+      return CodexAppServerService.ignoreUserInput(
+        requestId: requestId,
+        sessionGeneration: sessionGeneration,
+        serverRequestMethod: serverRequestMethod,
+      );
     }, 'ignored');
   }
 
   Future<void> _respondUserInput() async {
     final requestId = widget.cardData['requestId'];
+    final sessionGeneration = _requestSessionGeneration(widget.cardData);
+    final serverRequestMethod = _requestServerMethod(widget.cardData);
     final questionId = (widget.cardData['questionId'] ?? 'answer').toString();
-    if (requestId == null) return;
+    if (requestId == null ||
+        sessionGeneration == null ||
+        serverRequestMethod == null) {
+      await _markRequestInvalidated();
+      return;
+    }
     final customAnswer = _answerController.text.trim();
     final answer = customAnswer.isNotEmpty
         ? customAnswer
@@ -272,6 +326,8 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       () {
         return CodexAppServerService.respondToUserInput(
           requestId: requestId,
+          sessionGeneration: sessionGeneration,
+          serverRequestMethod: serverRequestMethod,
           questionId: questionId,
           answers: <String>[answer],
         );
@@ -283,29 +339,94 @@ class _CodexRequestCardState extends State<CodexRequestCard>
 
   Future<void> _submit(
     Future<Map<String, dynamic>> Function() action,
-    String successStatus, {
+    String submittedAction, {
     List<String> answers = const <String>[],
   }) async {
-    if (_isSubmitting) return;
+    if (_isSubmitting ||
+        _cardStatus(widget.cardData) != 'pending' ||
+        !_hasCompleteServerRequestIdentity(widget.cardData)) {
+      return;
+    }
     setState(() {
       _isSubmitting = true;
+      _submitErrorMessage = null;
     });
     try {
-      await action();
-      await _persistResponseStatus(successStatus, answers);
+      final result = await action();
+      if (result['ok'] == false) {
+        throw StateError(
+          (result['error'] ?? 'Server request response was rejected')
+              .toString(),
+        );
+      }
+      await _persistResponseStatus(
+        'response_sent',
+        answers,
+        submittedAction: submittedAction,
+        actionResult:
+            _firstText([result['actionResult']]) ?? 'response_sent',
+        resolved: false,
+      );
       if (!mounted) return;
       setState(() {
-        _localStatus = successStatus;
+        _localStatus = 'response_sent';
         _localAnswers = answers;
+        _localSubmittedAction = submittedAction;
+        _submitErrorMessage = null;
         _isSubmitting = false;
       });
-    } catch (_) {
+    } catch (error) {
+      final failure = _serverRequestFailureDisposition(error);
+      if (failure == _ServerRequestFailureDisposition.invalidated) {
+        await _markRequestInvalidated();
+        return;
+      }
+      if (failure == _ServerRequestFailureDisposition.responseSent) {
+        await _persistResponseStatus(
+          'response_sent',
+          const <String>[],
+          submittedAction: 'handled_elsewhere',
+          actionResult: 'already_responded',
+          resolved: false,
+        );
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _localStatus = 'response_sent';
+          _localAnswers = const <String>[];
+          _localSubmittedAction = 'handled_elsewhere';
+          _submitErrorMessage = null;
+          _isSubmitting = false;
+        });
+        return;
+      }
       if (!mounted) return;
       setState(() {
-        _localStatus = 'failed';
+        _localStatus = null;
+        _submitErrorMessage = _requestSubmitErrorText(error);
         _isSubmitting = false;
       });
     }
+  }
+
+  Future<void> _markRequestInvalidated() async {
+    await _persistResponseStatus(
+      'invalidated',
+      const <String>[],
+      actionResult: 'invalidated',
+      resolved: false,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _localStatus = 'invalidated';
+      _localAnswers = const <String>[];
+      _localSubmittedAction = null;
+      _submitErrorMessage = null;
+      _isSubmitting = false;
+    });
   }
 
   void _handleAnswerFocusChanged() {
@@ -364,7 +485,7 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       if (status == null || status.isEmpty) {
         return;
       }
-      if (!_isTerminalRequestStatus(status)) {
+      if (!_isRestorableRequestStatus(status)) {
         return;
       }
       final currentIdentity = _requestStorageIdentity(widget.cardData);
@@ -378,15 +499,37 @@ class _CodexRequestCardState extends State<CodexRequestCard>
           cachedIdentity != currentIdentity) {
         return;
       }
+      if (_cardStatus(widget.cardData) == 'pending' &&
+          _hasCompleteServerRequestIdentity(widget.cardData) &&
+          status != 'response_sent' &&
+          status != 'invalidated') {
+        return;
+      }
       _localStatus = status;
       _localAnswers = _stringList(decoded['answers']);
+      _localSubmittedAction = _firstText([decoded['submittedAction']]);
+      if (_cardStatus(widget.cardData) == 'pending' &&
+          (status == 'response_sent' || status == 'invalidated')) {
+        widget.cardData['status'] = status;
+        widget.cardData['submittedAnswers'] = _localAnswers;
+        if (_localSubmittedAction != null) {
+          widget.cardData['submittedAction'] = _localSubmittedAction;
+        }
+        if (decoded.containsKey('actionResult')) {
+          widget.cardData['actionResult'] = decoded['actionResult'];
+        }
+        if (decoded.containsKey('resolved')) {
+          widget.cardData['resolved'] = decoded['resolved'];
+        }
+      }
     } catch (_) {
       return;
     }
   }
 
   void _syncDefaultSelection() {
-    if (_cardStatus(widget.cardData) != 'pending') {
+    if (_cardStatus(widget.cardData) != 'pending' ||
+        !_hasCompleteServerRequestIdentity(widget.cardData)) {
       return;
     }
     final options = _resolveRequestOptions(widget.cardData);
@@ -401,26 +544,52 @@ class _CodexRequestCardState extends State<CodexRequestCard>
 
   Future<void> _persistResponseStatus(
     String status,
-    List<String> answers,
-  ) async {
+    List<String> answers, {
+    String? submittedAction,
+    String? actionResult,
+    bool? resolved,
+  }) async {
     final nextCardData = Map<String, dynamic>.from(widget.cardData)
       ..['status'] = status
       ..['submittedAnswers'] = answers;
+    if (submittedAction != null && submittedAction.isNotEmpty) {
+      nextCardData['submittedAction'] = submittedAction;
+    }
+    if (actionResult != null && actionResult.isNotEmpty) {
+      nextCardData['actionResult'] = actionResult;
+    }
+    if (resolved != null) {
+      nextCardData['resolved'] = resolved;
+    }
     widget.cardData['status'] = status;
     widget.cardData['submittedAnswers'] = answers;
+    if (submittedAction != null && submittedAction.isNotEmpty) {
+      widget.cardData['submittedAction'] = submittedAction;
+    }
+    if (actionResult != null && actionResult.isNotEmpty) {
+      widget.cardData['actionResult'] = actionResult;
+    }
+    if (resolved != null) {
+      widget.cardData['resolved'] = resolved;
+    }
 
     final conversationId = _asInt(widget.cardData['conversationId']);
     final cardId = (widget.cardData['cardId'] ?? widget.cardData['id'] ?? '')
         .toString()
         .trim();
     if (conversationId != null && cardId.isNotEmpty) {
-      await ConversationHistoryService.upsertConversationUiCard(
-        conversationId,
-        entryId: cardId,
-        cardData: nextCardData,
-        createdAtMillis: _asInt(widget.cardData['startTime']),
-        mode: ConversationMode.codex,
-      );
+      try {
+        await ConversationHistoryService.upsertConversationUiCard(
+          conversationId,
+          entryId: cardId,
+          cardData: nextCardData,
+          createdAtMillis: _asInt(widget.cardData['startTime']),
+          mode: ConversationMode.codex,
+        );
+      } catch (_) {
+        // The server response already succeeded. A local history write failure
+        // must not make the approval actionable again.
+      }
     }
     try {
       final identity = _requestStorageIdentity(widget.cardData);
@@ -430,6 +599,11 @@ class _CodexRequestCardState extends State<CodexRequestCard>
           'identity': identity,
           'status': status,
           'answers': answers,
+          if (submittedAction != null && submittedAction.isNotEmpty)
+            'submittedAction': submittedAction,
+          if (actionResult != null && actionResult.isNotEmpty)
+            'actionResult': actionResult,
+          if (resolved != null) 'resolved': resolved,
         }),
       );
     } catch (_) {
@@ -609,6 +783,7 @@ class _RequestFooter extends StatelessWidget {
     required this.kind,
     required this.status,
     required this.answers,
+    required this.submittedAction,
     required this.isPending,
     required this.isSubmitting,
     required this.canSubmit,
@@ -621,6 +796,7 @@ class _RequestFooter extends StatelessWidget {
   final String kind;
   final String status;
   final List<String> answers;
+  final String? submittedAction;
   final bool isPending;
   final bool isSubmitting;
   final bool canSubmit;
@@ -648,8 +824,26 @@ class _RequestFooter extends StatelessWidget {
       );
     }
     if (status != 'pending') {
+      final visibleAction =
+          answers.isNotEmpty && submittedAction == 'submitted'
+          ? null
+          : submittedAction;
+      final statusLabel = switch (status) {
+        'response_sent' when submittedAction == 'handled_elsewhere' =>
+          isEnglish
+              ? 'Handled in another view — waiting for server'
+              : '已在另一视图响应，等待服务端确认',
+        'response_sent' => isEnglish
+            ? 'Response sent${visibleAction == null ? '' : ': $visibleAction'}'
+            : '已发送响应${visibleAction == null ? '' : '：$visibleAction'}',
+        'resolved' => isEnglish ? 'Resolved' : '已处理',
+        'invalidated' => isEnglish
+            ? 'Expired — retry the action'
+            : '已失效，请重新触发',
+        _ => status,
+      };
       return Text(
-        answers.isEmpty ? status : '$status: ${answers.join(', ')}',
+        answers.isEmpty ? statusLabel : '$statusLabel: ${answers.join(', ')}',
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w600,
@@ -827,7 +1021,9 @@ String _requestStorageKey(Map<String, dynamic> cardData) {
 
 String _requestStorageIdentity(Map<String, dynamic> cardData) {
   final parts = <String>[
-    (cardData['requestId'] ?? '').toString().trim(),
+    (cardData['sessionGeneration'] ?? '').toString().trim(),
+    (cardData['serverRequestMethod'] ?? '').toString().trim(),
+    _requestIdStorageKey(cardData['requestId']) ?? '',
     (cardData['cardId'] ?? cardData['id'] ?? '').toString().trim(),
     (cardData['questionId'] ?? '').toString().trim(),
     (cardData['startTime'] ?? '').toString().trim(),
@@ -858,7 +1054,84 @@ bool _isTerminalRequestStatus(String? status) {
   return status == 'submitted' ||
       status == 'ignored' ||
       status == 'accepted' ||
-      status == 'declined';
+      status == 'declined' ||
+      status == 'resolved' ||
+      status == 'invalidated';
+}
+
+bool _isRestorableRequestStatus(String? status) {
+  return _isTerminalRequestStatus(status) || status == 'response_sent';
+}
+
+bool _hasCompleteServerRequestIdentity(Map<String, dynamic> cardData) {
+  return _requestIdStorageKey(cardData['requestId']) != null &&
+      _requestSessionGeneration(cardData) != null &&
+      _requestServerMethod(cardData) != null;
+}
+
+String? _requestIdStorageKey(dynamic requestId) {
+  if (requestId is String) {
+    return 'string:$requestId';
+  }
+  if (requestId is num) {
+    return 'number:$requestId';
+  }
+  return null;
+}
+
+int? _requestSessionGeneration(Map<String, dynamic> cardData) {
+  final value = _asInt(cardData['sessionGeneration']);
+  return value != null && value >= 0 ? value : null;
+}
+
+String? _requestServerMethod(Map<String, dynamic> cardData) {
+  final method = cardData['serverRequestMethod']?.toString().trim() ?? '';
+  return method.isEmpty ? null : method;
+}
+
+enum _ServerRequestFailureDisposition {
+  invalidated,
+  responseSent,
+  retryable,
+}
+
+_ServerRequestFailureDisposition _serverRequestFailureDisposition(
+  Object error,
+) {
+  if (error is PlatformException) {
+    final code = error.code.trim().toUpperCase();
+    return switch (code) {
+      'CODEX_SERVER_REQUEST_GENERATION_REQUIRED' ||
+      'CODEX_STALE_SERVER_REQUEST' ||
+      'CODEX_SERVER_REQUEST_METHOD_REQUIRED' ||
+      'CODEX_SERVER_REQUEST_METHOD_MISMATCH' ||
+      'CODEX_SERVER_REQUEST_NOT_PENDING' =>
+        _ServerRequestFailureDisposition.invalidated,
+      'CODEX_SERVER_REQUEST_ALREADY_RESPONDED' =>
+        _ServerRequestFailureDisposition.responseSent,
+      'CODEX_SERVER_DISCONNECTED' ||
+      'CODEX_SERVER_RESPONSE_WRITE_FAILED' =>
+        _ServerRequestFailureDisposition.retryable,
+      _ => _ServerRequestFailureDisposition.retryable,
+    };
+  }
+  final text = error.toString().toLowerCase();
+  if (text.contains('session generation') ||
+      text.contains('invalidated') ||
+      text.contains('stale server request') ||
+      text.contains('no longer pending')) {
+    return _ServerRequestFailureDisposition.invalidated;
+  }
+  return _ServerRequestFailureDisposition.retryable;
+}
+
+String _requestSubmitErrorText(Object error) {
+  final raw = error is PlatformException
+      ? (error.message ?? error.code)
+      : error.toString();
+  final normalized = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+  final text = normalized.isEmpty ? 'Failed to send response. Retry.' : normalized;
+  return text.length <= 180 ? text : '${text.substring(0, 180)}…';
 }
 
 String _requestVisibleDetail(String title, String detail) {

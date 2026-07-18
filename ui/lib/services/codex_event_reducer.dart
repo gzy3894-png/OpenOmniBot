@@ -47,6 +47,29 @@ class CodexEventReducer {
     }
 
     final params = _eventParams(event: event, message: message, method: method);
+    final sessionGeneration = _firstInt([
+      event['sessionGeneration'],
+      event['session_generation'],
+      event['oldGeneration'],
+      event['old_generation'],
+      message['sessionGeneration'],
+      message['session_generation'],
+      message['oldGeneration'],
+      message['old_generation'],
+      params['sessionGeneration'],
+      params['session_generation'],
+      params['oldGeneration'],
+      params['old_generation'],
+    ]);
+    final serverRequestMethod = _firstString([
+      event['serverRequestMethod'],
+      event['server_request_method'],
+      message['serverRequestMethod'],
+      message['server_request_method'],
+      params['serverRequestMethod'],
+      params['server_request_method'],
+      if (_isCodexServerRequestMethod(method)) method,
+    ]);
     final threadId = _firstString([
       event['threadId'],
       params['threadId'],
@@ -90,6 +113,90 @@ class CodexEventReducer {
       }
     }
 
+    if (method == 'serverRequest/resolved' ||
+        method == 'serverRequest/invalidated') {
+      final requestId =
+          event['requestId'] ??
+          event['request_id'] ??
+          params['requestId'] ??
+          params['request_id'] ??
+          message['requestId'] ??
+          message['request_id'];
+      final resolved = method == 'serverRequest/resolved';
+      final updated = _applyServerRequestLifecycle(
+        runtime,
+        requestId: requestId,
+        sessionGeneration: sessionGeneration,
+        serverRequestMethod: serverRequestMethod,
+        status: resolved ? 'resolved' : 'invalidated',
+        reason: _firstString([
+          event['reason'],
+          params['reason'],
+          message['reason'],
+        ]),
+        actionResult: _firstString([
+          event['actionResult'],
+          params['actionResult'],
+          message['actionResult'],
+        ]),
+      );
+      unawaited(
+        DebugFileLog.logApproval(
+          resolved ? 'resolved' : 'invalidated',
+          requestId: _string(requestId),
+          threadId: threadId,
+          serverRequestMethod: serverRequestMethod,
+          sessionGeneration: sessionGeneration,
+          success: updated,
+          summary: _firstString([
+            event['reason'],
+            params['reason'],
+            event['actionResult'],
+            params['actionResult'],
+          ]),
+        ),
+      );
+      return CodexReduceResult(
+        handled: true,
+        method: method,
+        threadId: threadId,
+        turnId: turnId,
+        requestId: requestId,
+      );
+    }
+
+    if (method == 'item/autoApprovalReview/started' ||
+        method == 'item/autoApprovalReview/completed') {
+      final review = _asStringMap(params['review']);
+      final completed = method.endsWith('/completed');
+      unawaited(
+        DebugFileLog.logApproval(
+          completed ? 'auto_review_completed' : 'auto_review_started',
+          threadId: threadId,
+          reviewId: _firstString([
+            params['reviewId'],
+            params['review_id'],
+          ]),
+          status: _firstString([
+            review?['status'],
+            params['status'],
+            completed ? 'completed' : 'started',
+          ]),
+          decisionSource: _firstString([
+            params['decisionSource'],
+            params['decision_source'],
+          ]),
+          summary: _approvalReviewSummary(params),
+        ),
+      );
+      return CodexReduceResult(
+        handled: true,
+        method: method,
+        threadId: threadId,
+        turnId: turnId,
+      );
+    }
+
     if (method == 'turn/started') {
       _touchActiveTurn(runtime, parentTaskId);
       return CodexReduceResult(
@@ -101,6 +208,29 @@ class CodexEventReducer {
     }
 
     if (method == 'thread/settings/updated') {
+      final settings = _threadSettingsMap(params);
+      final approvalPolicy = _firstString([
+        settings['approvalPolicy'],
+        settings['approval_policy'],
+      ]);
+      final approvalsReviewer = _firstString([
+        settings['approvalsReviewer'],
+        settings['approvals_reviewer'],
+      ]);
+      final sandboxType = _sandboxTypeFromSettings(settings);
+      if (approvalPolicy != null ||
+          approvalsReviewer != null ||
+          sandboxType != null) {
+        unawaited(
+          DebugFileLog.logApproval(
+            'effective_settings',
+            threadId: threadId,
+            approvalPolicy: approvalPolicy,
+            approvalsReviewer: approvalsReviewer,
+            sandboxType: sandboxType,
+          ),
+        );
+      }
       return CodexReduceResult(
         handled: true,
         method: method,
@@ -246,8 +376,18 @@ class CodexEventReducer {
           ),
         );
       } else if (itemType.contains('requestApproval')) {
-        final cardId = '$startedItemId-codex-approval';
-        final approvalRequestId = params['requestId'] ?? message['id'];
+        final approvalRequestId =
+            event['requestId'] ??
+            event['request_id'] ??
+            params['requestId'] ??
+            params['request_id'] ??
+            message['id'];
+        final cardId = _serverRequestCardId(
+          fallbackId: startedItemId,
+          requestId: approvalRequestId,
+          sessionGeneration: sessionGeneration,
+          suffix: 'approval',
+        );
         final approvalTitle = _approvalTitle(itemType, item);
         final approvalDetail = _approvalDetail(item);
         _upsertCodexRequestCard(
@@ -260,6 +400,8 @@ class CodexEventReducer {
           detail: approvalDetail,
           params: item,
           threadId: threadId,
+          sessionGeneration: sessionGeneration,
+          serverRequestMethod: serverRequestMethod,
           streamMeta: _streamMeta(
             runtime,
             parentTaskId: parentTaskId,
@@ -275,21 +417,37 @@ class CodexEventReducer {
             title: approvalTitle,
             detail: approvalDetail,
             method: itemType,
+            sessionGeneration: sessionGeneration,
+            serverRequestMethod: serverRequestMethod,
           );
         }
       } else if (itemType.contains('requestUserInput')) {
         final question = _firstQuestion(item);
-        final cardId = '$startedItemId-codex-user-input';
+        final userInputRequestId =
+            event['requestId'] ??
+            event['request_id'] ??
+            params['requestId'] ??
+            params['request_id'] ??
+            message['id'] ??
+            item['id'];
+        final cardId = _serverRequestCardId(
+          fallbackId: startedItemId,
+          requestId: userInputRequestId,
+          sessionGeneration: sessionGeneration,
+          suffix: 'user-input',
+        );
         _upsertCodexRequestCard(
           runtime,
           cardId: cardId,
           taskId: parentTaskId,
-          requestId: params['requestId'] ?? message['id'] ?? item['id'],
+          requestId: userInputRequestId,
           requestKind: 'user_input',
           title: question.title,
           detail: question.detail,
           questionId: question.id,
           params: item,
+          sessionGeneration: sessionGeneration,
+          serverRequestMethod: serverRequestMethod,
           streamMeta: _streamMeta(
             runtime,
             parentTaskId: parentTaskId,
@@ -303,7 +461,12 @@ class CodexEventReducer {
         method: method,
         threadId: threadId,
         turnId: turnId,
-        requestId: params['requestId'] ?? message['id'],
+        requestId:
+            event['requestId'] ??
+            event['request_id'] ??
+            params['requestId'] ??
+            params['request_id'] ??
+            message['id'],
       );
     }
 
@@ -501,8 +664,18 @@ class CodexEventReducer {
     }
 
     if (method.endsWith('requestApproval')) {
-      final requestId = message['id'] ?? params['requestId'];
-      final cardId = '${requestId ?? itemId ?? parentTaskId}-codex-approval';
+      final requestId =
+          event['requestId'] ??
+          event['request_id'] ??
+          message['id'] ??
+          params['requestId'] ??
+          params['request_id'];
+      final cardId = _serverRequestCardId(
+        fallbackId: itemId ?? parentTaskId,
+        requestId: requestId,
+        sessionGeneration: sessionGeneration,
+        suffix: 'approval',
+      );
       final approvalTitle = _approvalTitle(method, params);
       final approvalDetail = _approvalDetail(params);
       _upsertCodexRequestCard(
@@ -515,6 +688,8 @@ class CodexEventReducer {
         detail: approvalDetail,
         params: params,
         threadId: threadId,
+        sessionGeneration: sessionGeneration,
+        serverRequestMethod: serverRequestMethod,
         streamMeta: _streamMeta(
           runtime,
           parentTaskId: parentTaskId,
@@ -528,6 +703,8 @@ class CodexEventReducer {
         title: approvalTitle,
         detail: approvalDetail,
         method: method,
+        sessionGeneration: sessionGeneration,
+        serverRequestMethod: serverRequestMethod,
       );
       return CodexReduceResult(
         handled: true,
@@ -539,9 +716,19 @@ class CodexEventReducer {
     }
 
     if (method == 'item/tool/requestUserInput') {
-      final requestId = message['id'];
+      final requestId =
+          event['requestId'] ??
+          event['request_id'] ??
+          message['id'] ??
+          params['requestId'] ??
+          params['request_id'];
       final question = _firstQuestion(params);
-      final cardId = '${requestId ?? itemId ?? parentTaskId}-codex-user-input';
+      final cardId = _serverRequestCardId(
+        fallbackId: itemId ?? parentTaskId,
+        requestId: requestId,
+        sessionGeneration: sessionGeneration,
+        suffix: 'user-input',
+      );
       _upsertCodexRequestCard(
         runtime,
         cardId: cardId,
@@ -552,6 +739,8 @@ class CodexEventReducer {
         detail: question.detail,
         questionId: question.id,
         params: params,
+        sessionGeneration: sessionGeneration,
+        serverRequestMethod: serverRequestMethod,
         streamMeta: _streamMeta(
           runtime,
           parentTaskId: parentTaskId,
@@ -1848,12 +2037,83 @@ class CodexEventReducer {
     runtime.lastAgentToolType = effectiveToolType;
   }
 
+  bool _applyServerRequestLifecycle(
+    ChatConversationRuntimeState runtime, {
+    required Object? requestId,
+    required int? sessionGeneration,
+    required String? serverRequestMethod,
+    required String status,
+    String? reason,
+    String? actionResult,
+  }) {
+    final requestIdKey = _serverRequestIdKey(requestId);
+    if (requestIdKey == null || sessionGeneration == null) {
+      return false;
+    }
+    final normalizedMethod = serverRequestMethod?.trim();
+    var matched = false;
+    for (var index = 0; index < runtime.messages.length; index += 1) {
+      final message = runtime.messages[index];
+      final existing = message.cardData;
+      if (existing?['type'] != 'codex_request' ||
+          _serverRequestIdKey(existing?['requestId']) != requestIdKey ||
+          _asInt(existing?['sessionGeneration']) != sessionGeneration) {
+        continue;
+      }
+      final cardMethod =
+          _string(existing?['serverRequestMethod'])?.trim() ?? '';
+      if (normalizedMethod != null &&
+          normalizedMethod.isNotEmpty &&
+          cardMethod != normalizedMethod) {
+        continue;
+      }
+      matched = true;
+      final currentStatus =
+          _normalizeRequestStatus(
+            existing?['status'],
+            requestKind:
+                _string(existing?['requestKind']) ?? 'approval',
+          ) ??
+          'pending';
+      if (currentStatus == 'invalidated' ||
+          (currentStatus == 'resolved' && status == 'invalidated')) {
+        continue;
+      }
+      if (currentStatus == status) {
+        continue;
+      }
+      final cardData = Map<String, dynamic>.from(existing!)
+        ..['status'] = status
+        ..['resolved'] = status == 'resolved'
+        ..['actionResult'] =
+            actionResult ??
+            (status == 'resolved' ? 'resolved' : 'invalidated')
+        ..['endTime'] = DateTime.now().millisecondsSinceEpoch;
+      if (reason != null && reason.isNotEmpty) {
+        cardData['invalidationReason'] = reason;
+      }
+      final streamMeta = message.streamMeta == null
+          ? null
+          : <String, dynamic>{
+              ...message.streamMeta!,
+              'isFinal': true,
+            };
+      runtime.messages[index] = message.copyWith(
+        content: {'cardData': cardData, 'id': message.id},
+        streamMeta: streamMeta,
+      );
+    }
+    return matched;
+  }
+
   void _logApprovalPrompt({
     required Object? requestId,
     String? threadId,
     required String title,
     required String detail,
     String? method,
+    int? sessionGeneration,
+    String? serverRequestMethod,
   }) {
     final id = _string(requestId)?.trim();
     final summaryParts = <String>[
@@ -1872,6 +2132,11 @@ class CodexEventReducer {
         requestId: id,
         threadId: threadId,
         summary: summary,
+        sessionGeneration: sessionGeneration,
+        serverRequestMethod: serverRequestMethod,
+        approvalKind: _approvalKindFromMethod(
+          serverRequestMethod ?? method,
+        ),
       ),
     );
   }
@@ -1888,6 +2153,8 @@ class CodexEventReducer {
     required Map<String, dynamic> streamMeta,
     String? questionId,
     String? threadId,
+    int? sessionGeneration,
+    String? serverRequestMethod,
   }) {
     _touchActiveTurn(runtime, taskId);
     final index = runtime.messages.indexWhere(
@@ -1899,20 +2166,38 @@ class CodexEventReducer {
       cardId,
       existingMessage: existing,
     );
-    final existingRequestId = _string(existing?.cardData?['requestId'])?.trim();
-    final nextRequestId = _string(requestId)?.trim();
+    final existingRequestIdKey = _serverRequestIdKey(
+      existing?.cardData?['requestId'],
+    );
+    final nextRequestIdKey = _serverRequestIdKey(requestId);
+    final existingGeneration = _asInt(
+      existing?.cardData?['sessionGeneration'],
+    );
+    final existingMethod = _string(
+      existing?.cardData?['serverRequestMethod'],
+    )?.trim();
     final shouldPreserveExistingStatus =
-        nextRequestId != null &&
-        nextRequestId.isNotEmpty &&
-        existingRequestId == nextRequestId;
+        nextRequestIdKey != null &&
+        existingRequestIdKey == nextRequestIdKey &&
+        existingGeneration == sessionGeneration &&
+        existingMethod == serverRequestMethod?.trim();
     final existingCardData = existing?.cardData ?? const <String, dynamic>{};
-    final status = _resolveRequestStatus(
+    final hasServerRequestIdentity =
+        nextRequestIdKey != null &&
+        sessionGeneration != null &&
+        serverRequestMethod != null &&
+        serverRequestMethod.trim().isNotEmpty;
+    var status = _resolveRequestStatus(
       requestKind: requestKind,
       params: params,
+      serverManaged: hasServerRequestIdentity,
       existingStatus: shouldPreserveExistingStatus
           ? existingCardData['status']
           : null,
     );
+    if (!hasServerRequestIdentity && status == 'pending') {
+      status = 'invalidated';
+    }
     final resolvedThreadId =
         (threadId != null && threadId.trim().isNotEmpty)
         ? threadId.trim()
@@ -1927,12 +2212,33 @@ class CodexEventReducer {
       'questionId': questionId,
       'rawParamsJson': _safeJson(params),
       'status': status,
+      if (sessionGeneration != null)
+        'sessionGeneration': sessionGeneration,
+      if (serverRequestMethod != null &&
+          serverRequestMethod.trim().isNotEmpty)
+        'serverRequestMethod': serverRequestMethod.trim(),
+      if (requestKind == 'approval')
+        'approvalKind': _approvalKindFromMethod(serverRequestMethod),
       'conversationId': runtime.conversationId,
       'cardId': cardId,
       'startTime': startTime,
       if (resolvedThreadId != null && resolvedThreadId.isNotEmpty)
         'threadId': resolvedThreadId,
     };
+    if (shouldPreserveExistingStatus) {
+      for (final key in const <String>[
+        'submittedAction',
+        'submittedAnswers',
+        'resolved',
+        'actionResult',
+        'invalidationReason',
+        'endTime',
+      ]) {
+        if (existingCardData.containsKey(key)) {
+          cardData[key] = existingCardData[key];
+        }
+      }
+    }
     final message = ChatMessageModel(
       id: cardId,
       type: 2,
@@ -1955,13 +2261,20 @@ class CodexEventReducer {
   String _resolveRequestStatus({
     required String requestKind,
     required Map<String, dynamic> params,
+    required bool serverManaged,
     required dynamic existingStatus,
   }) {
     final existing = _normalizeRequestStatus(
       existingStatus,
       requestKind: requestKind,
     );
-    if (_isTerminalRequestStatus(existing)) {
+    if (serverManaged) {
+      if (existing == 'resolved' ||
+          existing == 'invalidated' ||
+          existing == 'response_sent') {
+        return existing!;
+      }
+    } else if (_isTerminalRequestStatus(existing)) {
       return existing!;
     }
     final explicit = _normalizeRequestStatus(
@@ -1975,7 +2288,7 @@ class CodexEventReducer {
       ]),
       requestKind: requestKind,
     );
-    if (explicit != null && explicit != 'pending') {
+    if (!serverManaged && explicit != null && explicit != 'pending') {
       return explicit;
     }
     final response =
@@ -1984,7 +2297,7 @@ class CodexEventReducer {
         params['answers'] ??
         params['result'] ??
         params['decision'];
-    if (response != null) {
+    if (!serverManaged && response != null) {
       if (requestKind == 'approval') {
         final decision = _firstString([
           response,
@@ -2029,6 +2342,9 @@ class CodexEventReducer {
       'complete' ||
       'completed' => requestKind == 'approval' ? 'accepted' : 'submitted',
       'fail' || 'failed' || 'error' => 'failed',
+      'response_sent' || 'responded' => 'response_sent',
+      'resolved' => 'resolved',
+      'invalidated' || 'expired' || 'stale' => 'invalidated',
       'pending' || 'running' || 'requested' || 'open' => 'pending',
       _ => normalized,
     };
@@ -2037,7 +2353,9 @@ class CodexEventReducer {
   bool _isTerminalRequestStatus(String? status) {
     return status == 'submitted' ||
         status == 'accepted' ||
-        status == 'declined';
+        status == 'declined' ||
+        status == 'resolved' ||
+        status == 'invalidated';
   }
 
   String? _deduplicateReplayDelta(
@@ -3990,6 +4308,114 @@ String? _effortFromThreadSettings(Map<String, dynamic> params) {
     params['reasoningEffort'],
     params['reasoning_effort'],
   ]);
+}
+
+int? _firstInt(Iterable<dynamic> values) {
+  for (final value in values) {
+    final parsed = _asInt(value);
+    if (parsed != null) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+bool _isCodexServerRequestMethod(String method) {
+  return method == 'item/commandExecution/requestApproval' ||
+      method == 'item/fileChange/requestApproval' ||
+      method == 'item/permissions/requestApproval' ||
+      method == 'item/tool/requestUserInput';
+}
+
+String _serverRequestCardId({
+  required String fallbackId,
+  required Object? requestId,
+  required int? sessionGeneration,
+  required String suffix,
+}) {
+  final identity = _serverRequestIdKey(requestId);
+  final base = identity ?? 'fallback:$fallbackId';
+  final generation = sessionGeneration == null
+      ? 'legacy'
+      : 'g$sessionGeneration';
+  return '$generation-$base-codex-$suffix';
+}
+
+String? _serverRequestIdKey(Object? requestId) {
+  if (requestId is String) {
+    return 'string:$requestId';
+  }
+  if (requestId is num) {
+    return 'number:$requestId';
+  }
+  return null;
+}
+
+String? _approvalKindFromMethod(String? method) {
+  return switch (method?.trim()) {
+    'item/commandExecution/requestApproval' => 'commandExecution',
+    'item/fileChange/requestApproval' => 'fileChange',
+    'item/permissions/requestApproval' => 'permissions',
+    _ => null,
+  };
+}
+
+String? _sandboxTypeFromSettings(Map<String, dynamic> settings) {
+  final sandbox =
+      settings['sandboxPolicy'] ??
+      settings['sandbox_policy'] ??
+      settings['sandbox'];
+  final map = _asStringMap(sandbox);
+  return _firstString([
+    map?['type'],
+    map?['kind'],
+    if (sandbox is String) sandbox,
+  ]);
+}
+
+String? _approvalReviewSummary(Map<String, dynamic> params) {
+  final review = _asStringMap(params['review']);
+  final action = _asStringMap(params['action']);
+  final parts = <String>[];
+  final target = _firstString([
+    params['targetItemId'],
+    params['target_item_id'],
+  ]);
+  final status = _firstString([review?['status'], params['status']]);
+  final risk = _firstString([
+    review?['riskLevel'],
+    review?['risk_level'],
+  ]);
+  final actionType = _firstString([
+    action?['type'],
+    action?['kind'],
+    if (params['action'] is String) params['action'],
+  ]);
+  final source = _firstString([action?['source']]);
+  final rationale = _firstString([review?['rationale']]);
+  if (target != null) {
+    parts.add('target=$target');
+  }
+  if (status != null) {
+    parts.add('status=$status');
+  }
+  if (risk != null) {
+    parts.add('risk=$risk');
+  }
+  if (actionType != null) {
+    parts.add('action=$actionType');
+  }
+  if (source != null) {
+    parts.add('source=$source');
+  }
+  if (rationale != null) {
+    parts.add(rationale);
+  }
+  if (parts.isEmpty) {
+    return null;
+  }
+  final summary = parts.join(' | ');
+  return summary.length <= 240 ? summary : '${summary.substring(0, 240)}…';
 }
 
 int? _asInt(dynamic value) {
