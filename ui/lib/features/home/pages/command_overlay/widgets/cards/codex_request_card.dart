@@ -360,6 +360,7 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     });
     try {
       final result = await action();
+      if (!mounted) return null;
       if (result['ok'] == false) {
         throw StateError(
           (result['error'] ?? 'Server request response was rejected')
@@ -400,6 +401,7 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       });
       return null;
     } catch (error) {
+      if (!mounted) return error;
       final failure = _serverRequestFailureDisposition(error);
       if (failure == _ServerRequestFailureDisposition.invalidated) {
         if (_hasRequestIdentity(requestIdentity)) {
@@ -613,6 +615,9 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     bool? resolved,
     String? expectedIdentity,
   }) async {
+    if (!mounted) {
+      return false;
+    }
     final requestIdentity =
         expectedIdentity ?? _requestStorageIdentity(widget.cardData);
     final current = _requestSnapshotForIdentity(requestIdentity);
@@ -639,8 +644,24 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     if (resolved != null) {
       snapshot['resolved'] = resolved;
     }
-    await _persistConversationSnapshot(snapshot);
-    await _persistStorageSnapshot(snapshot);
+    if (_isTerminalRequestStatus(status)) {
+      // A terminal snapshot was derived while this State was still mounted.
+      // Finish both writes even if disposal happens during the first await so
+      // history and the response cache cannot disagree about the terminal.
+      await _persistTerminalSnapshot(snapshot);
+      if (!mounted) {
+        return false;
+      }
+    } else {
+      await _persistConversationSnapshot(snapshot);
+      if (!mounted) {
+        return false;
+      }
+      await _persistStorageSnapshot(snapshot);
+      if (!mounted) {
+        return false;
+      }
+    }
     final terminalCorrection = _terminalCorrectionAfter(
       requestIdentity,
       snapshot,

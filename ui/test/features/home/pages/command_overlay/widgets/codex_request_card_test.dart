@@ -800,6 +800,10 @@ void main() {
   testWidgets('approval RPC may complete after the card is disposed', (
     tester,
   ) async {
+    const disposedStorageKey =
+        'codex_request_response.9.'
+        'item/commandExecution/requestApproval.number:75.'
+        'approval-75.2000';
     final response = Completer<Map<String, dynamic>>();
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -826,6 +830,48 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
+    expect(StorageService.getString(disposedStorageKey), isNull);
+  });
+
+  testWidgets('stale RPC error cannot persist after the card is disposed', (
+    tester,
+  ) async {
+    const disposedStorageKey =
+        'codex_request_response.9.'
+        'item/commandExecution/requestApproval.number:79.'
+        'approval-79.2000';
+    final response = Completer<Map<String, dynamic>>();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(codexChannel, (call) => response.future);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodexRequestCard(
+            cardData: _approvalCardData(
+              requestId: 79,
+              method: 'item/commandExecution/requestApproval',
+              params: const <String, dynamic>{'command': 'pwd'},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Accept'));
+    await tester.pump();
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+
+    response.completeError(
+      PlatformException(
+        code: 'CODEX_STALE_SERVER_REQUEST',
+        message: 'Session generation does not match',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(StorageService.getString(disposedStorageKey), isNull);
   });
 
   testWidgets('zero generation request is expired without a native call', (

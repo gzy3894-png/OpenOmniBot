@@ -80,6 +80,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _applyCodexStatusSnapshot(status);
         _isCodexStatusLoading = false;
       });
+      _drainDeferredCodexServerRequestEvents();
       if (_activeMode == ChatPageMode.codex) {
         unawaited(_loadCodexModelOptionsWhenReady());
       }
@@ -131,6 +132,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       );
       _isCodexStatusLoading = false;
     });
+    _drainDeferredCodexServerRequestEvents();
     if (!status.ready) {
       if (status.remoteEnabled) {
         _showSnackBar(
@@ -3547,6 +3549,9 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
 
   @override
   void _handleCodexAppServerEvent(Map<String, dynamic> event) {
+    if (!mounted) {
+      return;
+    }
     final diagnosticMethod = _diagnosticEventMethod(event);
     _codexEventDiagnosticCounter.update(
       diagnosticMethod,
@@ -3571,12 +3576,36 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         '${_codexEventDiagnosticCounter.entries.map((e) => '${e.key}:${e.value}').join(', ')}',
       );
     }
-    final remoteCodex = _isRemoteCodexConfigured();
-    final eventThreadId = _codexEventThreadId(event);
-    final explicitConversationId = _asCodexInt(event['conversationId']);
-    final mappedRemoteConversationId = remoteCodex && eventThreadId != null
-        ? _remoteCodexRuntimeId(eventThreadId)
-        : null;
+    // Lifecycle events always enter their request-owned FIFO before routing.
+    // This keeps a terminal event behind the same request's pending replay,
+    // while unrelated app-server events retain their live path.
+    if (_deferredCodexServerRequestEvents.add(event)) {
+      _drainDeferredCodexServerRequestEvents();
+      return;
+    }
+    _tryRouteCodexAppServerEvent(
+      event,
+      diagnosticMethod: diagnosticMethod,
+    );
+  }
+
+  bool _tryRouteCodexAppServerEvent(
+    Map<String, dynamic> event, {
+    String? diagnosticMethod,
+    bool deferredOnMissingConversation = false,
+  }) {
+    final resolvedDiagnosticMethod =
+        diagnosticMethod ?? _diagnosticEventMethod(event);
+    final routeDecision = decideCodexAppServerEventRoute(
+      status: _codexStatus,
+      event: event,
+      currentConversationId:
+          _currentConversationIdByMode[ChatPageMode.codex],
+    );
+    final remoteCodex = routeDecision.remoteCodex;
+    final eventThreadId = routeDecision.eventThreadId;
+    final mappedRemoteConversationId =
+        routeDecision.mappedRemoteConversationId;
     final shouldPromoteRemoteEvent =
         remoteCodex &&
         eventThreadId != null &&
@@ -3584,18 +3613,23 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           threadId: eventThreadId,
           runtimeId: mappedRemoteConversationId!,
         );
-    final conversationId =
-        explicitConversationId ??
-        (shouldPromoteRemoteEvent
-            ? _activateRemoteCodexRuntimeForThread(eventThreadId)
-            : mappedRemoteConversationId) ??
-        _currentConversationIdByMode[ChatPageMode.codex];
+    final promotedRemoteConversationId =
+        routeDecision.explicitConversationId == null &&
+            shouldPromoteRemoteEvent
+        ? _activateRemoteCodexRuntimeForThread(eventThreadId)
+        : null;
+    final conversationId = routeDecision.resolve(
+      promotedRemoteConversationId: promotedRemoteConversationId,
+    );
     if (conversationId == null) {
+      final disposition = deferredOnMissingConversation
+          ? 'deferring'
+          : 'dropping';
       debugPrint(
-        '[Codex] dropping $diagnosticMethod — no conversationId '
+        '[Codex] $disposition $resolvedDiagnosticMethod — no conversationId '
         '(remoteCodex=$remoteCodex, eventThreadId=$eventThreadId)',
       );
-      return;
+      return false;
     }
     if (remoteCodex && eventThreadId != null && !shouldPromoteRemoteEvent) {
       _ensureRemoteCodexRuntimeForThread(eventThreadId);
@@ -3616,7 +3650,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       if (threadId != null && threadId.trim().isNotEmpty) {
         _bindActiveCodexThreadId(
           threadId,
-          source: 'event.$diagnosticMethod',
+          source: 'event.$resolvedDiagnosticMethod',
           conversationId: conversationId,
         );
       }
@@ -3629,7 +3663,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     // B2: live goal notifications (thread/goal/updated|cleared).
     if (isVisibleConversation) {
-      final goalMethod = diagnosticMethod;
+      final goalMethod = resolvedDiagnosticMethod;
       final isGoalUpdated =
           goalMethod == 'thread/goal/updated' ||
           goalMethod == 'thread.goal.updated' ||
@@ -3667,8 +3701,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     // B12/B17: official compact completion → tip + snackbar + DebugFileLog.
     // Keep method matching: thread/compacted | thread.compacted (diagnostic + result).
     if (isVisibleConversation &&
-        (diagnosticMethod == 'thread/compacted' ||
-            diagnosticMethod == 'thread.compacted' ||
+        (resolvedDiagnosticMethod == 'thread/compacted' ||
+            resolvedDiagnosticMethod == 'thread.compacted' ||
             result.method == 'thread/compacted' ||
             result.method == 'thread.compacted')) {
       final compactedThreadId =
@@ -3680,8 +3714,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           fields: <String, Object?>{
             'conversationId': conversationId,
             if (compactedThreadId.isNotEmpty) 'threadId': compactedThreadId,
-            'method': diagnosticMethod.isNotEmpty
-                ? diagnosticMethod
+            'method': resolvedDiagnosticMethod.isNotEmpty
+                ? resolvedDiagnosticMethod
                 : result.method,
           },
         ),
@@ -3713,6 +3747,23 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (_activeMode == ChatPageMode.codex && mounted && isVisibleConversation) {
       setState(() {});
     }
+    return true;
+  }
+
+  @override
+  void _drainDeferredCodexServerRequestEvents() {
+    if (!mounted || _deferredCodexServerRequestEvents.isEmpty) {
+      return;
+    }
+    _deferredCodexServerRequestEvents.drain((event) {
+      if (!mounted) {
+        return false;
+      }
+      return _tryRouteCodexAppServerEvent(
+        event,
+        deferredOnMissingConversation: true,
+      );
+    });
   }
 
   @override
@@ -4766,6 +4817,52 @@ String? _codexEventThreadId(Map<String, dynamic> event) {
   return _codexThreadIdFromEnvelope(event);
 }
 
+@visibleForTesting
+class CodexAppServerEventRouteDecision {
+  const CodexAppServerEventRouteDecision({
+    required this.remoteCodex,
+    required this.eventThreadId,
+    required this.explicitConversationId,
+    required this.mappedRemoteConversationId,
+    required this.currentConversationId,
+  });
+
+  final bool remoteCodex;
+  final String? eventThreadId;
+  final int? explicitConversationId;
+  final int? mappedRemoteConversationId;
+  final int? currentConversationId;
+
+  int? resolve({int? promotedRemoteConversationId}) {
+    return explicitConversationId ??
+        promotedRemoteConversationId ??
+        mappedRemoteConversationId ??
+        currentConversationId;
+  }
+
+  bool get shouldDefer => resolve() == null;
+}
+
+@visibleForTesting
+CodexAppServerEventRouteDecision decideCodexAppServerEventRoute({
+  required CodexStatus status,
+  required Map<String, dynamic> event,
+  required int? currentConversationId,
+}) {
+  final runtime = status.runtime?.trim();
+  final remoteCodex = runtime == 'remote' || status.remoteEnabled;
+  final eventThreadId = _codexEventThreadId(event);
+  return CodexAppServerEventRouteDecision(
+    remoteCodex: remoteCodex,
+    eventThreadId: eventThreadId,
+    explicitConversationId: _asCodexInt(event['conversationId']),
+    mappedRemoteConversationId: remoteCodex && eventThreadId != null
+        ? _remoteCodexRuntimeId(eventThreadId)
+        : null,
+    currentConversationId: currentConversationId,
+  );
+}
+
 /// Top-level diagnostic counter that survives navigation. Used purely for
 /// `flutter logs` / `adb logcat` introspection — the user reported that
 /// exec_command tool cards do not surface in our UI even though the codex
@@ -4802,6 +4899,265 @@ String _diagnosticEventMethod(Map<String, dynamic> event) {
   }
   final message = _asCodexMap(event['message']);
   return _asCodexString(message?['method']) ?? '<unknown>';
+}
+
+/// B38: keeps server-request lifecycle events that can arrive before ChatPage
+/// has enough status/target state to route them to a conversation runtime.
+///
+/// Events are grouped by native request identity. Within one request, pending
+/// always precedes terminal; a blocked request does not block another request
+/// whose target is already routable. Repeated delivery of one phase replaces
+/// its queued payload before routing.
+@visibleForTesting
+class CodexServerRequestLifecycleEventBuffer {
+  final Map<String, _CodexServerRequestLifecycleGroup> _groups =
+      <String, _CodexServerRequestLifecycleGroup>{};
+  int _eventCount = 0;
+  int _mutationVersion = 0;
+  bool _isDraining = false;
+  bool _isDisposed = false;
+
+  bool get isEmpty => _eventCount == 0;
+
+  @visibleForTesting
+  int get length => _eventCount;
+
+  bool add(Map<String, dynamic> event) {
+    if (_isDisposed) {
+      return false;
+    }
+    final descriptor = _codexServerRequestLifecycleEventDescriptor(event);
+    if (descriptor == null) {
+      return false;
+    }
+    final group = _groups.putIfAbsent(
+      descriptor.identity,
+      _CodexServerRequestLifecycleGroup.new,
+    );
+    final queued = _CodexServerRequestLifecycleQueuedEvent(
+      phase: descriptor.phase,
+      event: Map<String, dynamic>.from(event),
+    );
+    if (group.eventFor(descriptor.phase) == null) {
+      _eventCount += 1;
+    }
+    group.setEvent(queued);
+    _mutationVersion += 1;
+    return true;
+  }
+
+  int drain(bool Function(Map<String, dynamic> event) tryRoute) {
+    if (_isDisposed || _isDraining) {
+      return 0;
+    }
+    _isDraining = true;
+    var routed = 0;
+    try {
+      while (!_isDisposed && _eventCount > 0) {
+        final mutationAtPassStart = _mutationVersion;
+        var madeProgress = false;
+        final identities = _groups.keys.toList(growable: false);
+        for (final identity in identities) {
+          if (_isDisposed) {
+            break;
+          }
+          final group = _groups[identity];
+          final queued = group?.head;
+          if (group == null || queued == null) {
+            continue;
+          }
+          final event = Map<String, dynamic>.from(queued.event);
+          if (!tryRoute(event)) {
+            continue;
+          }
+          routed += 1;
+          madeProgress = true;
+
+          // A callback can synchronously enqueue a newer copy of this exact
+          // identity/phase. Remove only the entry that was actually routed.
+          final currentGroup = _groups[identity];
+          if (identical(currentGroup, group) &&
+              identical(group.eventFor(queued.phase), queued)) {
+            group.removeEvent(queued.phase);
+            _eventCount -= 1;
+            _mutationVersion += 1;
+            if (group.isEmpty) {
+              _groups.remove(identity);
+            }
+          }
+        }
+        if (!madeProgress && _mutationVersion == mutationAtPassStart) {
+          break;
+        }
+      }
+    } finally {
+      _isDraining = false;
+    }
+    return routed;
+  }
+
+  void clear() {
+    _groups.clear();
+    _eventCount = 0;
+    _mutationVersion += 1;
+  }
+
+  void dispose() {
+    _isDisposed = true;
+    clear();
+  }
+}
+
+enum _CodexServerRequestLifecyclePhase { pending, terminal }
+
+class _CodexServerRequestLifecycleQueuedEvent {
+  const _CodexServerRequestLifecycleQueuedEvent({
+    required this.phase,
+    required this.event,
+  });
+
+  final _CodexServerRequestLifecyclePhase phase;
+  final Map<String, dynamic> event;
+}
+
+class _CodexServerRequestLifecycleGroup {
+  _CodexServerRequestLifecycleQueuedEvent? pending;
+  _CodexServerRequestLifecycleQueuedEvent? terminal;
+
+  bool get isEmpty => pending == null && terminal == null;
+
+  _CodexServerRequestLifecycleQueuedEvent? get head => pending ?? terminal;
+
+  _CodexServerRequestLifecycleQueuedEvent? eventFor(
+    _CodexServerRequestLifecyclePhase phase,
+  ) {
+    return switch (phase) {
+      _CodexServerRequestLifecyclePhase.pending => pending,
+      _CodexServerRequestLifecyclePhase.terminal => terminal,
+    };
+  }
+
+  void setEvent(_CodexServerRequestLifecycleQueuedEvent event) {
+    switch (event.phase) {
+      case _CodexServerRequestLifecyclePhase.pending:
+        pending = event;
+        break;
+      case _CodexServerRequestLifecyclePhase.terminal:
+        terminal = event;
+        break;
+    }
+  }
+
+  void removeEvent(_CodexServerRequestLifecyclePhase phase) {
+    switch (phase) {
+      case _CodexServerRequestLifecyclePhase.pending:
+        pending = null;
+        break;
+      case _CodexServerRequestLifecyclePhase.terminal:
+        terminal = null;
+        break;
+    }
+  }
+}
+
+class _CodexServerRequestLifecycleEventDescriptor {
+  const _CodexServerRequestLifecycleEventDescriptor({
+    required this.identity,
+    required this.phase,
+  });
+
+  final String identity;
+  final _CodexServerRequestLifecyclePhase phase;
+}
+
+_CodexServerRequestLifecycleEventDescriptor?
+_codexServerRequestLifecycleEventDescriptor(Map<String, dynamic> event) {
+  final message = _asCodexMap(event['message']) ?? const <String, dynamic>{};
+  final params =
+      _asCodexMap(event['params']) ??
+      _asCodexMap(message['params']) ??
+      const <String, dynamic>{};
+  final eventMethod =
+      _asCodexString(event['method']) ??
+      _asCodexString(message['method']) ??
+      '';
+  final serverRequestMethod =
+      _asCodexString(event['serverRequestMethod']) ??
+      _asCodexString(event['server_request_method']) ??
+      _asCodexString(params['serverRequestMethod']) ??
+      _asCodexString(params['server_request_method']) ??
+      (eventMethod.endsWith('/requestApproval') ||
+              eventMethod == 'item/tool/requestUserInput'
+          ? eventMethod
+          : null);
+  final terminal =
+      eventMethod == 'serverRequest/resolved' ||
+      eventMethod == 'serverRequest/invalidated';
+  final pending =
+      serverRequestMethod != null &&
+      (serverRequestMethod.endsWith('/requestApproval') ||
+          serverRequestMethod == 'item/tool/requestUserInput');
+  if (!terminal && !pending) {
+    return null;
+  }
+
+  final nativeKey =
+      _asCodexString(event['serverRequestKey']) ??
+      _asCodexString(event['server_request_key']) ??
+      _asCodexString(params['serverRequestKey']) ??
+      _asCodexString(params['server_request_key']);
+  final generation = _asCodexInt(
+    event['sessionGeneration'] ??
+        event['session_generation'] ??
+        event['oldGeneration'] ??
+        event['old_generation'] ??
+        params['sessionGeneration'] ??
+        params['session_generation'] ??
+        params['oldGeneration'] ??
+        params['old_generation'],
+  );
+  final requestId =
+      event['requestId'] ??
+      event['request_id'] ??
+      params['requestId'] ??
+      params['request_id'] ??
+      message['id'];
+  final requestIdKey = _codexServerRequestIdKey(requestId);
+  final fallbackKey =
+      generation != null && generation > 0 && requestIdKey != null
+      ? '$generation/$requestIdKey'
+      : null;
+  final identity = nativeKey ?? fallbackKey;
+  if (identity == null) {
+    return null;
+  }
+
+  return _CodexServerRequestLifecycleEventDescriptor(
+    identity: identity,
+    phase: terminal
+        ? _CodexServerRequestLifecyclePhase.terminal
+        : _CodexServerRequestLifecyclePhase.pending,
+  );
+}
+
+String? _codexServerRequestIdKey(Object? requestId) {
+  if (requestId is String) {
+    return 'string:$requestId';
+  }
+  if (requestId is int) {
+    return 'number:$requestId';
+  }
+  if (requestId is num) {
+    final value = requestId.toDouble();
+    if (!value.isFinite) {
+      return null;
+    }
+    if (value % 1.0 == 0.0) {
+      return 'number:${value.toInt()}';
+    }
+    return 'number:$value';
+  }
+  return null;
 }
 
 const List<String> _codexEnvelopeKeys = <String>[

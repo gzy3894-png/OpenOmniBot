@@ -413,6 +413,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   StreamSubscription<Map<String, dynamic>>?
   _browserSessionSnapshotChangedSubscription;
   StreamSubscription<Map<String, dynamic>>? _codexEventSubscription;
+  final CodexServerRequestLifecycleEventBuffer
+  _deferredCodexServerRequestEvents =
+      CodexServerRequestLifecycleEventBuffer();
   Timer? _remoteCodexSessionSyncTimer;
   bool _remoteCodexSessionSyncInFlight = false;
   String? _remoteCodexSessionSyncThreadId;
@@ -1886,6 +1889,8 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   );
 
   void _handleCodexAppServerEvent(Map<String, dynamic> event);
+
+  void _drainDeferredCodexServerRequestEvents();
 
   void _stopRemoteCodexSessionSync();
 

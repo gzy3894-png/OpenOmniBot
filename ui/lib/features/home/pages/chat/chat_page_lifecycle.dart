@@ -275,6 +275,7 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
       await initializeConversation(lifecycleToken: lifecycleToken);
     }
     if (isStaleRequest()) return;
+    _drainDeferredCodexServerRequestEvents();
     if (_activeConversationMode == ChatPageMode.codex) {
       await _refreshCodexCommandPreferences();
       if (isStaleRequest()) return;
@@ -635,6 +636,7 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     _stopRemoteCodexSessionSync();
     _unbindCodexPlanProposalBridge();
     _codexEventSubscription?.cancel();
+    _deferredCodexServerRequestEvents.dispose();
     super.dispose();
   }
 
