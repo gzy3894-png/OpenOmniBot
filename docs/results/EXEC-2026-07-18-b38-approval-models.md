@@ -19,20 +19,30 @@
 
 ### 当前 hardening 候选
 
-| 工作线 | 状态 | topic commit / 证据 | 边界 |
-|--------|------|---------------------|------|
-| Native 审批/会话所有权 | `IMPLEMENTED` | `10a169e029f248f4b9734cddcae327d48280e72a` | listener registry、session generation、pending request 归属、stale/no-reconnect；仅源码级自审 |
-| Models/UI catalog 一致性 | `IMPLEMENTED` | `86cec55a85db446394ddbf1ebd306ee326dee960` | latest-wins、authoritative empty/ghost、effort clamp/omit、原子 model+effort、Overlay refresh；仅源码级自审 |
-| Approval UI/幂等回归 | `IMPLEMENTED` | `3ceaba07290273a303b9398769666fb2de57442c` | schema/generation/requestId 生命周期、resolved/invalidated、`ALREADY_RESPONDED` 中性处理、断连重试与 EventChannel；仅源码级自审 |
-| 远端质量门禁 | `IMPLEMENTED` | `6e56dd943319328148df965b251dfd215670fb1a` + `522c346e8a10dc37a1532e09bba56a4f3d30b2c2` | 八路升级九路 + lint/source-policy；未在最终整合 HEAD 运行 |
-| 文档与证据治理 | `IMPLEMENTED` | **本提交后回填** | 状态机、ignore、两份审计报告、AGENTS 真源校准 |
+当前源码整合基线为 `50f3bcb56ad7586683ba4cf6c69b2996faab7eef`。下表只证明 topic 已进入同一源码树并完成主线程静态审查；本机没有运行 Flutter、Dart、Gradle 或 Android 编译/测试，远端九路也尚未运行。
+
+| 工作线 | 状态 | topic → integration | 源码级边界 |
+|--------|------|---------------------|------------|
+| Native 审批/会话所有权 | `IMPLEMENTED` | `10a169e` → `003c85b` | listener registry、session generation、pending request 归属、stale/no-reconnect |
+| Native 会话消息排序 | `IMPLEMENTED` | `3b210b6` → `e2eee67` | 完整消息 barrier、会话切换顺序、持久单调 generation、原子 session snapshot |
+| Native 初始化就绪门禁 | `IMPLEMENTED` | `d8d9dd6` → `41bfbfc` | transport running 不再等同 initialized-ready；RPC 只使用 READY session |
+| Native pending request replay | `IMPLEMENTED` | `7df2770` → `3239c7b` | listener 空窗内新 pending request 可向后续 stream replay；投递前复核仍为 PENDING |
+| Approval UI/幂等生命周期 | `IMPLEMENTED` | `3ceaba0` → `8f6e775` | schema/generation/requestId、resolved/invalidated、双 Engine first-wins、断连重试 |
+| Approval UI 终态竞态 | `IMPLEMENTED` | `5760d52` → `50f3bcb` | resolved/invalidated 先于 MethodChannel 返回时，不被 `response_sent` 或 `handled_elsewhere` 降级 |
+| Models/UI catalog 隔离 | `IMPLEMENTED` | `86cec55` → `5194d9b` | latest-wins、authoritative empty/ghost、effort clamp/omit、原子 model+effort、Overlay refresh |
+| Models 空目录去重 | `IMPLEMENTED` | `97d1a18` → `f30508b` | authoritative empty/no-effort 也完成 catalog generation，避免重复拉取 |
+| 八路远端质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 4 Flutter test shard + analyze + Android unit/lint/APK；仅工作流源码已落地 |
+| 第九路 source-policy | `IMPLEMENTED` | `522c346` → `1ec0353` | commit/source/evidence、applicationId 与品牌不变量；尚未远端执行 |
+| Android SDK license 假失败修复 | `IMPLEMENTED` | `99b5dbc` → `27d8051` | 避免 `yes` 在 `pipefail` 下因 SIGPIPE=141 把 license 接受误判失败 |
+| 文档与证据治理 | `IMPLEMENTED` | `43ec7a7` → `bf67855` | 状态机、ignore、审计报告与 AGENTS 真源校准 |
 
 ### 当前候选待回填字段
 
 | 字段 | 当前值 |
 |------|--------|
-| 最终整合 HEAD | **待回填** |
-| topic → integration 映射 | **待回填** |
+| 当前源码整合 HEAD（本次文档基线） | `50f3bcb56ad7586683ba4cf6c69b2996faab7eef` |
+| topic → integration 映射 | **已回填；见上表** |
+| 最终远端触发 HEAD | **待主线程合入本次文档提交并推送后回填** |
 | 九路 GHA run ID / URL | **待回填；未运行** |
 | 九路 GHA 结果 | **待回填；不得预写 SUCCESS** |
 | APK artifact / stage path | **待回填；当前候选未出包** |
@@ -145,11 +155,12 @@
 
 ## 7. 残余风险（主线程验收）
 
-1. topic commits 尚待汇入同一 integration HEAD；跨 Native/Flutter/CI 的冲突与接口联调未验证。
-2. 按本轮约束只做源码级静态自审；Flutter/Dart/Gradle/Android 测试均未在本机运行。
-3. 最终九路门禁尚未运行，签名证书、lint、分片测试与 source-policy 尚无同一 HEAD 的远端证据。
-4. 当前候选无 APK、SHA 或设备日志；所有 AP/M/F/A/R 项均未知。
-5. 任何远端失败都保持 `IMPLEMENTED`；任何设备失败或未完成项最多到 `DEVICE_PARTIAL`。
+1. 十二个 topic→integration 映射已汇入源码整合基线 `50f3bcb`，但跨 Native/Flutter/CI 目前只有静态源码审查，没有编译、测试或运行时联调证据。
+2. **Terminal tombstone replay residual**：若 `serverRequest/resolved` 或 `serverRequest/invalidated` 恰在 EventChannel 完全无 listener 的窗口到达，Native 当前不会保存 terminal tombstone，后续新 stream 因而无法 replay 该终态。已实现的 pending replay 会在投递前复核 PENDING，终态后不会重投同一 pending；残余是既有 UI/历史卡可能无法自动收敛终态，而不是同请求被重新创建为可操作卡。
+3. 按本轮约束，Flutter/Dart/Gradle/Android 编译与测试均未在本机运行。
+4. 最终九路门禁尚未运行，签名证书、lint、分片测试与 source-policy 尚无同一 HEAD 的远端证据。
+5. 当前候选无 APK、SHA 或设备日志；所有 AP/M/F/A/R 项均未知。
+6. 任何远端失败都保持 `IMPLEMENTED`；任何设备失败或未完成项最多到 `DEVICE_PARTIAL`。
 
 ## 8. READY 门禁
 

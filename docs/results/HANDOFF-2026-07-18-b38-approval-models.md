@@ -2,6 +2,7 @@
 
 > 文档生命周期：**SUPERSEDED**。本文件仅保留 2026-07-18 开工前的历史上下文，**不得再作为执行清单或状态真源**。
 > 当前状态只认 `EXEC-2026-07-18-b38-approval-models.md`：hardening 候选为 `IMPLEMENTED · REMOTE TEST PENDING`；旧 APK/日志为 `DEVICE_PARTIAL`。
+> 当前源码整合基线：`50f3bcb56ad7586683ba4cf6c69b2996faab7eef`；只完成源码级静态审查，本机未编译、未测试，九路远端门禁未运行。
 > 统一状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`。
 > **用户裁定**：审批「只有 UI、没走 Codex 自身审批」= **真 bug（T6）**，优先级 ≥ 模型列表。
 
@@ -28,7 +29,11 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 | 验收 | tip/toast/setState **单独不算**权限 PASS |
 
 **仓库路径**：`/root/workspace/omnibot-product`  
-**分支**：`secondary/s1-baseline`（以 `git branch --show-current` 为准）  
+
+**当前本地整合分支**：`codex/b38-integration`（源码基线 `50f3bcb`）
+
+**目标远端分支**：`secondary/s1-b38-hardening`
+
 **远端**：`mine` = 自己的 fork
 
 ---
@@ -52,6 +57,29 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 | 前序 `DEVICE_PARTIAL` | B37 APK `898dc26` sha `9c560e73…` Download 已 stage | device retest 未完成，**未**修 T6/T3 |
 
 **upstream 路径说明**：若本机无 `codex-upstream-remote-test`，以 PLAN §0 摘要 + protocol 注释为准，勿拿沙盒 `~/.codex` 和 OmniBot 对账。
+
+---
+
+## 2.1 当前 hardening 源码快照（后补）
+
+本节只用于把历史交接连接到当前实时账本，不改变本文件的 `SUPERSEDED` 生命周期。以下条目均为 `IMPLEMENTED`，不代表 GHA、APK 或设备 PASS。
+
+| 工作线 | topic → integration | 源码状态 |
+|--------|---------------------|----------|
+| Native ownership | `10a169e` → `003c85b` | listener/session/request 隔离已入树 |
+| Native ordering | `3b210b6` → `e2eee67` | barrier、持久 generation、session snapshot 已入树 |
+| Native readiness | `d8d9dd6` → `41bfbfc` | initialized READY 门禁已入树 |
+| Native pending replay | `7df2770` → `3239c7b` | listener 空窗 pending replay + 投递前 PENDING 复核已入树 |
+| Approval lifecycle | `3ceaba0` → `8f6e775` | request 生命周期与 first-wins 已入树 |
+| Approval terminal race | `5760d52` → `50f3bcb` | 先到终态不被 RPC 返回降级已入树 |
+| Models catalog isolation | `86cec55` → `5194d9b` | catalog generation/latest-wins 已入树 |
+| Models empty reload | `97d1a18` → `f30508b` | empty/no-effort 去重已入树 |
+| 八路质量门禁 | `6e56dd9` → `4bf025c` | 工作流源码已入树；未运行 |
+| 第九路 source-policy | `522c346` → `1ec0353` | 工作流源码已入树；未运行 |
+| SDK license pipefail | `99b5dbc` → `27d8051` | SIGPIPE 假失败修复已入树 |
+| 文档/证据治理 | `43ec7a7` → `bf67855` | 状态与证据规则已入树 |
+
+**已知残余**：EventChannel 完全没有 listener 的窗口内若到达 `serverRequest/resolved` / `serverRequest/invalidated`，Native 尚不保存 terminal tombstone，之后新 stream 无法 replay 该终态。新 pending 在空窗内会被 replay，且每次投递前复核 PENDING，所以 terminal 后不会重投同一 pending；该残余不得误写成乱序 replay 会重建可操作卡。
 
 ---
 
@@ -147,8 +175,8 @@ B37 做了：soft conf harden、stale thread clear、本地 mode 继续、displa
 ## 8. 下一手第一件事
 
 1. **停止使用本 HANDOFF 做状态判断**；先读 EXEC §0 实时账本和 PLAN 冻结范围。
-2. 将各 topic commit 汇入同一 integration HEAD，完成源码级验收；此时最多保持 `IMPLEMENTED`。
-3. 只在最终九路远端门禁全绿并回填 run/HEAD 后升 `REMOTE_VERIFIED`；随后才允许 stage 同一 HEAD 的 APK。
+2. 十二组 topic→integration 已汇入源码基线 `50f3bcb`，当前仍只能标记 `IMPLEMENTED`；最终远端触发 HEAD 以主线程合入本次文档提交后的实际推送为准。
+3. 只在同一最终 HEAD 的九路远端门禁全绿并回填 run/HEAD 后升 `REMOTE_VERIFIED`；随后才允许 stage 同一 HEAD 的 APK。
 4. 设备证据不完整或有失败统一记 `DEVICE_PARTIAL`；完整 AP/M/F/A/R 通过后才可 `DEVICE_PASS → READY`。
 5. 不进入 S2，不改历史 commit/run/APK/log，不本机编译测试。
 

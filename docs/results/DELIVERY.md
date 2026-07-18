@@ -8,24 +8,33 @@
 > **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
 > **主线程只调度/验收** · ≥8 并发工作线 · push **仅 mine** · 最终九路远端门禁 · 禁本机编译测试
 > 状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
+> 当前源码整合基线：`50f3bcb56ad7586683ba4cf6c69b2996faab7eef`；本机未编译、未测试，九路远端门禁未运行。
 
 ---
 
 ## 0. 当前波 · B38 hardening（IMPLEMENTED · REMOTE TEST PENDING）
 
-| 工作线 | 状态 | commit / 备注 |
-|--------|------|---------------|
-| Native 审批/会话所有权 | `IMPLEMENTED` | `10a169e029f248f4b9734cddcae327d48280e72a` |
-| Models/UI catalog 一致性 | `IMPLEMENTED` | `86cec55a85db446394ddbf1ebd306ee326dee960` |
-| Approval UI/幂等回归 | `IMPLEMENTED` | `3ceaba07290273a303b9398769666fb2de57442c` |
-| 八→九路远端质量门禁 | `IMPLEMENTED` | `6e56dd943319328148df965b251dfd215670fb1a` + `522c346e8a10dc37a1532e09bba56a4f3d30b2c2` |
-| 文档/证据治理 | `IMPLEMENTED` | 本提交后回填 |
+| 工作线 | 状态 | topic → integration | 备注 |
+|--------|------|---------------------|------|
+| Native ownership | `IMPLEMENTED` | `10a169e` → `003c85b` | listener/session/request 隔离 |
+| Native ordering | `IMPLEMENTED` | `3b210b6` → `e2eee67` | 消息 barrier、持久单调 generation、原子 session snapshot |
+| Native readiness | `IMPLEMENTED` | `d8d9dd6` → `41bfbfc` | RPC 只进入 initialized READY session |
+| Native pending replay | `IMPLEMENTED` | `7df2770` → `3239c7b` | listener 空窗内的新 pending 可向后续 stream replay |
+| Approval lifecycle | `IMPLEMENTED` | `3ceaba0` → `8f6e775` | generation/requestId/终态/first-wins |
+| Approval terminal race | `IMPLEMENTED` | `5760d52` → `50f3bcb` | MethodChannel 返回不降级先到的终态 |
+| Models catalog isolation | `IMPLEMENTED` | `86cec55` → `5194d9b` | latest-wins、empty/ghost、effort、Overlay |
+| Models empty reload | `IMPLEMENTED` | `97d1a18` → `f30508b` | empty/no-effort catalog 不重复拉取 |
+| 八路质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 工作流源码已落地，尚未远端运行 |
+| 第九路 source-policy | `IMPLEMENTED` | `522c346` → `1ec0353` | 工作流源码已落地，尚未远端运行 |
+| SDK license pipefail | `IMPLEMENTED` | `99b5dbc` → `27d8051` | 修正 SIGPIPE=141 假失败 |
+| 文档/证据治理 | `IMPLEMENTED` | `43ec7a7` → `bf67855` | 状态与证据边界已落地 |
 
 当前没有可交付的新 APK。以下字段全部待最终整合后按顺序回填：
 
 | 字段 | 状态 |
 |------|------|
-| integration HEAD | 待回填 |
+| 当前源码整合 HEAD（本文档基线） | `50f3bcb56ad7586683ba4cf6c69b2996faab7eef` |
+| 最终远端触发 HEAD | 待主线程合入本次文档提交并推送后回填 |
 | 九路 GHA run ID / URL / result | 待运行；不得预写 SUCCESS |
 | APK artifact / stage path | 待 `REMOTE_VERIFIED` 后产出 |
 | APK SHA-256 / cert SHA-256 | 待回填 |
@@ -185,7 +194,8 @@
 - [x] B38 APK stage · sha256 `847c4aab…` / shortsha `68c1b79`  
 - [x] 旧 B38 `68c1b79` 证据重分类为 `DEVICE_PARTIAL`
 - [x] 当前 hardening topic 实现完成，状态仅 `IMPLEMENTED`
-- [ ] 最终 integration HEAD + 九路 `REMOTE_VERIFIED`
+- [x] 十二组 topic→integration 已汇入源码基线 `50f3bcb`
+- [ ] 最终远端触发 HEAD + 九路 `REMOTE_VERIFIED`
 - [ ] 当前候选 `APK_STAGED` + SHA/cert 回填
 - [ ] 当前候选 AP1–AP7 / M1–R1 达 `DEVICE_PASS`
 
@@ -195,5 +205,6 @@
 
 - Remote 2s poll、每 event `debugPrint`：仍未改  
 - hard 字段（baseUrl / model / apiKey）变更仍应 reconnect  
-- topic commits 尚未汇成并验证同一 integration HEAD；Native/Flutter 联调未知
+- topic commits 已汇成源码基线 `50f3bcb`，但本机没有编译/测试，Native/Flutter 运行时联调与九路远端结果仍未知
+- **Terminal tombstone replay residual**：EventChannel 完全无 listener 时到达的 `resolved/invalidated` 没有 Native tombstone，后续 stream 无法 replay 终态；pending 投递前已有 PENDING 复核，终态后不会重投同一 pending，因此不应把该残余描述成审批卡被重新创建
 - **当前 hardening 完成前**：审批 tip ≠ Codex 审批 PASS；远端和设备证据均待回填
