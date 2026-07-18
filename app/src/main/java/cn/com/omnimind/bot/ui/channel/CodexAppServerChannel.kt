@@ -2,6 +2,7 @@ package cn.com.omnimind.bot.ui.channel
 
 import android.content.Context
 import cn.com.omnimind.bot.codex.CodexAppServerManager
+import cn.com.omnimind.bot.codex.CodexServerRequestResponseException
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -10,25 +11,35 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 class CodexAppServerChannel {
     companion object {
         private const val METHOD_CHANNEL = "cn.com.omnimind.bot/CodexAppServer"
         private const val EVENT_CHANNEL = "cn.com.omnimind.bot/CodexAppServerEvents"
+        private val NEXT_CHANNEL_TOKEN = AtomicLong(0L)
+        private val NEXT_STREAM_OWNER_TOKEN = AtomicLong(0L)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val channelToken = NEXT_CHANNEL_TOKEN.incrementAndGet()
     private var context: Context? = null
+    private var manager: CodexAppServerManager? = null
     private var methodChannel: MethodChannel? = null
     private var eventChannel: EventChannel? = null
     private var eventSink: EventChannel.EventSink? = null
+    private var eventStreamToken: String? = null
+    private var eventStreamOwnerToken: Long? = null
+    private var activeStreamHandlerOwnerToken: Long? = null
+    private var engineToken: String = "flutter-engine-unbound-$channelToken"
 
     fun onCreate(context: Context) {
         this.context = context.applicationContext
-        if (eventSink != null) {
-            CodexAppServerManager.getInstance(context.applicationContext).setEventListener { payload ->
-                eventSink?.success(payload)
-            }
+        manager = CodexAppServerManager.getInstance(context.applicationContext)
+        val sink = eventSink
+        val ownerToken = eventStreamOwnerToken
+        if (sink != null && ownerToken != null) {
+            registerEventSink(sink, ownerToken)
         }
     }
 
@@ -36,29 +47,70 @@ class CodexAppServerChannel {
         // B38 T5: tear down prior handlers first so re-configure on the same
         // engine (or messenger reuse) never leaves a null handler race that
         // surfaces as Flutter MissingPluginException(connect).
+        unregisterEventSink(reason = "channel_reconfigured")
+        eventSink = null
+        eventStreamOwnerToken = null
+        activeStreamHandlerOwnerToken = null
         methodChannel?.setMethodCallHandler(null)
         eventChannel?.setStreamHandler(null)
+        engineToken = "flutter-engine-${Integer.toHexString(System.identityHashCode(flutterEngine))}-$channelToken"
 
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
         methodChannel?.setMethodCallHandler(::handleMethodCall)
 
         eventChannel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
+        val streamOwnerToken = NEXT_STREAM_OWNER_TOKEN.incrementAndGet()
+        activeStreamHandlerOwnerToken = streamOwnerToken
         eventChannel?.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                eventSink = events
-                val safeContext = context ?: return
-                CodexAppServerManager.getInstance(safeContext).setEventListener { payload ->
-                    eventSink?.success(payload)
+                if (activeStreamHandlerOwnerToken != streamOwnerToken) {
+                    return
                 }
+                unregisterEventSink(reason = "stream_replaced")
+                eventSink = events
+                eventStreamOwnerToken = streamOwnerToken
+                events?.let { registerEventSink(it, streamOwnerToken) }
             }
 
             override fun onCancel(arguments: Any?) {
-                eventSink = null
-                context?.let {
-                    CodexAppServerManager.getInstance(it).setEventListener(null)
+                if (activeStreamHandlerOwnerToken != streamOwnerToken ||
+                    eventStreamOwnerToken != streamOwnerToken
+                ) {
+                    return
                 }
+                unregisterEventSink(reason = "stream_cancelled")
+                eventSink = null
+                eventStreamOwnerToken = null
             }
         })
+    }
+
+    private fun registerEventSink(
+        sink: EventChannel.EventSink,
+        ownerToken: Long,
+    ) {
+        if (eventStreamOwnerToken != ownerToken ||
+            activeStreamHandlerOwnerToken != ownerToken
+        ) {
+            return
+        }
+        val safeManager = manager
+            ?: context?.let { CodexAppServerManager.getInstance(it) }
+            ?: return
+        manager = safeManager
+        eventStreamToken = safeManager.registerEventListener(
+            engineToken = engineToken,
+            listener = { payload -> sink.success(payload) },
+        )
+    }
+
+    private fun unregisterEventSink(reason: String) {
+        val streamToken = eventStreamToken ?: return
+        eventStreamToken = null
+        manager?.unregisterEventListener(
+            streamToken = streamToken,
+            reason = reason,
+        )
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -76,12 +128,17 @@ class CodexAppServerChannel {
             runCatching {
                 CodexAppServerManager
                     .getInstance(safeContext)
-                    .handleMethod(call.method, arguments)
+                    .handleMethod(
+                        method = call.method,
+                        args = arguments,
+                        callerEngineToken = engineToken,
+                    )
             }.onSuccess { payload ->
                 result.success(payload)
             }.onFailure { error ->
                 result.error(
-                    "CODEX_APP_SERVER_CALL_FAILED",
+                    (error as? CodexServerRequestResponseException)?.errorCode
+                        ?: "CODEX_APP_SERVER_CALL_FAILED",
                     error.message ?: error.javaClass.simpleName,
                     null
                 )
@@ -90,13 +147,15 @@ class CodexAppServerChannel {
     }
 
     fun clear() {
-        context?.let {
-            CodexAppServerManager.getInstance(it).setEventListener(null)
-        }
+        unregisterEventSink(reason = "channel_cleared")
         eventSink = null
+        eventStreamOwnerToken = null
+        activeStreamHandlerOwnerToken = null
         methodChannel?.setMethodCallHandler(null)
         methodChannel = null
         eventChannel?.setStreamHandler(null)
         eventChannel = null
+        manager = null
+        context = null
     }
 }

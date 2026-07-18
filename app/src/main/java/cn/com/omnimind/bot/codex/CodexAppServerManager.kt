@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class CodexAppServerManager private constructor(
     private val context: Context
@@ -24,11 +25,17 @@ class CodexAppServerManager private constructor(
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionMutex = Mutex()
+    private val sessionStateLock = Any()
     private val threadStartMutex = Mutex()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val bindingRepository = CodexThreadBindingRepository(appContext)
     private val remoteConfigStore = CodexRemoteBridgeConfigStore(appContext)
     private val activeTurnsByThreadId = ConcurrentHashMap<String, String>()
+    private val eventListeners = CodexEventListenerRegistry()
+    private val nextEventStreamToken = AtomicLong(0L)
+    private val serverRequests = CodexServerRequestRegistry()
+    private val serverRequestResponder = CodexServerRequestResponder(serverRequests)
+    private val nextSessionGeneration = AtomicLong(0L)
     /** Single-fire guard: threadId -> terminal token (turnId or synthetic). */
     private val finishedNotifyOnceByThread = ConcurrentHashMap<String, String>()
 
@@ -40,10 +47,37 @@ class CodexAppServerManager private constructor(
     @Volatile
     private var activeRuntime: CodexRuntimeKind? = null
     @Volatile
-    private var eventListener: ((Map<String, Any?>) -> Unit)? = null
+    private var activeSessionGeneration: Long = NO_SESSION_GENERATION
 
-    fun setEventListener(listener: ((Map<String, Any?>) -> Unit)?) {
-        eventListener = listener
+    fun registerEventListener(
+        engineToken: String,
+        listener: (Map<String, Any?>) -> Unit,
+    ): String {
+        val streamToken = "$engineToken-stream-${nextEventStreamToken.incrementAndGet()}"
+        eventListeners.register(
+            engineToken = engineToken,
+            streamToken = streamToken,
+            listener = listener,
+        )
+        Log.i(
+            TAG,
+            "event_listener action=registered engineToken=$engineToken " +
+                "streamToken=$streamToken listenerCount=${eventListeners.size()}",
+        )
+        return streamToken
+    }
+
+    fun unregisterEventListener(
+        streamToken: String,
+        reason: String,
+    ) {
+        val removed = eventListeners.unregister(streamToken) ?: return
+        Log.i(
+            TAG,
+            "event_listener action=removed engineToken=${removed.engineToken} " +
+                "streamToken=${removed.streamToken} reason=$reason " +
+                "listenerCount=${eventListeners.size()}",
+        )
     }
 
     suspend fun status(): Map<String, Any?> {
@@ -68,7 +102,8 @@ class CodexAppServerManager private constructor(
             "remoteTransport" to probe.details["appServerTransport"],
             "remoteDesktopAvailable" to probe.details["desktopAppServerAvailable"],
             "remoteActiveConnections" to probe.details["activeConnections"],
-            "remoteUptimeMs" to probe.details["uptimeMs"]
+            "remoteUptimeMs" to probe.details["uptimeMs"],
+            "sessionGeneration" to activeSessionGeneration,
         )
     }
 
@@ -79,15 +114,39 @@ class CodexAppServerManager private constructor(
             if (existing?.isRunning == true && activeRuntime == runtime.kind) {
                 return status()
             }
+            synchronized(sessionStateLock) {
+                if (existing != null &&
+                    activeSessionGeneration != NO_SESSION_GENERATION
+                ) {
+                    invalidateServerRequestsLocked(
+                        generation = activeSessionGeneration,
+                        sessionIdentity = existing,
+                        reason = "session_replaced",
+                    )
+                }
+                if (session === existing) {
+                    session = null
+                    activeSessionGeneration = NO_SESSION_GENERATION
+                }
+                activeRuntime = null
+            }
             existing?.disconnect()
-            session = null
-            activeRuntime = null
             activeTurnsByThreadId.clear()
             finishedNotifyOnceByThread.clear()
-            val nextSession = CodexAppServerSession(
+            val generation = nextSessionGeneration.incrementAndGet()
+            lateinit var nextSession: CodexAppServerSession
+            nextSession = CodexAppServerSession(
                 context = appContext,
                 scope = scope,
-                onServerMessage = ::handleServerMessage,
+                onServerMessage = { message ->
+                    // Capture both values at construction. Never label a delayed
+                    // message by reading whichever session happens to be current.
+                    handleServerMessage(
+                        sourceGeneration = generation,
+                        sourceSession = nextSession,
+                        message = message,
+                    )
+                },
                 connectionFactory = when (runtime.kind) {
                     CodexRuntimeKind.REMOTE -> {
                         {
@@ -100,16 +159,29 @@ class CodexAppServerManager private constructor(
                     CodexRuntimeKind.LOCAL -> null
                 }
             )
-            session = nextSession
-            activeRuntime = runtime.kind
+            synchronized(sessionStateLock) {
+                session = nextSession
+                activeSessionGeneration = generation
+                activeRuntime = runtime.kind
+            }
+            Log.i(
+                TAG,
+                "session action=starting generation=$generation runtime=${runtime.kind.payloadValue}",
+            )
             try {
                 nextSession.start(clientVersion = BuildConfig.VERSION_NAME)
             } catch (error: Throwable) {
-                if (session === nextSession) {
-                    session = null
-                }
-                if (activeRuntime == runtime.kind) {
-                    activeRuntime = null
+                synchronized(sessionStateLock) {
+                    if (isCurrentSessionLocked(generation, nextSession)) {
+                        invalidateServerRequestsLocked(
+                            generation = generation,
+                            sessionIdentity = nextSession,
+                            reason = "connect_failed",
+                        )
+                        session = null
+                        activeSessionGeneration = NO_SESSION_GENERATION
+                        activeRuntime = null
+                    }
                 }
                 throw error
             }
@@ -119,16 +191,36 @@ class CodexAppServerManager private constructor(
 
     suspend fun disconnect(): Map<String, Any?> {
         sessionMutex.withLock {
-            session?.disconnect()
-            session = null
-            activeRuntime = null
+            val currentSession = session
+            val currentGeneration = activeSessionGeneration
+            synchronized(sessionStateLock) {
+                if (currentSession != null &&
+                    currentGeneration != NO_SESSION_GENERATION
+                ) {
+                    invalidateServerRequestsLocked(
+                        generation = currentGeneration,
+                        sessionIdentity = currentSession,
+                        reason = "disconnect",
+                    )
+                }
+                if (session === currentSession) {
+                    session = null
+                    activeSessionGeneration = NO_SESSION_GENERATION
+                    activeRuntime = null
+                }
+            }
+            currentSession?.disconnect()
             activeTurnsByThreadId.clear()
             finishedNotifyOnceByThread.clear()
         }
         return status()
     }
 
-    suspend fun handleMethod(method: String, args: Map<String, Any?>): Any? {
+    suspend fun handleMethod(
+        method: String,
+        args: Map<String, Any?>,
+        callerEngineToken: String? = null,
+    ): Any? {
         return when (method) {
             "status" -> status()
             "connect" -> connect()
@@ -170,7 +262,10 @@ class CodexAppServerManager private constructor(
             )
             "account/login/cancel" -> request("account/login/cancel", args)
             "account/rateLimits/read" -> request("account/rateLimits/read", null)
-            "respondToServerRequest" -> respondToServerRequest(args)
+            "respondToServerRequest" -> respondToServerRequest(
+                args = args,
+                callerEngineToken = callerEngineToken,
+            )
             else -> request(method, args)
         }
     }
@@ -418,13 +513,62 @@ class CodexAppServerManager private constructor(
         )
     }
 
-    private suspend fun respondToServerRequest(args: Map<String, Any?>): Map<String, Any?> {
+    private suspend fun respondToServerRequest(
+        args: Map<String, Any?>,
+        callerEngineToken: String?,
+    ): Map<String, Any?> = sessionMutex.withLock {
         val requestId = args["requestId"] ?: args["id"]
             ?: throw IllegalArgumentException("requestId is required")
+        val requestedGeneration = args.longValue("sessionGeneration")
+        val requestedMethod = args.stringValue("serverRequestMethod")
         val result = args["response"] ?: args["result"]
             ?: throw IllegalArgumentException("response is required")
-        ensureConnectedSession().sendResponse(requestId, result)
-        return mapOf("ok" to true)
+        val currentSession = session
+        val currentGeneration = activeSessionGeneration
+        val responseWriter: (suspend (Any, Any?) -> Unit)? =
+            currentSession?.takeIf { it.isRunning }?.let { runningSession ->
+                { id, response -> runningSession.sendResponse(id, response) }
+            }
+        val pending = requestedGeneration?.let {
+            serverRequests.find(it, requestId)
+        }
+        val responseResult = try {
+            serverRequestResponder.respond(
+                requestedGeneration = requestedGeneration,
+                activeGeneration = currentGeneration,
+                activeSessionIdentity = currentSession,
+                requestId = requestId,
+                requestedMethod = requestedMethod,
+                response = result,
+                responseWriter = responseWriter,
+            )
+        } catch (error: CodexServerRequestResponseException) {
+            logServerRequestLifecycle(
+                action = "response_rejected",
+                engineToken = callerEngineToken,
+                generation = requestedGeneration,
+                method = pending?.method,
+                requestId = requestId,
+                resolved = false,
+                actionResult = error.errorCode,
+            )
+            throw error
+        }
+        logServerRequestLifecycle(
+            action = "response_sent",
+            engineToken = callerEngineToken,
+            request = responseResult.request,
+            resolved = responseResult.resolved,
+            actionResult = responseResult.actionResult,
+        )
+        return@withLock linkedMapOf(
+            "ok" to true,
+            "sessionGeneration" to responseResult.request.sessionGeneration,
+            "requestId" to responseResult.request.requestId,
+            "serverRequestMethod" to responseResult.request.method,
+            "resolved" to responseResult.resolved,
+            "actionResult" to responseResult.actionResult,
+        )
     }
 
     private suspend fun readLocalConfig(): Map<String, Any?> {
@@ -643,9 +787,25 @@ class CodexAppServerManager private constructor(
                 "B37 writeLocalConfig restart session reason=$reason"
             )
             sessionMutex.withLock {
-                session?.disconnect()
-                session = null
-                activeRuntime = null
+                val currentSession = session
+                val currentGeneration = activeSessionGeneration
+                synchronized(sessionStateLock) {
+                    if (currentSession != null &&
+                        currentGeneration != NO_SESSION_GENERATION
+                    ) {
+                        invalidateServerRequestsLocked(
+                            generation = currentGeneration,
+                            sessionIdentity = currentSession,
+                            reason = "session_replaced",
+                        )
+                    }
+                    if (session === currentSession) {
+                        session = null
+                        activeSessionGeneration = NO_SESSION_GENERATION
+                        activeRuntime = null
+                    }
+                }
+                currentSession?.disconnect()
                 activeTurnsByThreadId.clear()
                 finishedNotifyOnceByThread.clear()
             }
@@ -897,8 +1057,22 @@ class CodexAppServerManager private constructor(
         return session ?: throw IllegalStateException("Codex app-server is not connected.")
     }
 
-    private suspend fun handleServerMessage(message: Map<String, Any?>) {
-        val method = extractCodexServerMethod(message)
+    private suspend fun handleServerMessage(
+        sourceGeneration: Long,
+        sourceSession: CodexAppServerSession,
+        message: Map<String, Any?>,
+    ) {
+        if (!isCurrentSession(sourceGeneration, sourceSession)) {
+            Log.w(
+                TAG,
+                "server_message action=ignored_stale generation=$sourceGeneration " +
+                    "method=${extractCodexServerMethod(message)}",
+            )
+            return
+        }
+        val requestEnvelope = findCodexServerRequestEnvelope(message)
+        val extractedMethod = extractCodexServerMethod(message)
+        val method = extractedMethod.ifBlank { requestEnvelope?.method.orEmpty() }
         val explicitParams = extractCodexServerParams(message)
         val params = if (explicitParams.isNotEmpty()) {
             explicitParams
@@ -919,8 +1093,9 @@ class CodexAppServerManager private constructor(
             ?.get("type")?.toString()
             ?: (params["item"] as? Map<*, *>)?.get("type")?.toString()
         Log.d(
-            "CodexAppServerManager",
-            "<- method=$method itemType=$diagItemType threadId=$threadId turnId=$turnId"
+            TAG,
+            "<- generation=$sourceGeneration method=$method itemType=$diagItemType " +
+                "threadId=$threadId turnId=$turnId",
         )
         val protocolEventType = if (method == "codex/event") {
             codexProtocolEventType(params)
@@ -1001,17 +1176,108 @@ class CodexAppServerManager private constructor(
                 )
             }
         }
-        emitEvent(
-            linkedMapOf(
+        synchronized(sessionStateLock) {
+            if (!isCurrentSessionLocked(sourceGeneration, sourceSession)) {
+                Log.w(
+                    TAG,
+                    "server_message action=ignored_after_session_change " +
+                        "generation=$sourceGeneration method=$method",
+                )
+                return@synchronized
+            }
+
+            var lifecycleRequest: CodexPendingServerRequest? = null
+            var lifecycleRequestId: Any? = null
+            var lifecycleMethod: String? = null
+            var lifecycleResolved: Boolean? = null
+            var lifecycleActionResult: String? = null
+
+            if (method == SERVER_REQUEST_RESOLVED_METHOD) {
+                lifecycleRequestId = extractResolvedServerRequestId(message, params)
+                if (lifecycleRequestId != null) {
+                    lifecycleRequest = serverRequests.resolve(
+                        sessionGeneration = sourceGeneration,
+                        sessionIdentity = sourceSession,
+                        requestId = lifecycleRequestId,
+                    )
+                }
+                lifecycleMethod = lifecycleRequest?.method
+                    ?: params.stringValue("serverRequestMethod")
+                    ?: params.stringValue("method")
+                lifecycleResolved = true
+                lifecycleActionResult = extractServerRequestActionResult(params)
+                logServerRequestLifecycle(
+                    action = if (lifecycleRequest == null) {
+                        "resolved_without_pending"
+                    } else {
+                        "resolved"
+                    },
+                    generation = sourceGeneration,
+                    method = lifecycleMethod,
+                    requestId = lifecycleRequestId,
+                    resolved = true,
+                    actionResult = lifecycleActionResult,
+                )
+            } else if (requestEnvelope != null) {
+                val registration = serverRequests.register(
+                    sessionGeneration = sourceGeneration,
+                    sessionIdentity = sourceSession,
+                    requestId = requestEnvelope.requestId,
+                    method = requestEnvelope.method,
+                    threadId = threadId,
+                    turnId = turnId,
+                )
+                lifecycleRequest = registration.request
+                lifecycleRequestId = registration.request.requestId
+                lifecycleMethod = registration.request.method
+                lifecycleResolved = false
+                lifecycleActionResult = if (registration.isNew) {
+                    "pending"
+                } else {
+                    "duplicate_ignored"
+                }
+                logServerRequestLifecycle(
+                    action = if (registration.isNew) "registered" else "duplicate_ignored",
+                    request = registration.request,
+                    resolved = false,
+                    actionResult = lifecycleActionResult,
+                )
+                if (!registration.isNew) {
+                    return@synchronized
+                }
+            }
+
+            if (method == "codex/disconnected") {
+                invalidateServerRequestsLocked(
+                    generation = sourceGeneration,
+                    sessionIdentity = sourceSession,
+                    reason = "connection_exit",
+                )
+                session = null
+                activeSessionGeneration = NO_SESSION_GENERATION
+                activeRuntime = null
+                activeTurnsByThreadId.clear()
+                finishedNotifyOnceByThread.clear()
+            }
+
+            val event = linkedMapOf<String, Any?>(
                 "method" to method,
                 "workspaceId" to CodexAppServerSession.DEFAULT_WORKSPACE_ID,
+                "sessionGeneration" to sourceGeneration,
                 "threadId" to threadId,
                 "turnId" to turnId,
                 "conversationId" to localConversationId,
                 "params" to params,
-                "message" to message
+                "message" to message,
             )
-        )
+            if (lifecycleRequestId != null) {
+                event["requestId"] = lifecycleRequestId
+                event["serverRequestMethod"] = lifecycleMethod
+                event["resolved"] = lifecycleResolved
+                event["actionResult"] = lifecycleActionResult
+            }
+            emitEvent(event)
+        }
     }
 
     /**
@@ -1118,10 +1384,141 @@ class CodexAppServerManager private constructor(
         }
     }
 
+    private fun isCurrentSession(
+        generation: Long,
+        sessionIdentity: CodexAppServerSession,
+    ): Boolean = synchronized(sessionStateLock) {
+        isCurrentSessionLocked(generation, sessionIdentity)
+    }
+
+    private fun isCurrentSessionLocked(
+        generation: Long,
+        sessionIdentity: CodexAppServerSession,
+    ): Boolean {
+        return generation != NO_SESSION_GENERATION &&
+            activeSessionGeneration == generation &&
+            session === sessionIdentity
+    }
+
+    /**
+     * Must be called while [sessionStateLock] is held so registration and the
+     * invalidation event are ordered against messages from the replacement
+     * session.
+     */
+    private fun invalidateServerRequestsLocked(
+        generation: Long,
+        sessionIdentity: CodexAppServerSession,
+        reason: String,
+    ) {
+        serverRequests.invalidateGeneration(
+            sessionGeneration = generation,
+            sessionIdentity = sessionIdentity,
+        ).forEach { request ->
+            logServerRequestLifecycle(
+                action = "invalidated",
+                request = request,
+                resolved = false,
+                actionResult = "invalidated",
+                reason = reason,
+            )
+            val params = linkedMapOf<String, Any?>(
+                "sessionGeneration" to request.sessionGeneration,
+                "oldGeneration" to request.sessionGeneration,
+                "requestId" to request.requestId,
+                "serverRequestMethod" to request.method,
+                "reason" to reason,
+                "resolved" to false,
+                "actionResult" to "invalidated",
+            )
+            emitEvent(
+                linkedMapOf(
+                    "method" to SERVER_REQUEST_INVALIDATED_METHOD,
+                    "workspaceId" to CodexAppServerSession.DEFAULT_WORKSPACE_ID,
+                    "sessionGeneration" to request.sessionGeneration,
+                    "oldGeneration" to request.sessionGeneration,
+                    "requestId" to request.requestId,
+                    "serverRequestMethod" to request.method,
+                    "threadId" to request.threadId,
+                    "turnId" to request.turnId,
+                    "conversationId" to null,
+                    "reason" to reason,
+                    "resolved" to false,
+                    "actionResult" to "invalidated",
+                    "params" to params,
+                    "message" to emptyMap<String, Any?>(),
+                ),
+            )
+        }
+    }
+
+    private fun logServerRequestLifecycle(
+        action: String,
+        request: CodexPendingServerRequest,
+        engineToken: String? = null,
+        resolved: Boolean,
+        actionResult: String,
+        reason: String? = null,
+    ) {
+        logServerRequestLifecycle(
+            action = action,
+            engineToken = engineToken,
+            generation = request.sessionGeneration,
+            method = request.method,
+            requestId = request.requestId,
+            resolved = resolved,
+            actionResult = actionResult,
+            reason = reason,
+        )
+    }
+
+    private fun logServerRequestLifecycle(
+        action: String,
+        engineToken: String? = null,
+        generation: Long?,
+        method: String?,
+        requestId: Any?,
+        resolved: Boolean,
+        actionResult: String,
+        reason: String? = null,
+    ) {
+        Log.i(
+            TAG,
+            "server_request action=$action engineToken=${engineToken ?: "none"} " +
+                "generation=${generation ?: NO_SESSION_GENERATION} " +
+                "method=${method ?: "unknown"} id=${requestId ?: "unknown"} " +
+                "resolved=$resolved actionResult=$actionResult reason=${reason ?: "none"}",
+        )
+    }
+
     private fun emitEvent(event: Map<String, Any?>) {
-        val listener = eventListener ?: return
         mainHandler.post {
-            listener(event)
+            val listeners = eventListeners.snapshot()
+            listeners.forEach { registration ->
+                try {
+                    registration.listener(event)
+                    if (event["requestId"] != null) {
+                        logServerRequestLifecycle(
+                            action = "event_dispatched",
+                            engineToken = registration.engineToken,
+                            generation = (event["sessionGeneration"] as? Number)?.toLong(),
+                            method = event["serverRequestMethod"]?.toString(),
+                            requestId = event["requestId"],
+                            resolved = event["resolved"] == true,
+                            actionResult = event["actionResult"]?.toString() ?: "delivered",
+                            reason = event["reason"]?.toString(),
+                        )
+                    }
+                } catch (error: Throwable) {
+                    Log.e(
+                        TAG,
+                        "event_listener action=delivery_failed " +
+                            "engineToken=${registration.engineToken} " +
+                            "streamToken=${registration.streamToken} " +
+                            "method=${event["method"]}",
+                        error,
+                    )
+                }
+            }
         }
     }
 
@@ -1230,6 +1627,11 @@ class CodexAppServerManager private constructor(
     )
 
     companion object {
+        private const val TAG = "CodexAppServerManager"
+        private const val NO_SESSION_GENERATION = 0L
+        private const val SERVER_REQUEST_RESOLVED_METHOD = "serverRequest/resolved"
+        private const val SERVER_REQUEST_INVALIDATED_METHOD = "serverRequest/invalidated"
+
         @Volatile
         private var INSTANCE: CodexAppServerManager? = null
 
@@ -1259,6 +1661,60 @@ private data class CodexThreadListEntry(
     val title: String?,
     val archived: Boolean?
 )
+
+private data class CodexServerRequestEnvelope(
+    val requestId: Any,
+    val method: String,
+)
+
+private fun findCodexServerRequestEnvelope(
+    value: Any?,
+    depth: Int = 0,
+): CodexServerRequestEnvelope? {
+    if (depth > 5) {
+        return null
+    }
+    val map = value.asStringMap() ?: return null
+    val directMethod = map["method"]?.toString()?.trim().orEmpty()
+    val directId = map["id"]
+    if (directMethod.isNotEmpty() &&
+        directId != null &&
+        !map.containsKey("result") &&
+        !map.containsKey("error")
+    ) {
+        return CodexServerRequestEnvelope(
+            requestId = directId,
+            method = directMethod,
+        )
+    }
+    for (key in listOf("message", "payload", "event", "data", "body")) {
+        findCodexServerRequestEnvelope(map[key], depth + 1)?.let { return it }
+    }
+    return null
+}
+
+private fun extractResolvedServerRequestId(
+    message: Map<String, Any?>,
+    params: Map<String, Any?>,
+): Any? {
+    return params["requestId"]
+        ?: params["request_id"]
+        ?: params["id"]
+        ?: message["requestId"]
+        ?: message["request_id"]
+        ?: params.mapValue("request")["id"]
+        ?: message.mapValue("request")["id"]
+}
+
+private fun extractServerRequestActionResult(params: Map<String, Any?>): String {
+    val value = params["actionResult"]
+        ?: params["result"]
+        ?: params["status"]
+        ?: params["outcome"]
+        ?: params["decision"]
+        ?: "resolved"
+    return value.toString().take(240)
+}
 
 internal fun Map<String, Any?>.withLocalIds(
     threadId: String?,

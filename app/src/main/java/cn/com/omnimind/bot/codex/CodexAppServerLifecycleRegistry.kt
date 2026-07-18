@@ -1,0 +1,291 @@
+package cn.com.omnimind.bot.codex
+
+import java.util.concurrent.ConcurrentHashMap
+
+internal data class CodexEventListenerRegistration(
+    val engineToken: String,
+    val streamToken: String,
+    val listener: (Map<String, Any?>) -> Unit,
+)
+
+/**
+ * Process-wide listener registry shared by every FlutterEngine.
+ *
+ * Registrations are owned by a stream token, so cancelling one EventChannel
+ * subscription cannot clear listeners that belong to another engine.
+ */
+internal class CodexEventListenerRegistry {
+    private val registrations =
+        ConcurrentHashMap<String, CodexEventListenerRegistration>()
+
+    fun register(
+        engineToken: String,
+        streamToken: String,
+        listener: (Map<String, Any?>) -> Unit,
+    ): CodexEventListenerRegistration {
+        val registration = CodexEventListenerRegistration(
+            engineToken = engineToken,
+            streamToken = streamToken,
+            listener = listener,
+        )
+        registrations[streamToken] = registration
+        return registration
+    }
+
+    fun unregister(streamToken: String): CodexEventListenerRegistration? {
+        return registrations.remove(streamToken)
+    }
+
+    fun snapshot(): List<CodexEventListenerRegistration> {
+        return registrations.values.sortedBy { it.streamToken }
+    }
+
+    fun size(): Int = registrations.size
+}
+
+internal enum class CodexServerRequestState {
+    PENDING,
+    RESPONSE_SENDING,
+    RESPONSE_SENT,
+}
+
+internal data class CodexPendingServerRequest(
+    val sessionGeneration: Long,
+    val sessionIdentity: Any,
+    val requestId: Any,
+    val requestKey: String,
+    val method: String,
+    val threadId: String?,
+    val turnId: String?,
+    val state: CodexServerRequestState,
+)
+
+internal data class CodexServerRequestRegistration(
+    val request: CodexPendingServerRequest,
+    val isNew: Boolean,
+)
+
+/**
+ * Tracks app-server initiated JSON-RPC requests for exactly one live session
+ * generation. All mutating operations are synchronized so responses from two
+ * Flutter engines are first-wins.
+ */
+internal class CodexServerRequestRegistry {
+    private val lock = Any()
+    private val requests = LinkedHashMap<String, CodexPendingServerRequest>()
+
+    fun register(
+        sessionGeneration: Long,
+        sessionIdentity: Any,
+        requestId: Any,
+        method: String,
+        threadId: String?,
+        turnId: String?,
+    ): CodexServerRequestRegistration = synchronized(lock) {
+        val requestKey = codexServerRequestKey(sessionGeneration, requestId)
+        val existing = requests[requestKey]
+        if (existing != null) {
+            return@synchronized CodexServerRequestRegistration(
+                request = existing,
+                isNew = false,
+            )
+        }
+        val request = CodexPendingServerRequest(
+            sessionGeneration = sessionGeneration,
+            sessionIdentity = sessionIdentity,
+            requestId = requestId,
+            requestKey = requestKey,
+            method = method,
+            threadId = threadId,
+            turnId = turnId,
+            state = CodexServerRequestState.PENDING,
+        )
+        requests[requestKey] = request
+        CodexServerRequestRegistration(request = request, isNew = true)
+    }
+
+    fun claimForResponse(
+        sessionGeneration: Long,
+        sessionIdentity: Any,
+        requestId: Any,
+        expectedMethod: String,
+    ): CodexPendingServerRequest = synchronized(lock) {
+        val requestKey = codexServerRequestKey(sessionGeneration, requestId)
+        val existing = requests[requestKey]
+            ?: throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_REQUEST_NOT_PENDING",
+                message = "Codex server request is no longer pending.",
+            )
+        if (existing.sessionIdentity !== sessionIdentity) {
+            throw CodexServerRequestResponseException(
+                errorCode = "CODEX_STALE_SERVER_REQUEST",
+                message = "Codex server request belongs to a stale session.",
+            )
+        }
+        if (existing.method != expectedMethod) {
+            throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_REQUEST_METHOD_MISMATCH",
+                message = "Codex server request method does not match the pending request.",
+            )
+        }
+        if (existing.state != CodexServerRequestState.PENDING) {
+            throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_REQUEST_ALREADY_RESPONDED",
+                message = "Codex server request already has a response in progress.",
+            )
+        }
+        existing.copy(state = CodexServerRequestState.RESPONSE_SENDING).also {
+            requests[requestKey] = it
+        }
+    }
+
+    fun markResponseSent(request: CodexPendingServerRequest) = synchronized(lock) {
+        val current = requests[request.requestKey] ?: return@synchronized
+        if (current.sessionIdentity === request.sessionIdentity &&
+            current.state == CodexServerRequestState.RESPONSE_SENDING
+        ) {
+            requests[request.requestKey] = current.copy(
+                state = CodexServerRequestState.RESPONSE_SENT,
+            )
+        }
+    }
+
+    fun restorePendingAfterSendFailure(request: CodexPendingServerRequest) =
+        synchronized(lock) {
+            val current = requests[request.requestKey] ?: return@synchronized
+            if (current.sessionIdentity === request.sessionIdentity &&
+                current.state == CodexServerRequestState.RESPONSE_SENDING
+            ) {
+                requests[request.requestKey] = current.copy(
+                    state = CodexServerRequestState.PENDING,
+                )
+            }
+        }
+
+    fun resolve(
+        sessionGeneration: Long,
+        sessionIdentity: Any,
+        requestId: Any,
+    ): CodexPendingServerRequest? = synchronized(lock) {
+        val requestKey = codexServerRequestKey(sessionGeneration, requestId)
+        val current = requests[requestKey] ?: return@synchronized null
+        if (current.sessionIdentity !== sessionIdentity) {
+            return@synchronized null
+        }
+        requests.remove(requestKey)
+    }
+
+    fun invalidateGeneration(
+        sessionGeneration: Long,
+        sessionIdentity: Any,
+    ): List<CodexPendingServerRequest> = synchronized(lock) {
+        val invalidated = requests.values.filter {
+            it.sessionGeneration == sessionGeneration &&
+                it.sessionIdentity === sessionIdentity
+        }
+        invalidated.forEach { requests.remove(it.requestKey) }
+        invalidated
+    }
+
+    fun find(
+        sessionGeneration: Long,
+        requestId: Any,
+    ): CodexPendingServerRequest? = synchronized(lock) {
+        requests[codexServerRequestKey(sessionGeneration, requestId)]
+    }
+
+    fun size(): Int = synchronized(lock) { requests.size }
+}
+
+internal data class CodexServerRequestResponseResult(
+    val request: CodexPendingServerRequest,
+    val resolved: Boolean = false,
+    val actionResult: String = "response_sent",
+)
+
+internal class CodexServerRequestResponseException(
+    val errorCode: String,
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
+
+/**
+ * Validates generation and session identity before writing a server response.
+ *
+ * The caller supplies only the already-running session writer. There is no
+ * connection callback here by design, so this path can never reconnect.
+ */
+internal class CodexServerRequestResponder(
+    private val registry: CodexServerRequestRegistry,
+) {
+    suspend fun respond(
+        requestedGeneration: Long?,
+        activeGeneration: Long,
+        activeSessionIdentity: Any?,
+        requestId: Any,
+        requestedMethod: String?,
+        response: Any?,
+        responseWriter: (suspend (Any, Any?) -> Unit)?,
+    ): CodexServerRequestResponseResult {
+        val generation = requestedGeneration
+            ?: throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_REQUEST_GENERATION_REQUIRED",
+                message = "sessionGeneration is required for Codex server responses.",
+            )
+        if (generation != activeGeneration || activeSessionIdentity == null) {
+            throw CodexServerRequestResponseException(
+                errorCode = "CODEX_STALE_SERVER_REQUEST",
+                message = "Codex server request belongs to an inactive session generation.",
+            )
+        }
+        val method = requestedMethod?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_REQUEST_METHOD_REQUIRED",
+                message = "serverRequestMethod is required for Codex server responses.",
+            )
+        val writer = responseWriter
+            ?: throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_DISCONNECTED",
+                message = "Codex app-server is not connected; response was not sent.",
+            )
+        val claimed = registry.claimForResponse(
+            sessionGeneration = generation,
+            sessionIdentity = activeSessionIdentity,
+            requestId = requestId,
+            expectedMethod = method,
+        )
+        try {
+            writer(claimed.requestId, response)
+        } catch (error: Throwable) {
+            registry.restorePendingAfterSendFailure(claimed)
+            throw CodexServerRequestResponseException(
+                errorCode = "CODEX_SERVER_RESPONSE_WRITE_FAILED",
+                message = "Failed to write Codex server response.",
+                cause = error,
+            )
+        }
+        registry.markResponseSent(claimed)
+        return CodexServerRequestResponseResult(request = claimed)
+    }
+}
+
+private fun codexServerRequestKey(
+    sessionGeneration: Long,
+    requestId: Any,
+): String {
+    val idKey = when (requestId) {
+        is Byte, is Short, is Int, is Long ->
+            "number:${(requestId as Number).toLong()}"
+        is Float, is Double -> {
+            val number = (requestId as Number).toDouble()
+            if (number.isFinite() && number % 1.0 == 0.0) {
+                "number:${number.toLong()}"
+            } else {
+                "number:$number"
+            }
+        }
+        is String -> "string:$requestId"
+        else -> "other:${requestId::class.java.name}:$requestId"
+    }
+    return "$sessionGeneration/$idKey"
+}
