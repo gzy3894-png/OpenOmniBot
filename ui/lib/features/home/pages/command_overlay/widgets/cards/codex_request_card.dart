@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ui/models/conversation_model.dart';
@@ -51,6 +52,7 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     super.didUpdateWidget(oldWidget);
     if (_requestRenderSignature(oldWidget.cardData) !=
         _requestRenderSignature(widget.cardData)) {
+      _isSubmitting = false;
       _localStatus = null;
       _localAnswers = const <String>[];
       _localSubmittedAction = null;
@@ -59,6 +61,13 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       _answerController.clear();
       _syncDefaultSelection();
       _hydratePersistedResponse();
+      if (_hasTerminalRequestStatus(widget.cardData)) {
+        unawaited(
+          _persistTerminalSnapshot(
+            Map<String, dynamic>.from(widget.cardData),
+          ),
+        );
+      }
     }
   }
 
@@ -258,18 +267,13 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     }
     final threadId = (widget.cardData['threadId'] ?? '').toString().trim();
     final requestIdText = request.requestId.toString();
-    Object? submitError;
-    await _submit(() async {
-      try {
-        return await CodexAppServerService.respondToApproval(
-          request: request,
-          accepted: accepted,
-        );
-      } catch (e) {
-        submitError = e;
-        rethrow;
-      }
-    }, decision);
+    final submitError = await _submit(
+      () => CodexAppServerService.respondToApproval(
+        request: request,
+        accepted: accepted,
+      ),
+      decision,
+    );
     // _submit swallows RPC errors after updating UI; log ring outcome here.
     final ok = submitError == null;
     unawaited(
@@ -337,7 +341,7 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     );
   }
 
-  Future<void> _submit(
+  Future<Object?> _submit(
     Future<Map<String, dynamic>> Function() action,
     String submittedAction, {
     List<String> answers = const <String>[],
@@ -345,8 +349,11 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     if (_isSubmitting ||
         _cardStatus(widget.cardData) != 'pending' ||
         !_hasCompleteServerRequestIdentity(widget.cardData)) {
-      return;
+      return StateError(
+        'Codex server request is no longer pending.',
+      );
     }
+    final requestIdentity = _requestStorageIdentity(widget.cardData);
     setState(() {
       _isSubmitting = true;
       _submitErrorMessage = null;
@@ -359,15 +366,31 @@ class _CodexRequestCardState extends State<CodexRequestCard>
               .toString(),
         );
       }
-      await _persistResponseStatus(
+      if (!_hasRequestIdentity(requestIdentity)) {
+        return null;
+      }
+      if (_hasTerminalRequestStatus(widget.cardData)) {
+        _finishSubmissionWithoutLocalOverride();
+        return null;
+      }
+      final persisted = await _persistResponseStatus(
         'response_sent',
         answers,
         submittedAction: submittedAction,
         actionResult:
             _firstText([result['actionResult']]) ?? 'response_sent',
         resolved: false,
+        expectedIdentity: requestIdentity,
       );
-      if (!mounted) return;
+      if (!mounted) return null;
+      if (!persisted ||
+          !_hasRequestIdentity(requestIdentity) ||
+          _hasTerminalRequestStatus(widget.cardData)) {
+        if (_hasRequestIdentity(requestIdentity)) {
+          _finishSubmissionWithoutLocalOverride();
+        }
+        return null;
+      }
       setState(() {
         _localStatus = 'response_sent';
         _localAnswers = answers;
@@ -375,22 +398,41 @@ class _CodexRequestCardState extends State<CodexRequestCard>
         _submitErrorMessage = null;
         _isSubmitting = false;
       });
+      return null;
     } catch (error) {
       final failure = _serverRequestFailureDisposition(error);
       if (failure == _ServerRequestFailureDisposition.invalidated) {
-        await _markRequestInvalidated();
-        return;
+        if (_hasRequestIdentity(requestIdentity)) {
+          await _markRequestInvalidated(expectedIdentity: requestIdentity);
+        }
+        return error;
       }
-      if (failure == _ServerRequestFailureDisposition.responseSent) {
-        await _persistResponseStatus(
+      if (failure == _ServerRequestFailureDisposition.handledElsewhere) {
+        if (!_hasRequestIdentity(requestIdentity)) {
+          return error;
+        }
+        if (_hasTerminalRequestStatus(widget.cardData)) {
+          _finishSubmissionWithoutLocalOverride();
+          return error;
+        }
+        final persisted = await _persistResponseStatus(
           'response_sent',
           const <String>[],
           submittedAction: 'handled_elsewhere',
           actionResult: 'already_responded',
           resolved: false,
+          expectedIdentity: requestIdentity,
         );
         if (!mounted) {
-          return;
+          return error;
+        }
+        if (!persisted ||
+            !_hasRequestIdentity(requestIdentity) ||
+            _hasTerminalRequestStatus(widget.cardData)) {
+          if (_hasRequestIdentity(requestIdentity)) {
+            _finishSubmissionWithoutLocalOverride();
+          }
+          return error;
         }
         setState(() {
           _localStatus = 'response_sent';
@@ -399,29 +441,64 @@ class _CodexRequestCardState extends State<CodexRequestCard>
           _submitErrorMessage = null;
           _isSubmitting = false;
         });
-        return;
+        return error;
       }
-      if (!mounted) return;
+      if (!mounted) return error;
+      if (!_hasRequestIdentity(requestIdentity)) {
+        return error;
+      }
+      if (_hasTerminalRequestStatus(widget.cardData)) {
+        _finishSubmissionWithoutLocalOverride();
+        return error;
+      }
       setState(() {
         _localStatus = null;
         _submitErrorMessage = _requestSubmitErrorText(error);
         _isSubmitting = false;
       });
+      return error;
     }
   }
 
-  Future<void> _markRequestInvalidated() async {
-    await _persistResponseStatus(
+  Future<void> _markRequestInvalidated({String? expectedIdentity}) async {
+    final requestIdentity =
+        expectedIdentity ?? _requestStorageIdentity(widget.cardData);
+    if (!_hasRequestIdentity(requestIdentity)) {
+      return;
+    }
+    final persisted = await _persistResponseStatus(
       'invalidated',
       const <String>[],
       actionResult: 'invalidated',
       resolved: false,
+      expectedIdentity: requestIdentity,
     );
     if (!mounted) {
       return;
     }
+    if (!persisted) {
+      _finishSubmissionWithoutLocalOverride();
+      return;
+    }
     setState(() {
       _localStatus = 'invalidated';
+      _localAnswers = const <String>[];
+      _localSubmittedAction = null;
+      _submitErrorMessage = null;
+      _isSubmitting = false;
+    });
+  }
+
+  bool _hasRequestIdentity(String expectedIdentity) {
+    return _requestStorageIdentity(widget.cardData) == expectedIdentity;
+  }
+
+  void _finishSubmissionWithoutLocalOverride() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _localStatus = null;
       _localAnswers = const <String>[];
       _localSubmittedAction = null;
       _submitErrorMessage = null;
@@ -502,26 +579,12 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       if (_cardStatus(widget.cardData) == 'pending' &&
           _hasCompleteServerRequestIdentity(widget.cardData) &&
           status != 'response_sent' &&
-          status != 'invalidated') {
+          !_isTerminalRequestStatus(status)) {
         return;
       }
       _localStatus = status;
       _localAnswers = _stringList(decoded['answers']);
       _localSubmittedAction = _firstText([decoded['submittedAction']]);
-      if (_cardStatus(widget.cardData) == 'pending' &&
-          (status == 'response_sent' || status == 'invalidated')) {
-        widget.cardData['status'] = status;
-        widget.cardData['submittedAnswers'] = _localAnswers;
-        if (_localSubmittedAction != null) {
-          widget.cardData['submittedAction'] = _localSubmittedAction;
-        }
-        if (decoded.containsKey('actionResult')) {
-          widget.cardData['actionResult'] = decoded['actionResult'];
-        }
-        if (decoded.containsKey('resolved')) {
-          widget.cardData['resolved'] = decoded['resolved'];
-        }
-      }
     } catch (_) {
       return;
     }
@@ -542,73 +605,128 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     _selectedOptionValue = options.first.value;
   }
 
-  Future<void> _persistResponseStatus(
+  Future<bool> _persistResponseStatus(
     String status,
     List<String> answers, {
     String? submittedAction,
     String? actionResult,
     bool? resolved,
+    String? expectedIdentity,
   }) async {
-    final nextCardData = Map<String, dynamic>.from(widget.cardData)
+    final requestIdentity =
+        expectedIdentity ?? _requestStorageIdentity(widget.cardData);
+    final current = _requestSnapshotForIdentity(requestIdentity);
+    if (current == null) {
+      return false;
+    }
+    final currentStatus = _cardStatus(current);
+    final currentIsTerminal = _isTerminalRequestStatus(currentStatus);
+    final requestedWouldReplaceTerminal =
+        currentIsTerminal && currentStatus != status;
+    if (requestedWouldReplaceTerminal) {
+      await _persistTerminalSnapshot(current);
+      return false;
+    }
+    final snapshot = Map<String, dynamic>.from(current)
       ..['status'] = status
       ..['submittedAnswers'] = answers;
     if (submittedAction != null && submittedAction.isNotEmpty) {
-      nextCardData['submittedAction'] = submittedAction;
+      snapshot['submittedAction'] = submittedAction;
     }
     if (actionResult != null && actionResult.isNotEmpty) {
-      nextCardData['actionResult'] = actionResult;
+      snapshot['actionResult'] = actionResult;
     }
     if (resolved != null) {
-      nextCardData['resolved'] = resolved;
+      snapshot['resolved'] = resolved;
     }
-    widget.cardData['status'] = status;
-    widget.cardData['submittedAnswers'] = answers;
-    if (submittedAction != null && submittedAction.isNotEmpty) {
-      widget.cardData['submittedAction'] = submittedAction;
+    await _persistConversationSnapshot(snapshot);
+    await _persistStorageSnapshot(snapshot);
+    final terminalCorrection = _terminalCorrectionAfter(
+      requestIdentity,
+      snapshot,
+    );
+    if (terminalCorrection != null) {
+      await _persistTerminalSnapshot(terminalCorrection);
+      return false;
     }
-    if (actionResult != null && actionResult.isNotEmpty) {
-      widget.cardData['actionResult'] = actionResult;
-    }
-    if (resolved != null) {
-      widget.cardData['resolved'] = resolved;
-    }
+    return _hasRequestIdentity(requestIdentity) &&
+        !_hasTerminalRequestStatus(widget.cardData);
+  }
 
-    final conversationId = _asInt(widget.cardData['conversationId']);
-    final cardId = (widget.cardData['cardId'] ?? widget.cardData['id'] ?? '')
+  Map<String, dynamic>? _requestSnapshotForIdentity(String identity) {
+    if (!_hasRequestIdentity(identity)) {
+      return null;
+    }
+    return Map<String, dynamic>.from(widget.cardData);
+  }
+
+  Map<String, dynamic>? _terminalCorrectionAfter(
+    String identity,
+    Map<String, dynamic> persisted,
+  ) {
+    final current = _requestSnapshotForIdentity(identity);
+    if (current == null) {
+      return null;
+    }
+    final currentStatus = _cardStatus(current);
+    if (!_isTerminalRequestStatus(currentStatus) ||
+        currentStatus == _cardStatus(persisted)) {
+      return null;
+    }
+    return current;
+  }
+
+  Future<void> _persistConversationSnapshot(
+    Map<String, dynamic> snapshot,
+  ) async {
+    final conversationId = _asInt(snapshot['conversationId']);
+    final cardId = (snapshot['cardId'] ?? snapshot['id'] ?? '')
         .toString()
         .trim();
-    if (conversationId != null && cardId.isNotEmpty) {
-      try {
-        await ConversationHistoryService.upsertConversationUiCard(
-          conversationId,
-          entryId: cardId,
-          cardData: nextCardData,
-          createdAtMillis: _asInt(widget.cardData['startTime']),
-          mode: ConversationMode.codex,
-        );
-      } catch (_) {
-        // The server response already succeeded. A local history write failure
-        // must not make the approval actionable again.
-      }
+    if (conversationId == null || cardId.isEmpty) {
+      return;
     }
     try {
-      final identity = _requestStorageIdentity(widget.cardData);
+      await ConversationHistoryService.upsertConversationUiCard(
+        conversationId,
+        entryId: cardId,
+        cardData: snapshot,
+        createdAtMillis: _asInt(snapshot['startTime']),
+        mode: ConversationMode.codex,
+      );
+    } catch (_) {
+      // The server response already succeeded. A local history write failure
+      // must not make the approval actionable again.
+    }
+  }
+
+  Future<void> _persistStorageSnapshot(Map<String, dynamic> snapshot) async {
+    try {
+      final identity = _requestStorageIdentity(snapshot);
+      final submittedAction = _firstText([snapshot['submittedAction']]);
+      final actionResult = _firstText([snapshot['actionResult']]);
       await StorageService.setString(
-        _requestStorageKey(widget.cardData),
+        _requestStorageKey(snapshot),
         jsonEncode(<String, dynamic>{
           'identity': identity,
-          'status': status,
-          'answers': answers,
-          if (submittedAction != null && submittedAction.isNotEmpty)
-            'submittedAction': submittedAction,
-          if (actionResult != null && actionResult.isNotEmpty)
-            'actionResult': actionResult,
-          if (resolved != null) 'resolved': resolved,
+          'status': _cardStatus(snapshot),
+          'answers': _stringList(snapshot['submittedAnswers']),
+          if (submittedAction != null) 'submittedAction': submittedAction,
+          if (actionResult != null) 'actionResult': actionResult,
+          if (snapshot.containsKey('resolved'))
+            'resolved': snapshot['resolved'],
         }),
       );
     } catch (_) {
       return;
     }
+  }
+
+  Future<void> _persistTerminalSnapshot(
+    Map<String, dynamic> snapshot,
+  ) async {
+    await _persistConversationSnapshot(snapshot);
+    await _persistStorageSnapshot(snapshot);
   }
 }
 
@@ -1059,6 +1177,10 @@ bool _isTerminalRequestStatus(String? status) {
       status == 'invalidated';
 }
 
+bool _hasTerminalRequestStatus(Map<String, dynamic> cardData) {
+  return _isTerminalRequestStatus(_cardStatus(cardData));
+}
+
 bool _isRestorableRequestStatus(String? status) {
   return _isTerminalRequestStatus(status) || status == 'response_sent';
 }
@@ -1081,7 +1203,7 @@ String? _requestIdStorageKey(dynamic requestId) {
 
 int? _requestSessionGeneration(Map<String, dynamic> cardData) {
   final value = _asInt(cardData['sessionGeneration']);
-  return value != null && value >= 0 ? value : null;
+  return value != null && value > 0 ? value : null;
 }
 
 String? _requestServerMethod(Map<String, dynamic> cardData) {
@@ -1091,7 +1213,7 @@ String? _requestServerMethod(Map<String, dynamic> cardData) {
 
 enum _ServerRequestFailureDisposition {
   invalidated,
-  responseSent,
+  handledElsewhere,
   retryable,
 }
 
@@ -1108,7 +1230,7 @@ _ServerRequestFailureDisposition _serverRequestFailureDisposition(
       'CODEX_SERVER_REQUEST_NOT_PENDING' =>
         _ServerRequestFailureDisposition.invalidated,
       'CODEX_SERVER_REQUEST_ALREADY_RESPONDED' =>
-        _ServerRequestFailureDisposition.responseSent,
+        _ServerRequestFailureDisposition.handledElsewhere,
       'CODEX_SERVER_DISCONNECTED' ||
       'CODEX_SERVER_RESPONSE_WRITE_FAILED' =>
         _ServerRequestFailureDisposition.retryable,
@@ -1123,6 +1245,16 @@ _ServerRequestFailureDisposition _serverRequestFailureDisposition(
     return _ServerRequestFailureDisposition.invalidated;
   }
   return _ServerRequestFailureDisposition.retryable;
+}
+
+@visibleForTesting
+String serverRequestFailureDispositionForTesting(Object error) {
+  return switch (_serverRequestFailureDisposition(error)) {
+    _ServerRequestFailureDisposition.invalidated => 'invalidated',
+    _ServerRequestFailureDisposition.handledElsewhere =>
+      'handled_elsewhere',
+    _ServerRequestFailureDisposition.retryable => 'retryable',
+  };
 }
 
 String _requestSubmitErrorText(Object error) {

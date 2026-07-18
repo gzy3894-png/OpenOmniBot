@@ -47,7 +47,7 @@ class CodexEventReducer {
     }
 
     final params = _eventParams(event: event, message: message, method: method);
-    final sessionGeneration = _firstInt([
+    final parsedSessionGeneration = _firstInt([
       event['sessionGeneration'],
       event['session_generation'],
       event['oldGeneration'],
@@ -61,6 +61,10 @@ class CodexEventReducer {
       params['oldGeneration'],
       params['old_generation'],
     ]);
+    final sessionGeneration =
+        parsedSessionGeneration != null && parsedSessionGeneration > 0
+        ? parsedSessionGeneration
+        : null;
     final serverRequestMethod = _firstString([
       event['serverRequestMethod'],
       event['server_request_method'],
@@ -2047,7 +2051,9 @@ class CodexEventReducer {
     String? actionResult,
   }) {
     final requestIdKey = _serverRequestIdKey(requestId);
-    if (requestIdKey == null || sessionGeneration == null) {
+    if (requestIdKey == null ||
+        sessionGeneration == null ||
+        sessionGeneration <= 0) {
       return false;
     }
     final normalizedMethod = serverRequestMethod?.trim();
@@ -2185,6 +2191,7 @@ class CodexEventReducer {
     final hasServerRequestIdentity =
         nextRequestIdKey != null &&
         sessionGeneration != null &&
+        sessionGeneration > 0 &&
         serverRequestMethod != null &&
         serverRequestMethod.trim().isNotEmpty;
     var status = _resolveRequestStatus(

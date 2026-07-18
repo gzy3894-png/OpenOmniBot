@@ -474,6 +474,33 @@ void main() {
     );
   });
 
+  test('approval payload rejects zero generation before native call', () {
+    expect(
+      () => CodexApprovalRequestPayload.fromCardData(
+        <String, dynamic>{
+          'requestId': 1,
+          'sessionGeneration': 0,
+          'serverRequestMethod': 'item/commandExecution/requestApproval',
+          'rawParamsJson': '{}',
+        },
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('server response methods reject zero generation before native call', () {
+    expect(
+      () => CodexAppServerService.respondToUserInput(
+        requestId: 1,
+        sessionGeneration: 0,
+        serverRequestMethod: 'item/tool/requestUserInput',
+        questionId: 'mode',
+        answers: const <String>['Plan'],
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('event retry policy uses capped exponential backoff', () {
     expect(CodexAppServerService.eventRetryAttemptForTesting, 0);
     expect(CodexAppServerService.hasEventSubscriptionForTesting, isFalse);

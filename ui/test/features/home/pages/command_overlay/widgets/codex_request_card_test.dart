@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -157,6 +158,42 @@ void main() {
     expect(find.text('Response sent: Chat'), findsOneWidget);
     expect(find.text('Plan'), findsNothing);
     expect(find.text('No, tell Codex how to adjust'), findsNothing);
+  });
+
+  testWidgets('pending approval restores exact resolved cache as terminal', (
+    tester,
+  ) async {
+    const identity =
+        '9.item/commandExecution/requestApproval.number:78.'
+        'approval-78.2000';
+    await StorageService.setString(
+      'codex_request_response.$identity',
+      jsonEncode(<String, dynamic>{
+        'identity': identity,
+        'status': 'resolved',
+        'answers': <String>[],
+        'actionResult': 'accepted',
+        'resolved': true,
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodexRequestCard(
+            cardData: _approvalCardData(
+              requestId: 78,
+              method: 'item/commandExecution/requestApproval',
+              params: const <String, dynamic>{'command': 'pwd'},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Resolved'), findsOneWidget);
+    expect(find.text('Accept'), findsNothing);
+    expect(find.text('Decline'), findsNothing);
   });
 
   testWidgets('does not render duplicate title and detail question text', (
@@ -551,6 +588,330 @@ void main() {
     await tester.pump();
     expect(find.text('Resolved'), findsOneWidget);
     expect(find.text('Response sent: accepted'), findsNothing);
+  });
+
+  testWidgets(
+    'resolved arriving before approval RPC success remains terminal',
+    (tester) async {
+      final response = Completer<Map<String, dynamic>>();
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        codexChannel,
+        (call) => response.future,
+      );
+      final pending = _approvalCardData(
+        requestId: 70,
+        method: 'item/commandExecution/requestApproval',
+        params: const <String, dynamic>{'command': 'pwd'},
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: CodexRequestCard(cardData: pending)),
+        ),
+      );
+      await tester.tap(find.text('Accept'));
+      await tester.pump();
+
+      final resolved = <String, dynamic>{
+        ...pending,
+        'status': 'resolved',
+        'resolved': true,
+        'actionResult': 'accepted',
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: CodexRequestCard(cardData: resolved)),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Resolved'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      response.complete(<String, dynamic>{
+        'ok': true,
+        'resolved': false,
+        'actionResult': 'response_sent',
+      });
+      await tester.pumpAndSettle();
+
+      expect(find.text('Resolved'), findsOneWidget);
+      expect(find.textContaining('Response sent'), findsNothing);
+      expect(find.text('Accept'), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      final cached = jsonDecode(
+        StorageService.getString(
+          'codex_request_response.'
+          '9.item/commandExecution/requestApproval.number:70.'
+          'approval-70.2000',
+        )!,
+      );
+      expect(cached['status'], 'resolved');
+    },
+  );
+
+  testWidgets(
+    'invalidated arriving before already-responded error stays expired',
+    (tester) async {
+      final response = Completer<Map<String, dynamic>>();
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        codexChannel,
+        (call) => response.future,
+      );
+      final pending = _approvalCardData(
+        requestId: 71,
+        method: 'item/commandExecution/requestApproval',
+        params: const <String, dynamic>{'command': 'pwd'},
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: CodexRequestCard(cardData: pending)),
+        ),
+      );
+      await tester.tap(find.text('Decline'));
+      await tester.pump();
+
+      final invalidated = <String, dynamic>{
+        ...pending,
+        'status': 'invalidated',
+        'resolved': false,
+        'actionResult': 'invalidated',
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: CodexRequestCard(cardData: invalidated)),
+        ),
+      );
+      response.completeError(
+        PlatformException(
+          code: 'CODEX_SERVER_REQUEST_ALREADY_RESPONDED',
+          message: 'Another engine responded first',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Expired — retry the action'), findsOneWidget);
+      expect(
+        find.text('Handled in another view — waiting for server'),
+        findsNothing,
+      );
+      expect(find.textContaining('Response sent'), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      final cached = jsonDecode(
+        StorageService.getString(
+          'codex_request_response.'
+          '9.item/commandExecution/requestApproval.number:71.'
+          'approval-71.2000',
+        )!,
+      );
+      expect(cached['status'], 'invalidated');
+    },
+  );
+
+  testWidgets('resolved status is not downgraded by a later stale error', (
+    tester,
+  ) async {
+    final response = Completer<Map<String, dynamic>>();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(codexChannel, (call) => response.future);
+    final pending = _approvalCardData(
+      requestId: 72,
+      method: 'item/commandExecution/requestApproval',
+      params: const <String, dynamic>{'command': 'pwd'},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: CodexRequestCard(cardData: pending))),
+    );
+    await tester.tap(find.text('Accept'));
+    await tester.pump();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodexRequestCard(
+            cardData: <String, dynamic>{
+              ...pending,
+              'status': 'resolved',
+              'resolved': true,
+            },
+          ),
+        ),
+      ),
+    );
+    response.completeError(
+      PlatformException(
+        code: 'CODEX_STALE_SERVER_REQUEST',
+        message: 'Session generation does not match',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Resolved'), findsOneWidget);
+    expect(find.text('Expired — retry the action'), findsNothing);
+  });
+
+  testWidgets('old RPC completion cannot update a replacement request', (
+    tester,
+  ) async {
+    final response = Completer<Map<String, dynamic>>();
+    var callCount = 0;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(codexChannel, (call) {
+      callCount += 1;
+      return response.future;
+    });
+    final oldRequest = _approvalCardData(
+      requestId: 73,
+      method: 'item/commandExecution/requestApproval',
+      params: const <String, dynamic>{'command': 'pwd'},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: CodexRequestCard(cardData: oldRequest))),
+    );
+    await tester.tap(find.text('Accept'));
+    await tester.pump();
+
+    final replacement = _approvalCardData(
+      requestId: 74,
+      method: 'item/commandExecution/requestApproval',
+      params: const <String, dynamic>{'command': 'ls'},
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: CodexRequestCard(cardData: replacement)),
+      ),
+    );
+    response.complete(<String, dynamic>{'ok': true});
+    await tester.pumpAndSettle();
+
+    expect(callCount, 1);
+    expect(find.text('Accept'), findsOneWidget);
+    expect(find.textContaining('Response sent'), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('approval RPC may complete after the card is disposed', (
+    tester,
+  ) async {
+    final response = Completer<Map<String, dynamic>>();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(codexChannel, (call) => response.future);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodexRequestCard(
+            cardData: _approvalCardData(
+              requestId: 75,
+              method: 'item/commandExecution/requestApproval',
+              params: const <String, dynamic>{'command': 'pwd'},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Accept'));
+    await tester.pump();
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+
+    response.complete(<String, dynamic>{'ok': true});
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('zero generation request is expired without a native call', (
+    tester,
+  ) async {
+    var callCount = 0;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(codexChannel, (call) async {
+      callCount += 1;
+      return <String, dynamic>{'ok': true};
+    });
+    final invalid = _approvalCardData(
+      requestId: 76,
+      method: 'item/commandExecution/requestApproval',
+      params: const <String, dynamic>{'command': 'pwd'},
+    )..['sessionGeneration'] = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: CodexRequestCard(cardData: invalid))),
+    );
+    await tester.pump();
+
+    expect(find.text('Expired — retry the action'), findsOneWidget);
+    expect(find.text('Accept'), findsNothing);
+    expect(find.text('Decline'), findsNothing);
+    expect(callCount, 0);
+  });
+
+  testWidgets('ok false stays retryable instead of appearing sent', (
+    tester,
+  ) async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(codexChannel, (call) async {
+      return <String, dynamic>{
+        'ok': false,
+        'error': 'Server rejected response',
+      };
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodexRequestCard(
+            cardData: _approvalCardData(
+              requestId: 77,
+              method: 'item/commandExecution/requestApproval',
+              params: const <String, dynamic>{'command': 'pwd'},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Accept'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Accept'), findsOneWidget);
+    expect(find.textContaining('Response sent'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('codex-request-submit-error')),
+      findsOneWidget,
+    );
+  });
+
+  test('classifies all native server response error codes exactly', () {
+    const cases = <String, String>{
+      'CODEX_SERVER_REQUEST_GENERATION_REQUIRED': 'invalidated',
+      'CODEX_STALE_SERVER_REQUEST': 'invalidated',
+      'CODEX_SERVER_REQUEST_METHOD_REQUIRED': 'invalidated',
+      'CODEX_SERVER_REQUEST_METHOD_MISMATCH': 'invalidated',
+      'CODEX_SERVER_REQUEST_NOT_PENDING': 'invalidated',
+      'CODEX_SERVER_REQUEST_ALREADY_RESPONDED': 'handled_elsewhere',
+      'CODEX_SERVER_DISCONNECTED': 'retryable',
+      'CODEX_SERVER_RESPONSE_WRITE_FAILED': 'retryable',
+    };
+
+    for (final entry in cases.entries) {
+      expect(
+        serverRequestFailureDispositionForTesting(
+          PlatformException(code: entry.key),
+        ),
+        entry.value,
+        reason: entry.key,
+      );
+    }
   });
 
   testWidgets('fills the available message width', (tester) async {

@@ -1919,6 +1919,55 @@ diff --git a/lib/main.dart b/lib/main.dart
     expect(runtime.messages.single.cardData!['status'], 'invalidated');
   });
 
+  test('zero generation is normalized to a non-actionable legacy request', () {
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'sessionGeneration': 0,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
+        'message': {
+          'id': 1,
+          'method': 'item/commandExecution/requestApproval',
+          'params': <String, dynamic>{'command': 'rm tmp.txt'},
+        },
+      },
+    );
+
+    final cardData = runtime.messages.single.cardData!;
+    expect(cardData['status'], 'invalidated');
+    expect(cardData.containsKey('sessionGeneration'), isFalse);
+  });
+
+  test('zero generation lifecycle cannot resolve a positive request', () {
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'sessionGeneration': 15,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
+        'message': {
+          'id': 1,
+          'method': 'item/commandExecution/requestApproval',
+          'params': <String, dynamic>{'command': 'pwd'},
+        },
+      },
+    );
+
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'serverRequest/resolved',
+        'sessionGeneration': 0,
+        'serverRequestMethod':
+            'item/commandExecution/requestApproval',
+        'requestId': 1,
+      },
+    );
+
+    expect(runtime.messages.single.cardData!['status'], 'pending');
+  });
+
   test('serverRequest resolved requires matching generation and method', () {
     final request = <String, dynamic>{
       'sessionGeneration': 11,

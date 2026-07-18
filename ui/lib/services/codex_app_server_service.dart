@@ -374,9 +374,9 @@ abstract class CodexApprovalRequestPayload {
       );
     }
     final sessionGeneration = _intOrNull(cardData['sessionGeneration']);
-    if (sessionGeneration == null || sessionGeneration < 0) {
+    if (sessionGeneration == null || sessionGeneration <= 0) {
       throw const FormatException(
-        'Approval sessionGeneration is missing or invalid',
+        'Approval sessionGeneration must be positive',
       );
     }
     final serverRequestMethod =
@@ -1152,11 +1152,11 @@ class CodexAppServerService {
         'must be a string or number',
       );
     }
-    if (sessionGeneration < 0) {
+    if (sessionGeneration <= 0) {
       throw ArgumentError.value(
         sessionGeneration,
         'sessionGeneration',
-        'must be non-negative',
+        'must be positive',
       );
     }
     if (normalizedMethod.isEmpty) {
