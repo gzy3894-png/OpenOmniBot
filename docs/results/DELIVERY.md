@@ -162,10 +162,10 @@
 - [x] APK stage · sha256 `9c560e73…` / shortsha `898dc26`  
 - [ ] 真机 B37 §4 PASS  
 - [x] B38 PLAN + HANDOFF 落盘 · `c1e4341`  
-- [x] B38 EXEC 占位 + DELIVERY 标 **IN PROGRESS**（本波 A7）  
-- [ ] B38 功能实现 commit(s)  
-- [ ] B38 push mine · GHA SUCCESS  
-- [ ] B38 APK stage + sha256 回填  
+- [x] B38 EXEC + 调度 A1–A7 实现  
+- [x] B38 功能实现 · `68c1b79`  
+- [x] B38 push mine · GHA `#29641064531` **in progress**  
+- [ ] B38 GHA SUCCESS + APK stage + sha256 回填  
 - [ ] 真机 B38 AP1–AP5 / M1–R1 PASS  
 
 ---
