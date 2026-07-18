@@ -5,7 +5,6 @@ import 'package:ui/features/home/pages/chat/mixins/agent_stream_handler.dart';
 import 'package:ui/features/home/pages/chat/services/chat_conversation_runtime_coordinator.dart';
 import 'package:ui/models/chat_message_model.dart';
 import 'package:ui/services/codex_app_server_service.dart';
-import 'package:ui/services/codex_app_server_service.dart';
 
 void main() {
   group('Codex model effort resolution', () {
