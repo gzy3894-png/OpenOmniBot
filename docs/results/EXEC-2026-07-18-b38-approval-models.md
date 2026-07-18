@@ -19,7 +19,7 @@
 
 ### 当前 hardening 候选
 
-当前源码整合基线为 `50f3bcb56ad7586683ba4cf6c69b2996faab7eef`。下表只证明 topic 已进入同一源码树并完成主线程静态审查；本机没有运行 Flutter、Dart、Gradle 或 Android 编译/测试，远端九路也尚未运行。
+当前源码整合基线为 `249d519f50417385596d4d6624030028565b4ca9`。下表只证明 topic 已进入同一源码树并完成主线程静态审查；本机没有运行 Flutter、Dart、Gradle 或 Android 编译/测试，远端九路也尚未运行。
 
 | 工作线 | 状态 | topic → integration | 源码级边界 |
 |--------|------|---------------------|------------|
@@ -29,6 +29,8 @@
 | Native pending request replay | `IMPLEMENTED` | `7df2770` → `3239c7b` | listener 空窗内新 pending request 可向后续 stream replay；投递前复核仍为 PENDING |
 | Approval UI/幂等生命周期 | `IMPLEMENTED` | `3ceaba0` → `8f6e775` | schema/generation/requestId、resolved/invalidated、双 Engine first-wins、断连重试 |
 | Approval UI 终态竞态 | `IMPLEMENTED` | `5760d52` → `50f3bcb` | resolved/invalidated 先于 MethodChannel 返回时，不被 `response_sent` 或 `handled_elsewhere` 降级 |
+| Approval 卡 dispose 持久化 | `IMPLEMENTED` | `a853cb7` → `249d519` | MethodChannel 成功或异常返回先检查 `mounted`；卡已 dispose 后不再派生 `response_sent` / `handled_elsewhere` 非终态写 |
+| Flutter 启动期 request replay FIFO | `IMPLEMENTED` | `a853cb7` → `249d519` | 按 request identity 延后路由；同请求 pending→terminal FIFO，不同请求互不阻塞，conversation target 就绪后 drain |
 | Models/UI catalog 隔离 | `IMPLEMENTED` | `86cec55` → `5194d9b` | latest-wins、authoritative empty/ghost、effort clamp/omit、原子 model+effort、Overlay refresh |
 | Models 空目录去重 | `IMPLEMENTED` | `97d1a18` → `f30508b` | authoritative empty/no-effort 也完成 catalog generation，避免重复拉取 |
 | 八路远端质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 4 Flutter test shard + analyze + Android unit/lint/APK；仅工作流源码已落地 |
@@ -40,7 +42,7 @@
 
 | 字段 | 当前值 |
 |------|--------|
-| 当前源码整合 HEAD（本次文档基线） | `50f3bcb56ad7586683ba4cf6c69b2996faab7eef` |
+| 当前源码整合 HEAD（本次文档基线） | `249d519f50417385596d4d6624030028565b4ca9` |
 | topic → integration 映射 | **已回填；见上表** |
 | 最终远端触发 HEAD | **待主线程合入本次文档提交并推送后回填** |
 | 九路 GHA run ID / URL | **待回填；未运行** |
@@ -155,12 +157,13 @@
 
 ## 7. 残余风险（主线程验收）
 
-1. 十二个 topic→integration 映射已汇入源码整合基线 `50f3bcb`，但跨 Native/Flutter/CI 目前只有静态源码审查，没有编译、测试或运行时联调证据。
-2. **Terminal tombstone replay residual**：若 `serverRequest/resolved` 或 `serverRequest/invalidated` 恰在 EventChannel 完全无 listener 的窗口到达，Native 当前不会保存 terminal tombstone，后续新 stream 因而无法 replay 该终态。已实现的 pending replay 会在投递前复核 PENDING，终态后不会重投同一 pending；残余是既有 UI/历史卡可能无法自动收敛终态，而不是同请求被重新创建为可操作卡。
-3. 按本轮约束，Flutter/Dart/Gradle/Android 编译与测试均未在本机运行。
-4. 最终九路门禁尚未运行，签名证书、lint、分片测试与 source-policy 尚无同一 HEAD 的远端证据。
-5. 当前候选无 APK、SHA 或设备日志；所有 AP/M/F/A/R 项均未知。
-6. 任何远端失败都保持 `IMPLEMENTED`；任何设备失败或未完成项最多到 `DEVICE_PARTIAL`。
+1. 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入源码整合基线 `249d519`，但跨 Native/Flutter/CI 目前只有静态源码审查，没有编译、测试或运行时联调证据。
+2. **P2 · Nonterminal DB upsert in-flight**：卡仍 mounted 时若已经发出非终态 conversation-history DB upsert，而 dispose 发生在该 await 期间，Flutter 无法取消底层在途写。当前门禁会阻止随后继续写 response cache 或在 RPC 返回后新发非终态持久化，但不能回滚已经开始的 DB upsert。
+3. **P2 · Terminal tombstone replay residual**：若 `serverRequest/resolved` 或 `serverRequest/invalidated` 恰在 EventChannel 完全无 listener 的窗口到达，Native 当前不会保存 terminal tombstone，后续新 stream 因而无法 replay 该终态。已实现的 pending replay 会在投递前复核 PENDING，终态后不会重投同一 pending；残余是既有 UI/历史卡可能无法自动收敛终态，而不是同请求被重新创建为可操作卡。
+4. 按本轮约束，Flutter/Dart/Gradle/Android 编译与测试均未在本机运行。
+5. 最终九路门禁尚未运行，签名证书、lint、分片测试与 source-policy 尚无同一 HEAD 的远端证据。
+6. 当前候选无 APK、SHA 或设备日志；所有 AP/M/F/A/R 项均未知。
+7. 任何远端失败都保持 `IMPLEMENTED`；任何设备失败或未完成项最多到 `DEVICE_PARTIAL`。
 
 ## 8. READY 门禁
 

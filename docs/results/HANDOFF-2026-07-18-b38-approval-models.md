@@ -2,7 +2,7 @@
 
 > 文档生命周期：**SUPERSEDED**。本文件仅保留 2026-07-18 开工前的历史上下文，**不得再作为执行清单或状态真源**。
 > 当前状态只认 `EXEC-2026-07-18-b38-approval-models.md`：hardening 候选为 `IMPLEMENTED · REMOTE TEST PENDING`；旧 APK/日志为 `DEVICE_PARTIAL`。
-> 当前源码整合基线：`50f3bcb56ad7586683ba4cf6c69b2996faab7eef`；只完成源码级静态审查，本机未编译、未测试，九路远端门禁未运行。
+> 当前源码整合基线：`249d519f50417385596d4d6624030028565b4ca9`；只完成源码级静态审查，本机未编译、未测试，九路远端门禁未运行。
 > 统一状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`。
 > **用户裁定**：审批「只有 UI、没走 Codex 自身审批」= **真 bug（T6）**，优先级 ≥ 模型列表。
 
@@ -30,7 +30,7 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 
 **仓库路径**：`/root/workspace/omnibot-product`  
 
-**当前本地整合分支**：`codex/b38-integration`（源码基线 `50f3bcb`）
+**当前本地整合分支**：`codex/b38-integration`（源码基线 `249d519`）
 
 **目标远端分支**：`secondary/s1-b38-hardening`
 
@@ -72,6 +72,8 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 | Native pending replay | `7df2770` → `3239c7b` | listener 空窗 pending replay + 投递前 PENDING 复核已入树 |
 | Approval lifecycle | `3ceaba0` → `8f6e775` | request 生命周期与 first-wins 已入树 |
 | Approval terminal race | `5760d52` → `50f3bcb` | 先到终态不被 RPC 返回降级已入树 |
+| Approval card dispose persistence | `a853cb7` → `249d519` | dispose 后 RPC 返回不再派生非终态 DB/cache 写 |
+| Flutter startup request FIFO | `a853cb7` → `249d519` | request-owned pending→terminal FIFO 与延后路由已入树 |
 | Models catalog isolation | `86cec55` → `5194d9b` | catalog generation/latest-wins 已入树 |
 | Models empty reload | `97d1a18` → `f30508b` | empty/no-effort 去重已入树 |
 | 八路质量门禁 | `6e56dd9` → `4bf025c` | 工作流源码已入树；未运行 |
@@ -79,7 +81,10 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 | SDK license pipefail | `99b5dbc` → `27d8051` | SIGPIPE 假失败修复已入树 |
 | 文档/证据治理 | `43ec7a7` → `bf67855` | 状态与证据规则已入树 |
 
-**已知残余**：EventChannel 完全没有 listener 的窗口内若到达 `serverRequest/resolved` / `serverRequest/invalidated`，Native 尚不保存 terminal tombstone，之后新 stream 无法 replay 该终态。新 pending 在空窗内会被 replay，且每次投递前复核 PENDING，所以 terminal 后不会重投同一 pending；该残余不得误写成乱序 replay 会重建可操作卡。
+**P2 残余**：
+
+- **Nonterminal DB upsert in-flight**：卡仍 mounted 时已经发出的非终态 conversation-history DB upsert，无法在 await 期间因 dispose 而取消；后续 response cache 写会被门禁阻止，但已开始的 DB 写不能回滚。
+- **Terminal tombstone replay**：EventChannel 完全没有 listener 的窗口内若到达 `serverRequest/resolved` / `serverRequest/invalidated`，Native 尚不保存 terminal tombstone，之后新 stream 无法 replay 该终态。新 pending 在空窗内会被 replay，且每次投递前复核 PENDING，所以 terminal 后不会重投同一 pending；该残余不得误写成乱序 replay 会重建可操作卡。
 
 ---
 
@@ -175,7 +180,7 @@ B37 做了：soft conf harden、stale thread clear、本地 mode 继续、displa
 ## 8. 下一手第一件事
 
 1. **停止使用本 HANDOFF 做状态判断**；先读 EXEC §0 实时账本和 PLAN 冻结范围。
-2. 十二组 topic→integration 已汇入源码基线 `50f3bcb`，当前仍只能标记 `IMPLEMENTED`；最终远端触发 HEAD 以主线程合入本次文档提交后的实际推送为准。
+2. 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入源码基线 `249d519`，当前仍只能标记 `IMPLEMENTED`；最终远端触发 HEAD 以主线程合入本次文档提交后的实际推送为准。
 3. 只在同一最终 HEAD 的九路远端门禁全绿并回填 run/HEAD 后升 `REMOTE_VERIFIED`；随后才允许 stage 同一 HEAD 的 APK。
 4. 设备证据不完整或有失败统一记 `DEVICE_PARTIAL`；完整 AP/M/F/A/R 通过后才可 `DEVICE_PASS → READY`。
 5. 不进入 S2，不改历史 commit/run/APK/log，不本机编译测试。

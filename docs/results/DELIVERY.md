@@ -8,7 +8,7 @@
 > **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
 > **主线程只调度/验收** · ≥8 并发工作线 · push **仅 mine** · 最终九路远端门禁 · 禁本机编译测试
 > 状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
-> 当前源码整合基线：`50f3bcb56ad7586683ba4cf6c69b2996faab7eef`；本机未编译、未测试，九路远端门禁未运行。
+> 当前源码整合基线：`249d519f50417385596d4d6624030028565b4ca9`；本机未编译、未测试，九路远端门禁未运行。
 
 ---
 
@@ -22,6 +22,8 @@
 | Native pending replay | `IMPLEMENTED` | `7df2770` → `3239c7b` | listener 空窗内的新 pending 可向后续 stream replay |
 | Approval lifecycle | `IMPLEMENTED` | `3ceaba0` → `8f6e775` | generation/requestId/终态/first-wins |
 | Approval terminal race | `IMPLEMENTED` | `5760d52` → `50f3bcb` | MethodChannel 返回不降级先到的终态 |
+| Approval card dispose persistence | `IMPLEMENTED` | `a853cb7` → `249d519` | dispose 后 RPC 返回不再派生非终态 DB/cache 写 |
+| Flutter startup request FIFO | `IMPLEMENTED` | `a853cb7` → `249d519` | request-owned pending→terminal 延后路由；不同请求互不阻塞 |
 | Models catalog isolation | `IMPLEMENTED` | `86cec55` → `5194d9b` | latest-wins、empty/ghost、effort、Overlay |
 | Models empty reload | `IMPLEMENTED` | `97d1a18` → `f30508b` | empty/no-effort catalog 不重复拉取 |
 | 八路质量门禁 | `IMPLEMENTED` | `6e56dd9` → `4bf025c` | 工作流源码已落地，尚未远端运行 |
@@ -33,7 +35,7 @@
 
 | 字段 | 状态 |
 |------|------|
-| 当前源码整合 HEAD（本文档基线） | `50f3bcb56ad7586683ba4cf6c69b2996faab7eef` |
+| 当前源码整合 HEAD（本文档基线） | `249d519f50417385596d4d6624030028565b4ca9` |
 | 最终远端触发 HEAD | 待主线程合入本次文档提交并推送后回填 |
 | 九路 GHA run ID / URL / result | 待运行；不得预写 SUCCESS |
 | APK artifact / stage path | 待 `REMOTE_VERIFIED` 后产出 |
@@ -194,7 +196,7 @@
 - [x] B38 APK stage · sha256 `847c4aab…` / shortsha `68c1b79`  
 - [x] 旧 B38 `68c1b79` 证据重分类为 `DEVICE_PARTIAL`
 - [x] 当前 hardening topic 实现完成，状态仅 `IMPLEMENTED`
-- [x] 十二组 topic→integration 已汇入源码基线 `50f3bcb`
+- [x] 十四条工作线条目（十三组唯一 topic→integration 映射）已汇入源码基线 `249d519`
 - [ ] 最终远端触发 HEAD + 九路 `REMOTE_VERIFIED`
 - [ ] 当前候选 `APK_STAGED` + SHA/cert 回填
 - [ ] 当前候选 AP1–AP7 / M1–R1 达 `DEVICE_PASS`
@@ -205,6 +207,7 @@
 
 - Remote 2s poll、每 event `debugPrint`：仍未改  
 - hard 字段（baseUrl / model / apiKey）变更仍应 reconnect  
-- topic commits 已汇成源码基线 `50f3bcb`，但本机没有编译/测试，Native/Flutter 运行时联调与九路远端结果仍未知
-- **Terminal tombstone replay residual**：EventChannel 完全无 listener 时到达的 `resolved/invalidated` 没有 Native tombstone，后续 stream 无法 replay 终态；pending 投递前已有 PENDING 复核，终态后不会重投同一 pending，因此不应把该残余描述成审批卡被重新创建
+- topic commits 已汇成源码基线 `249d519`，但本机没有编译/测试，Native/Flutter 运行时联调与九路远端结果仍未知
+- **P2 · Nonterminal DB upsert in-flight**：卡仍 mounted 时已发出的非终态 conversation-history DB upsert 无法在 await 期间因 dispose 而取消；后续 response cache 写会被阻止，但已开始的 DB 写不能回滚
+- **P2 · Terminal tombstone replay residual**：EventChannel 完全无 listener 时到达的 `resolved/invalidated` 没有 Native tombstone，后续 stream 无法 replay 终态；pending 投递前已有 PENDING 复核，终态后不会重投同一 pending，因此不应把该残余描述成审批卡被重新创建
 - **当前 hardening 完成前**：审批 tip ≠ Codex 审批 PASS；远端和设备证据均待回填
