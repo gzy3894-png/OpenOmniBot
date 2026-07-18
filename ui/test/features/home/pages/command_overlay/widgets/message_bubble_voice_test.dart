@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:ui/features/home/pages/command_overlay/widgets/message_bubble.dart';
 import 'package:ui/models/chat_message_model.dart';
 import 'package:ui/services/scene_model_config_service.dart';
@@ -176,7 +177,7 @@ void main() {
         'agentContinueable': true,
         'agentErrorText': 'network interrupted',
       },
-      turnUsage: {'ctx': 20000, 'in': 10000, 'out': 87, 'cache': 10000},
+      turnUsage: {'ctx': 20000, 'in': 1200, 'out': 87, 'cache': 3400},
     );
 
     await pumpBubble(
@@ -187,7 +188,37 @@ void main() {
       },
     );
 
-    expect(find.text('ctx:20k  in:10k  out:87  cache:10k'), findsOneWidget);
+    expect(find.text('ctx:20k'), findsOneWidget);
+    final inputMetricRow = find
+        .ancestor(of: find.text('1.2k'), matching: find.byType(Row))
+        .first;
+    expect(
+      find.descendant(
+        of: inputMetricRow,
+        matching: find.byIcon(Icons.arrow_downward_rounded),
+      ),
+      findsOneWidget,
+    );
+    final outputMetricRow = find
+        .ancestor(of: find.text('87'), matching: find.byType(Row))
+        .first;
+    expect(
+      find.descendant(
+        of: outputMetricRow,
+        matching: find.byIcon(Icons.arrow_upward_rounded),
+      ),
+      findsOneWidget,
+    );
+    final cacheMetricRow = find
+        .ancestor(of: find.text('3.4k'), matching: find.byType(Row))
+        .first;
+    expect(
+      find.descendant(
+        of: cacheMetricRow,
+        matching: find.byIcon(LucideIcons.databaseZap),
+      ),
+      findsOneWidget,
+    );
     expect(find.byType(FilledButton), findsOneWidget);
 
     await tester.tap(find.byType(FilledButton));

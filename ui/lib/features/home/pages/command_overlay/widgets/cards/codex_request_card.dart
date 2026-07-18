@@ -347,7 +347,7 @@ class _CodexRequestCardState extends State<CodexRequestCard>
     List<String> answers = const <String>[],
   }) async {
     if (_isSubmitting ||
-        _cardStatus(widget.cardData) != 'pending' ||
+        !_hasPendingEffectiveStatus ||
         !_hasCompleteServerRequestIdentity(widget.cardData)) {
       return StateError(
         'Codex server request is no longer pending.',
@@ -461,6 +461,10 @@ class _CodexRequestCardState extends State<CodexRequestCard>
       return error;
     }
   }
+
+  bool get _hasPendingEffectiveStatus =>
+      _cardStatus(widget.cardData) == 'pending' &&
+      (_localStatus == null || _localStatus == 'pending');
 
   Future<void> _markRequestInvalidated({String? expectedIdentity}) async {
     final requestIdentity =

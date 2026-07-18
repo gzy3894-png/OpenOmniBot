@@ -4,11 +4,18 @@ import 'package:ui/features/home/pages/command_overlay/widgets/cards/deep_thinki
 import 'package:ui/features/home/pages/chat/chat_page_models.dart';
 import 'package:ui/features/home/pages/chat/widgets/chat_widgets.dart';
 import 'package:ui/l10n/generated/app_localizations.dart';
+import 'package:ui/l10n/legacy_text_localizer.dart';
 import 'package:ui/models/chat_message_model.dart';
 import 'package:ui/widgets/agent_avatar.dart';
 import 'package:ui/widgets/streaming_text.dart';
 
 void main() {
+  setUp(() {
+    LegacyTextLocalizer.setResolvedLocale(const Locale('zh'));
+  });
+
+  tearDown(LegacyTextLocalizer.clearResolvedLocale);
+
   testWidgets('empty chat state offsets with bottom overlay inset', (
     tester,
   ) async {
@@ -25,11 +32,11 @@ void main() {
 
     await tester.pump();
 
-    final animatedPadding = tester.widget<AnimatedPadding>(
-      find.byType(AnimatedPadding),
+    final bottomInset = tester.widget<Padding>(
+      find.byKey(const ValueKey('chat-message-list-bottom-inset')),
     );
 
-    expect(animatedPadding.padding, const EdgeInsets.only(bottom: 128));
+    expect(bottomInset.padding, const EdgeInsets.only(bottom: 128));
     expect(find.text('有什么可以帮助你的？'), findsOneWidget);
   });
 

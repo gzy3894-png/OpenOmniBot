@@ -502,6 +502,7 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
 
   late ValueNotifier<_ComposerInteractionState> _composerStateNotifier;
   late ValueNotifier<CodexRunSettings?> _codexRunSettingsNotifier;
+  bool _codexRunSettingsSyncScheduled = false;
   bool _isPopupVisible = false;
   double _lastKeyboardInset = 0;
 
@@ -763,7 +764,7 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
   void didUpdateWidget(covariant ChatInputArea oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.codexRunSettings, widget.codexRunSettings)) {
-      _codexRunSettingsNotifier.value = widget.codexRunSettings;
+      _scheduleCodexRunSettingsSync();
     }
     if (oldWidget.attachments != widget.attachments ||
         oldWidget.useLargeComposerStyle != widget.useLargeComposerStyle ||
@@ -776,6 +777,22 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
         oldWidget.codexGoalPrefixLabel != widget.codexGoalPrefixLabel) {
       _reportInputHeightAfterBuild();
     }
+  }
+
+  void _scheduleCodexRunSettingsSync() {
+    if (_codexRunSettingsSyncScheduled) {
+      return;
+    }
+    _codexRunSettingsSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _codexRunSettingsSyncScheduled = false;
+      if (!mounted) {
+        return;
+      }
+      // Read the current widget value after the frame so rapid catalog
+      // generations coalesce and a stale snapshot can never win.
+      _codexRunSettingsNotifier.value = widget.codexRunSettings;
+    });
   }
 
   @override

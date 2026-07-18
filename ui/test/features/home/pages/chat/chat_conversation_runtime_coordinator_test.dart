@@ -62,7 +62,7 @@ void main() {
       return agentEntrySeq;
     });
     return <String, dynamic>{
-      'seq': stableSeq,
+      'entrySeq': stableSeq,
       'roundIndex': roundIndex,
       'kind': kind,
       'parentTaskId': taskId,
@@ -302,6 +302,18 @@ void main() {
           );
       await Future<void>.delayed(Duration.zero);
     }
+  }
+
+  Future<void> emitPlatformEventForWidgetTest(
+    WidgetTester tester,
+    String method, [
+    dynamic arguments,
+  ]) async {
+    final pending = emitPlatformEvent(method, arguments);
+    // emitPlatformEvent deliberately yields through a zero-duration timer.
+    // Widget tests use a fake clock, so advance it before awaiting the event.
+    await tester.pump(Duration.zero);
+    await pending;
   }
 
   List<String> visibleMessageIds(ChatConversationRuntimeState runtime) {
@@ -984,7 +996,7 @@ void main() {
       'customStyle': '',
     };
     await VoicePlaybackCoordinator.instance.debugResetForTest();
-    coordinator.ensureInitialized();
+    await VoicePlaybackCoordinator.instance.ensureInitialized();
 
     coordinator.ensureRuntime(
       conversationId: conversationId,
@@ -1135,9 +1147,9 @@ void main() {
     expect(thinkingCard.cardData?['stage'], 4);
   });
 
-  test(
+  testWidgets(
     'keeps the full pure-chat reasoning prefix across delta chunks',
-    () async {
+    (tester) async {
       const conversationId = 2205;
       const taskId = 'chat-task-thinking-delta';
 
@@ -1157,36 +1169,57 @@ void main() {
         mode: kChatRuntimeModeNormal,
       );
 
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"先"}}]}',
-        'type': null,
-      });
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"分析"}}]}',
-        'type': null,
-      });
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"一下问题。"}}]}',
-        'type': null,
-      });
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"先"}}]}',
+          'type': null,
+        },
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"分析"}}]}',
+          'type': null,
+        },
+      );
+      await tester.pump(const Duration(milliseconds: 40));
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"一下问题。"}}]}',
+          'type': null,
+        },
+      );
 
       final runtime = coordinator.runtimeFor(
         conversationId: conversationId,
         mode: kChatRuntimeModeNormal,
       )!;
-      final thinkingCard = runtime.messages.single;
 
-      expect(thinkingCard.cardData?['type'], 'deep_thinking');
-      expect(thinkingCard.cardData?['thinkingContent'], '先分析一下问题。');
+      expect(runtime.messages.single.cardData?['type'], 'deep_thinking');
+      expect(runtime.messages.single.cardData?['thinkingContent'], '');
+
+      await tester.pump(const Duration(milliseconds: 21));
+
+      expect(
+        runtime.messages.single.cardData?['thinkingContent'],
+        '先分析一下问题。',
+      );
+      coordinator.resetForTest();
     },
   );
 
-  test(
+  testWidgets(
     'preserves whitespace and punctuation in pure-chat reasoning delta chunks',
-    () async {
+    (tester) async {
       const conversationId = 2207;
       const taskId = 'chat-task-thinking-whitespace';
 
@@ -1206,40 +1239,68 @@ void main() {
         mode: kChatRuntimeModeNormal,
       );
 
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"先想"}}]}',
-        'type': null,
-      });
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"："}}]}',
-        'type': null,
-      });
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"\\n"}}]}',
-        'type': null,
-      });
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"  再做"}}]}',
-        'type': null,
-      });
-      await emitPlatformEvent('onChatMessage', <String, dynamic>{
-        'taskID': taskId,
-        'content': '{"choices":[{"delta":{"reasoning_content":"。"}}]}',
-        'type': null,
-      });
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"先想"}}]}',
+          'type': null,
+        },
+      );
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"："}}]}',
+          'type': null,
+        },
+      );
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"\\n"}}]}',
+          'type': null,
+        },
+      );
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"  再做"}}]}',
+          'type': null,
+        },
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      await emitPlatformEventForWidgetTest(
+        tester,
+        'onChatMessage',
+        <String, dynamic>{
+          'taskID': taskId,
+          'content': '{"choices":[{"delta":{"reasoning_content":"。"}}]}',
+          'type': null,
+        },
+      );
 
       final runtime = coordinator.runtimeFor(
         conversationId: conversationId,
         mode: kChatRuntimeModeNormal,
       )!;
-      final thinkingCard = runtime.messages.single;
 
-      expect(thinkingCard.cardData?['type'], 'deep_thinking');
-      expect(thinkingCard.cardData?['thinkingContent'], '先想：\n  再做。');
+      expect(runtime.messages.single.cardData?['type'], 'deep_thinking');
+      expect(runtime.messages.single.cardData?['thinkingContent'], '先想：\n');
+
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(
+        runtime.messages.single.cardData?['thinkingContent'],
+        '先想：\n  再做。',
+      );
+      coordinator.resetForTest();
     },
   );
 
@@ -1751,7 +1812,8 @@ void main() {
       );
       expect(thinkingMessage.cardData?['type'], 'deep_thinking');
       expect(thinkingMessage.cardData?['thinkingContent'], '恢复后也要能看到这段思考');
-      expect(thinkingMessage.streamMeta?['seq'], 1);
+      expect(thinkingMessage.streamMeta?['seq'], 2);
+      expect(thinkingMessage.streamMeta?['entrySeq'], 1);
       expect(thinkingMessage.streamMeta?['roundIndex'], 1);
       expect(thinkingMessage.streamMeta?['kind'], 'thinking_snapshot');
       expect(thinkingMessage.streamMeta?['parentTaskId'], taskId);

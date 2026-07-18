@@ -28,6 +28,7 @@ const String kChatRuntimeModeNormal = 'normal';
 const String kChatRuntimeModeOpenClaw = 'openclaw';
 const String kChatRuntimeModeCodex = 'codex';
 const int _kStreamingTextChunkFlushThreshold = 5;
+const Duration _kStreamingTextMaxFlushLatency = Duration(milliseconds: 160);
 
 enum _StreamingTextStreamKind {
   pureChatReply,
@@ -49,6 +50,9 @@ class _StreamingTextBatchState {
   String latestText;
   String lastFlushedText;
   int pendingChunkCount = 0;
+  Timer? _maxLatencyTimer;
+  int _timerGeneration = 0;
+  bool _disposed = false;
 
   bool get hasPendingFlush => latestText != lastFlushedText;
 
@@ -73,6 +77,32 @@ class _StreamingTextBatchState {
   void markFlushed() {
     lastFlushedText = latestText;
     pendingChunkCount = 0;
+    _cancelMaxLatencyTimer();
+  }
+
+  void scheduleMaxLatencyFlush(VoidCallback onElapsed) {
+    if (_disposed || !hasPendingFlush || _maxLatencyTimer != null) {
+      return;
+    }
+    final generation = ++_timerGeneration;
+    _maxLatencyTimer = Timer(_kStreamingTextMaxFlushLatency, () {
+      _maxLatencyTimer = null;
+      if (_disposed || generation != _timerGeneration) {
+        return;
+      }
+      onElapsed();
+    });
+  }
+
+  void dispose() {
+    _disposed = true;
+    _cancelMaxLatencyTimer();
+  }
+
+  void _cancelMaxLatencyTimer() {
+    _timerGeneration += 1;
+    _maxLatencyTimer?.cancel();
+    _maxLatencyTimer = null;
   }
 }
 
@@ -152,11 +182,18 @@ class ChatConversationRuntimeState {
 
   void dispose() {
     agentStreamStates.clear();
-    _streamingTextBatches.clear();
+    _clearStreamingTextBatches();
     codexEntrySequences.clear();
     codexEntryStartTimes.clear();
     codexReplayDeltaOffsets.clear();
     messages.dispose();
+  }
+
+  void _clearStreamingTextBatches() {
+    for (final batch in _streamingTextBatches.values) {
+      batch.dispose();
+    }
+    _streamingTextBatches.clear();
   }
 }
 
@@ -402,7 +439,7 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     runtime.lastAgentToolType = lastAgentToolType;
     runtime.browserSessionSnapshot = browserSessionSnapshot;
     runtime.agentStreamStates.clear();
-    runtime._streamingTextBatches.clear();
+    runtime._clearStreamingTextBatches();
     runtime.codexEntrySequences.clear();
     runtime.codexEntryStartTimes.clear();
     _pruneCodexReplayDeltaOffsets(runtime, messages);
@@ -636,7 +673,7 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     runtime.pendingThinkingRoundSplit = false;
     runtime.toolCardSequence = 0;
     runtime.thinkingRound = 0;
-    runtime._streamingTextBatches.clear();
+    runtime._clearStreamingTextBatches();
     runtime.codexEntrySequences.clear();
     runtime.codexEntryStartTimes.clear();
     runtime.codexNextEntrySequence = 0;
@@ -903,13 +940,20 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     String taskId,
     _StreamingTextStreamKind kind,
   ) {
-    runtime._streamingTextBatches.remove(_streamingTextBatchKey(taskId, kind));
+    runtime._streamingTextBatches
+        .remove(_streamingTextBatchKey(taskId, kind))
+        ?.dispose();
   }
 
   void _clearStreamingTextBatchesForTask(
     ChatConversationRuntimeState runtime,
     String taskId,
   ) {
+    for (final batch in runtime._streamingTextBatches.values.where(
+      (batch) => batch.taskId == taskId,
+    )) {
+      batch.dispose();
+    }
     runtime._streamingTextBatches.removeWhere(
       (_, batch) => batch.taskId == taskId,
     );
@@ -985,10 +1029,54 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
       initialFlushedText: initialFlushedText,
     );
     if (nextText == state.latestText) {
+      _scheduleStreamingTextBatchFlush(runtime, state);
       return state.reachedFlushThreshold;
     }
     state.stage(nextText);
+    _scheduleStreamingTextBatchFlush(runtime, state);
     return state.reachedFlushThreshold || state.containsNewlineSinceFlush;
+  }
+
+  void _scheduleStreamingTextBatchFlush(
+    ChatConversationRuntimeState runtime,
+    _StreamingTextBatchState state,
+  ) {
+    state.scheduleMaxLatencyFlush(() {
+      final runtimeKey = _runtimeKey(
+        conversationId: runtime.conversationId,
+        mode: runtime.mode,
+      );
+      final batchKey = _streamingTextBatchKey(state.taskId, state.kind);
+      if (!identical(_runtimes[runtimeKey], runtime) ||
+          !identical(runtime._streamingTextBatches[batchKey], state) ||
+          !state.hasPendingFlush) {
+        return;
+      }
+      final didFlush = switch (state.kind) {
+        _StreamingTextStreamKind.pureChatReply => _flushPureChatReplyBatch(
+          runtime,
+          state.taskId,
+          emitVoiceUpdate: true,
+          schedulePersistence: true,
+        ),
+        _StreamingTextStreamKind.agentReply => _flushAgentReplyBatch(
+          runtime,
+          state.taskId,
+          emitVoiceEvent: true,
+          schedulePersistence: true,
+        ),
+        _StreamingTextStreamKind.pureChatThinking ||
+        _StreamingTextStreamKind.agentThinking => _flushThinkingBatch(
+          runtime,
+          state.taskId,
+          state.kind,
+          schedulePersistence: true,
+        ),
+      };
+      if (didFlush) {
+        notifyListeners();
+      }
+    });
   }
 
   String _visiblePureChatReplyText(
@@ -1479,6 +1567,7 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
               renderMarkdown: true,
               markdownRenderedLength: batch?.lastFlushedText.length,
               isStreamingMarkdown: true,
+              emitVoiceUpdate: true,
             );
           }
         }
@@ -1553,7 +1642,21 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     if (thinkingCardId != null) {
       runtime.currentThinkingStage = ThinkingStage.complete.value;
       runtime.isDeepThinking = false;
-      _finalizeThinkingCardsForTask(runtime, taskId);
+      final thinkingCardIndex = runtime.messages.indexWhere(
+        (message) => message.id == thinkingCardId,
+      );
+      final hasThinkingContent =
+          thinkingCardIndex != -1 &&
+          (runtime.messages[thinkingCardIndex].cardData?['thinkingContent'] ??
+                  '')
+              .toString()
+              .trim()
+              .isNotEmpty;
+      if (hasThinkingContent) {
+        _finalizeThinkingCardsForTask(runtime, taskId);
+      } else if (thinkingCardIndex != -1) {
+        runtime.messages.removeAt(thinkingCardIndex);
+      }
       runtime.currentThinkingMessages.remove(taskId);
       runtime.deepThinkingContent = '';
       runtime.lastAgentTaskId = null;

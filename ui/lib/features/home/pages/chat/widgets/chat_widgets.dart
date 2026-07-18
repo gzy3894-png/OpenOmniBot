@@ -2222,7 +2222,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
         onUserMessageLongPressStart: widget.onUserMessageLongPressStart,
         onStreamingTextLayoutChanged: _handleStreamingTextLayoutChanged,
         onToggleAgentRunGroup: _toggleAgentRunGroup,
-        expandedAgentRunTaskIds: _expandedAgentRunTaskIds,
+        expandedAgentRunTaskIds: <String>{
+          ..._expandedAgentRunTaskIds,
+          ...widget.activeAgentTaskIds,
+        },
         visualProfile: widget.visualProfile,
         appearanceConfig: widget.appearanceConfig,
       );
@@ -2315,10 +2318,15 @@ class _ChatMessageListState extends State<ChatMessageList> {
               ),
             )
           : const SizedBox.expand();
+      final paddedContent = Padding(
+        key: const ValueKey('chat-message-list-bottom-inset'),
+        padding: EdgeInsets.only(bottom: reservedBottomInset),
+        child: content,
+      );
       if (pageBackgroundColor == null) {
-        return content;
+        return paddedContent;
       }
-      return ColoredBox(color: pageBackgroundColor, child: content);
+      return ColoredBox(color: pageBackgroundColor, child: paddedContent);
     }
 
     String? latestUserMessageId;
@@ -2379,6 +2387,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
       child: content,
     );
     final paddedContent = Padding(
+      key: const ValueKey('chat-message-list-bottom-inset'),
       padding: EdgeInsets.only(bottom: reservedBottomInset),
       child: focusedContent,
     );

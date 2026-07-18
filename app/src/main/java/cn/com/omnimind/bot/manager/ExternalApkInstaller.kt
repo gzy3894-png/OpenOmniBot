@@ -359,23 +359,23 @@ object ExternalApkInstaller {
         }
 
         private fun notify(builder: NotificationCompat.Builder) {
-            if (!canNotify()) {
+            if (!notificationManager.areNotificationsEnabled()) {
                 return
             }
-            notificationManager.notify(DOWNLOAD_NOTIFICATION_ID, builder.build())
-        }
-
-        private fun canNotify(): Boolean {
-            if (!notificationManager.areNotificationsEnabled()) {
-                return false
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return
             }
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                return true
+            try {
+                notificationManager.notify(DOWNLOAD_NOTIFICATION_ID, builder.build())
+            } catch (error: SecurityException) {
+                OmniLog.w(TAG, "post APK download notification denied: ${error.message}")
             }
-            return ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
         }
 
         private fun createChannelIfNeeded() {

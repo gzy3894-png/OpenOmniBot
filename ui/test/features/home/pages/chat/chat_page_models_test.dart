@@ -478,8 +478,11 @@ void main() {
     });
 
     test('operator []= records content-kind mutation', () {
-      list.insert(0, ChatMessageModel.assistantMessage('hi', id: 'm-1'));
-      list[0] = ChatMessageModel.assistantMessage('hi there', id: 'm-1');
+      final original = ChatMessageModel.assistantMessage('hi', id: 'm-1');
+      list.insert(0, original);
+      list[0] = original.copyWith(
+        content: <String, dynamic>{'text': 'hi there', 'id': 'm-1'},
+      );
       expect(list.lastMutationKind, ChatMessageListMutationKind.content);
     });
 

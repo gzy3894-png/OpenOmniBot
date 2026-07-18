@@ -332,6 +332,7 @@ void main() {
         );
       });
       await tester.pump();
+      await tester.pump();
 
       expect(
         find.byKey(

@@ -1212,16 +1212,19 @@ void main() {
       final barTopLeft = tester.getTopLeft(find.byKey(kChatToolActivityBarKey));
       final titleTopLeft = tester.getTopLeft(find.text('检查 git 状态'));
       final barSize = tester.getSize(find.byKey(kChatToolActivityBarKey));
-      final barShape = tester.widget<PhysicalShape>(
-        find.byKey(kChatToolActivityBarKey),
-      );
 
       expect(previewTopLeft.dx, 52);
       expect(previewTopLeft.dy, lessThan(barTopLeft.dy));
       expect(barTopLeft.dx, closeTo(72, 0.1));
       expect(barSize.width, closeTo(240, 0.1));
       expect(titleTopLeft.dx, greaterThan(previewTopRight.dx - 12));
-      expect(barShape.color, const Color(0xFFF9FCFF));
+      expect(
+        find.descendant(
+          of: find.byKey(kChatToolActivityBarKey),
+          matching: find.byType(BackdropFilter),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('运行中'), findsOneWidget);
       expect(find.text('1/2'), findsNothing);
     },

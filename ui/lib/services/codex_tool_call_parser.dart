@@ -131,6 +131,18 @@ String normalizeCodexToolStatus(
   Map<String, dynamic> raw, {
   String fallbackStatus = 'running',
 }) {
+  final explicit = _firstString([raw['status'], raw['state']]);
+  final normalized = explicit?.trim().toLowerCase();
+  if (normalized == 'cancelled' ||
+      normalized == 'canceled' ||
+      normalized == 'incomplete' ||
+      normalized == 'interrupted' ||
+      normalized == 'aborted') {
+    return 'interrupted';
+  }
+  if (normalized == 'timeout' || normalized == 'timedout') {
+    return 'timeout';
+  }
   if (raw['error'] != null) {
     return 'error';
   }
@@ -139,8 +151,6 @@ String normalizeCodexToolStatus(
     return 'error';
   }
   final exitCode = _asInt(raw['exitCode'] ?? raw['exit_code']);
-  final explicit = _firstString([raw['status'], raw['state']]);
-  final normalized = explicit?.trim().toLowerCase();
   if (normalized != null && normalized.isNotEmpty) {
     if (normalized == 'running' ||
         normalized == 'pending' ||
@@ -167,16 +177,6 @@ String normalizeCodexToolStatus(
         normalized == 'failure' ||
         normalized == 'rejected') {
       return 'error';
-    }
-    if (normalized == 'cancelled' ||
-        normalized == 'canceled' ||
-        normalized == 'incomplete' ||
-        normalized == 'interrupted' ||
-        normalized == 'aborted') {
-      return 'interrupted';
-    }
-    if (normalized == 'timeout' || normalized == 'timedout') {
-      return 'timeout';
     }
   }
   if (exitCode != null && exitCode != 0) {

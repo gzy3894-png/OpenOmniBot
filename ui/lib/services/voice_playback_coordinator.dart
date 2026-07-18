@@ -50,26 +50,52 @@ class VoicePlaybackCoordinator extends ChangeNotifier {
   static const String sceneVoiceId = 'scene.voice';
 
   bool _initialized = false;
+  Future<void>? _initializationFuture;
+  Future<void>? _resetFuture;
   bool _isVoiceSceneBound = false;
   SceneVoiceConfig _voiceConfig = const SceneVoiceConfig();
   final Map<String, VoiceMessagePlaybackState> _messageStates =
       <String, VoiceMessagePlaybackState>{};
   final Map<String, _VoiceStreamingTracker> _trackers =
       <String, _VoiceStreamingTracker>{};
+  final Map<String, Future<void>> _messageUpdateTails =
+      <String, Future<void>>{};
   StreamSubscription<AgentAiConfigChangedEvent>? _configSubscription;
   StreamSubscription<VoicePlaybackEvent>? _playbackSubscription;
 
-  Future<void> ensureInitialized() async {
+  Future<void> ensureInitialized() {
+    return _ensureInitializedAfter(_resetFuture);
+  }
+
+  Future<void> _ensureInitializedAfter(Future<void>? resetBarrier) async {
+    if (resetBarrier != null) {
+      await resetBarrier;
+    }
     if (_initialized) {
       return;
     }
-    _initialized = true;
-    await _reloadConfig();
-    _configSubscription = AssistsMessageService.agentAiConfigChangedStream
-        .listen((_) => unawaited(_reloadConfig()));
-    _playbackSubscription = VoicePlaybackChannelService.events.listen(
-      _handlePlaybackEvent,
-    );
+    await (_initializationFuture ??= _initialize());
+  }
+
+  Future<void> _initialize() async {
+    try {
+      await _reloadConfig();
+      _configSubscription = AssistsMessageService.agentAiConfigChangedStream
+          .listen((_) => unawaited(_reloadConfig()));
+      _playbackSubscription = VoicePlaybackChannelService.events.listen(
+        _handlePlaybackEvent,
+      );
+      _initialized = true;
+    } catch (_) {
+      await _configSubscription?.cancel();
+      await _playbackSubscription?.cancel();
+      _configSubscription = null;
+      _playbackSubscription = null;
+      _initialized = false;
+      rethrow;
+    } finally {
+      _initializationFuture = null;
+    }
   }
 
   bool get isVoiceSceneBound {
@@ -100,8 +126,36 @@ class VoicePlaybackCoordinator extends ChangeNotifier {
     required String messageId,
     required String text,
     required bool isFinal,
+  }) {
+    final resetBarrier = _resetFuture;
+    final previous = _messageUpdateTails[messageId];
+    final predecessor =
+        previous == null ? Future<void>.value() : _ignoreFailure(previous);
+    final operation = predecessor.then<void>((_) async {
+      await _ensureInitializedAfter(resetBarrier);
+      await _processAssistantMessageUpdate(
+        messageId: messageId,
+        text: text,
+        isFinal: isFinal,
+      );
+    });
+    _messageUpdateTails[messageId] = operation;
+    unawaited(
+      operation.then<void>(
+        (_) => _removeMessageUpdateTail(messageId, operation),
+        onError: (Object _, StackTrace __) {
+          _removeMessageUpdateTail(messageId, operation);
+        },
+      ),
+    );
+    return operation;
+  }
+
+  Future<void> _processAssistantMessageUpdate({
+    required String messageId,
+    required String text,
+    required bool isFinal,
   }) async {
-    await ensureInitialized();
     if (!_isVoiceSceneBound || !_voiceConfig.autoPlay) {
       if (isFinal) {
         _trackers.remove(messageId);
@@ -146,6 +200,23 @@ class VoicePlaybackCoordinator extends ChangeNotifier {
     }
     if (isFinal) {
       _trackers.remove(messageId);
+    }
+  }
+
+  Future<void> _ignoreFailure(Future<void> operation) async {
+    try {
+      await operation;
+    } catch (_) {
+      // A failed update must not prevent later text for this message.
+    }
+  }
+
+  void _removeMessageUpdateTail(
+    String messageId,
+    Future<void> operation,
+  ) {
+    if (identical(_messageUpdateTails[messageId], operation)) {
+      _messageUpdateTails.remove(messageId);
     }
   }
 
@@ -242,17 +313,62 @@ class VoicePlaybackCoordinator extends ChangeNotifier {
   }
 
   @visibleForTesting
-  Future<void> debugResetForTest() async {
-    await _configSubscription?.cancel();
-    await _playbackSubscription?.cancel();
-    _configSubscription = null;
-    _playbackSubscription = null;
-    _initialized = false;
-    _isVoiceSceneBound = false;
-    _voiceConfig = const SceneVoiceConfig();
-    _messageStates.clear();
-    _trackers.clear();
-    notifyListeners();
+  Future<void> debugResetForTest() {
+    final activeReset = _resetFuture;
+    if (activeReset != null) {
+      return activeReset;
+    }
+    final completer = Completer<void>();
+    final resetFuture = completer.future;
+    _resetFuture = resetFuture;
+    final pendingUpdates =
+        Map<String, Future<void>>.from(_messageUpdateTails);
+    final pendingInitialization = _initializationFuture;
+    unawaited(
+      _runDebugResetForTest(
+        completer: completer,
+        resetFuture: resetFuture,
+        pendingUpdates: pendingUpdates,
+        pendingInitialization: pendingInitialization,
+      ),
+    );
+    return resetFuture;
+  }
+
+  Future<void> _runDebugResetForTest({
+    required Completer<void> completer,
+    required Future<void> resetFuture,
+    required Map<String, Future<void>> pendingUpdates,
+    required Future<void>? pendingInitialization,
+  }) async {
+    try {
+      await Future.wait<void>(
+        pendingUpdates.values.map(_ignoreFailure),
+      );
+      if (pendingInitialization != null) {
+        await _ignoreFailure(pendingInitialization);
+      }
+      await _configSubscription?.cancel();
+      await _playbackSubscription?.cancel();
+      _configSubscription = null;
+      _playbackSubscription = null;
+      _initialized = false;
+      _isVoiceSceneBound = false;
+      _voiceConfig = const SceneVoiceConfig();
+      _messageStates.clear();
+      _trackers.clear();
+      for (final entry in pendingUpdates.entries) {
+        _removeMessageUpdateTail(entry.key, entry.value);
+      }
+      notifyListeners();
+      completer.complete();
+    } catch (error, stackTrace) {
+      completer.completeError(error, stackTrace);
+    } finally {
+      if (identical(_resetFuture, resetFuture)) {
+        _resetFuture = null;
+      }
+    }
   }
 
   @visibleForTesting

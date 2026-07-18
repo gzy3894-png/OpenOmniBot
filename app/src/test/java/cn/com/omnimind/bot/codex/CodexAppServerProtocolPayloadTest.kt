@@ -391,8 +391,6 @@ class CodexAppServerProtocolPayloadTest {
     }
 
     @Test
-    
-    @Test
     fun buildCodexFeaturesTomlSectionWritesAutoCompactionExplicitly() {
         val off = buildCodexFeaturesTomlSection(
             fastMode = false,

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ui/features/home/pages/chat_history/chat_history_page.dart';
 import 'package:ui/models/conversation_model.dart';
 
@@ -34,6 +35,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(assistCoreChannel, (call) async {
           switch (call.method) {
@@ -89,7 +91,13 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    for (
+      var attempt = 0;
+      attempt < 20 && find.text('Archived today').evaluate().isEmpty;
+      attempt++
+    ) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
 
     final todayLabel = todayConversation.timeDisplay;
     final yesterdayLabel = yesterdayConversation.timeDisplay;
@@ -116,13 +124,15 @@ void main() {
     expect(tester.getSize(yesterdaySectionBody).height, greaterThan(0));
 
     await tester.tap(toggleButton);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(tester.getSize(todaySectionBody).height, closeTo(0, 0.1));
     expect(tester.getSize(yesterdaySectionBody).height, closeTo(0, 0.1));
 
     await tester.tap(toggleButton);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(tester.getSize(todaySectionBody).height, greaterThan(0));
     expect(tester.getSize(yesterdaySectionBody).height, greaterThan(0));

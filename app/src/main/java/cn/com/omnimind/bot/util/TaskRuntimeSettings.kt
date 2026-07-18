@@ -280,10 +280,24 @@ object TaskRuntimeSettings {
                 }
             }
             .build()
-        NotificationManagerCompat.from(context).notify(
-            notificationId,
-            notification
-        )
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        try {
+            NotificationManagerCompat.from(context).notify(
+                notificationId,
+                notification
+            )
+        } catch (error: SecurityException) {
+            OmniLog.w(TAG, "post task completion notification denied: ${error.message}")
+            return
+        }
         registerActiveNotification(
             context,
             ActiveNotificationEntry(

@@ -87,7 +87,7 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await _precacheAndPump(tester, MemoryImage(largePngBytes));
 
       final boundsSize = tester.getSize(find.byKey(boundsKey));
       expect(boundsSize.width, 320);
@@ -114,7 +114,7 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await _precacheAndPump(tester, MemoryImage(smallPngBytes));
 
     final boundsSize = tester.getSize(find.byKey(boundsKey));
     expect(boundsSize.width, 200);
@@ -140,7 +140,7 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await _precacheAndPump(tester, MemoryImage(widePngBytes));
 
     final boundsSize = tester.getSize(find.byKey(boundsKey));
     expect(boundsSize.width, 400);
@@ -167,10 +167,16 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await _precacheAndPump(tester, FileImage(imageFile));
 
     await tester.longPress(find.byKey(boundsKey));
-    await tester.pumpAndSettle();
+    for (
+      var attempt = 0;
+      attempt < 20 && fileChannelCalls.isEmpty;
+      attempt++
+    ) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
 
     expect(fileChannelCalls, hasLength(1));
     expect(fileChannelCalls.single.method, 'shareFile');
@@ -187,6 +193,17 @@ void main() {
       containsPair('mimeType', 'image/png'),
     );
   });
+}
+
+Future<void> _precacheAndPump(
+  WidgetTester tester,
+  ImageProvider<Object> provider,
+) async {
+  final context = tester.element(
+    find.byType(OmnibotInteractiveImageView),
+  );
+  await tester.runAsync(() => precacheImage(provider, context));
+  await tester.pump();
 }
 
 Future<Uint8List> _createPngBytes({

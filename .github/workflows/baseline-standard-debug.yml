@@ -187,8 +187,7 @@ jobs:
           SHARD_COUNT: "4"
         run: |
           set -euo pipefail
-          export LC_ALL=C
-          mapfile -d '' -t tests < <(find test -type f -name '*_test.dart' -print0 | sort -z)
+          mapfile -d '' -t tests < <(find test -type f -name '*_test.dart' -print0 | LC_ALL=C sort -z)
           if [[ ${#tests[@]} -eq 0 ]]; then
             echo "::error::No Flutter tests discovered under ui/test" >&2
             exit 1
@@ -206,7 +205,7 @@ jobs:
               fi
             done
           done
-          mapfile -t sorted_partition < <(printf '%s\n' "${partition[@]}" | sort)
+          mapfile -t sorted_partition < <(printf '%s\n' "${partition[@]}" | LC_ALL=C sort)
           for ((index=0; index<${#tests[@]}; index++)); do
             if [[ "${tests[index]}" != "${sorted_partition[index]:-}" ]]; then
               echo "::error::Flutter test partition has an omission or duplicate" >&2
@@ -420,10 +419,25 @@ jobs:
           apk_sha="$(sha256sum "$out/OpenOmniBot-standard-debug.apk" | awk '{print toupper($1)}')"
           apksigner_bin="$(command -v apksigner || find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -1)"
           [[ -n "$apksigner_bin" ]] || { echo "::error::apksigner not found" >&2; exit 1; }
-          cert_sha="$("$apksigner_bin" verify --print-certs "$out/OpenOmniBot-standard-debug.apk" |
-            awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print toupper($2); exit}')"
+          if ! verify_output="$("$apksigner_bin" verify --print-certs \
+            "$out/OpenOmniBot-standard-debug.apk" 2>&1)"; then
+            echo "::error::APK signature verification failed (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2
+            exit 1
+          fi
+          mapfile -t cert_raw_values < <(printf '%s\n' "$verify_output" | awk '
+            tolower($0) ~ /^[[:space:]]*signer[[:space:]]*#[[:space:]]*[0-9]+[[:space:]]+certificate[[:space:]]+sha-?256[[:space:]]+digest[[:space:]]*:/ {
+              line = $0
+              sub(/^[^:]*:[[:space:]]*/, "", line)
+              print line
+            }
+          ')
+          [[ ${#cert_raw_values[@]} -eq 1 ]] ||
+            { echo "::error::Expected exactly one APK signer certificate, found ${#cert_raw_values[@]} (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2; exit 1; }
+          cert_sha="$(printf '%s' "${cert_raw_values[0]}" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          [[ "$cert_sha" =~ ^[0-9A-F]{64}$ ]] ||
+            { echo "::error::Could not parse a 64-hex APK certificate SHA-256 digest (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2; exit 1; }
           [[ "$cert_sha" == "$EXPECTED_CERT_SHA256" ]] ||
-            { echo "::error::Unexpected APK certificate: $cert_sha" >&2; exit 1; }
+            { echo "::error::Unexpected APK certificate fingerprint" >&2; exit 1; }
           (cd "$out" && sha256sum *.apk > SHA256SUMS)
           {
             echo "SOURCE_COMMIT=$GITHUB_SHA"

@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ui/features/home/pages/omnibot_workspace/omnibot_artifact_preview_page.dart';
+import 'package:ui/l10n/generated/app_localizations.dart';
+import 'package:ui/l10n/legacy_text_localizer.dart';
 import 'package:ui/theme/app_theme.dart';
 import 'package:ui/theme/omni_theme_palette.dart';
 import 'package:ui/widgets/image_preview_overlay.dart';
@@ -37,6 +39,7 @@ void main() {
   late File imageFile;
 
   setUp(() async {
+    LegacyTextLocalizer.setResolvedLocale(const Locale('zh'));
     tempDir = await Directory.systemTemp.createTemp(
       'omnibot_artifact_preview_test_',
     );
@@ -51,6 +54,7 @@ void main() {
   });
 
   tearDown(() async {
+    LegacyTextLocalizer.clearResolvedLocale();
     if (await tempDir.exists()) {
       await tempDir.delete(recursive: true);
     }
@@ -61,6 +65,9 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
         home: DefaultAssetBundle(
           bundle: _SvgTestAssetBundle(),
           child: OmnibotArtifactPreviewPage(
