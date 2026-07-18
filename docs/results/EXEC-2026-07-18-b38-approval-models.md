@@ -54,18 +54,18 @@
 - [x] `app/.../CodexAppServerManager.kt` — soft restart log
 - [x] `app/.../CodexAppServerChannel.kt` — setChannel tear-down before rebind
 - [x] 本 EXEC / DELIVERY
-- [ ] push mine · GHA SUCCESS · stage APK · 回填下表
+- [x] push mine（`68c1b79`）· GHA run `29641064531` in progress · stage APK 待 SUCCESS
 - [ ] 真机 AP1–AP5 / M1–R1
 
 ## 交付字段（GHA 后回填）
 
 | 项 | 值 |
 |----|-----|
-| 功能 commit(s) | `_TBD_ after commit` |
+| 功能 commit(s) | `68c1b79` |
 | 编译/热修 commit（如有） | `_TBD_` |
-| HEAD | `_TBD_` |
-| GHA run id | `_TBD_` |
-| GHA 结果 | `_TBD_`（目标：Baseline Standard Debug · SUCCESS） |
+| HEAD | `68c1b791614e3447cd9faeeb5bd1a66ed922c6a7` |
+| GHA run id | `29641064531` |
+| GHA 结果 | **in progress** run `29641064531` |
 | APK path（stage） | `_TBD_` |
 | 版本副本 path | `_TBD_` |
 | APK sha256 | `_TBD_` |

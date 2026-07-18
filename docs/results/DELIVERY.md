@@ -30,10 +30,10 @@
 |----|-----|
 | 状态 | **CODE LANDED** · **awaiting GHA** · 真机未测 |
 | 文档 commit | `c1e4341`（PLAN+HANDOFF） |
-| 功能 commit(s) | `_TBD_ after this commit` |
-| HEAD（实现后） | `_TBD_` |
-| GHA run id | `_TBD_` |
-| GHA 结果 | `_TBD_`（目标 `baseline-standard-debug` SUCCESS） |
+| 功能 commit(s) | `68c1b79` |
+| HEAD（实现后） | `68c1b79` |
+| GHA run id | `29641064531` |
+| GHA 结果 | **in progress** `29641064531` |
 | APK path | `_TBD_` |
 | APK sha256 | `_TBD_` |
 | 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
