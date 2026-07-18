@@ -5,6 +5,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -401,6 +402,344 @@ class CodexAppServerLifecycleRegistryTest {
     }
 
     @Test
+    fun pendingReplayCarriesExactPayloadOncePerEngineStream() {
+        val requestRegistry = CodexServerRequestRegistry()
+        val listenerRegistry = CodexEventListenerRegistry()
+        val session = Any()
+        val params = mapOf<String, Any?>(
+            "command" to "rm tmp.txt",
+            "reason" to "cleanup",
+        )
+        val message = mapOf<String, Any?>(
+            "id" to 0L,
+            "method" to "item/commandExecution/requestApproval",
+            "params" to params,
+        )
+        val request = requestRegistry.register(
+            sessionGeneration = 81L,
+            sessionIdentity = session,
+            requestId = 0L,
+            method = "item/commandExecution/requestApproval",
+            threadId = "thread-81",
+            turnId = "turn-81",
+            eventMethod = "item/commandExecution/requestApproval",
+            params = params,
+            message = message,
+            conversationId = 810L,
+        ).request
+        val engineOneEvents = mutableListOf<Map<String, Any?>>()
+        val engineTwoEvents = mutableListOf<Map<String, Any?>>()
+        val engineOne = listenerRegistry.register("engine-1", "stream-1") {
+            engineOneEvents += it
+        }
+        val replay = buildCodexPendingServerRequestEvent(
+            request = requestRegistry.snapshotPending(81L, session).single(),
+            workspaceId = "default",
+            replayed = true,
+        )
+
+        assertTrue(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                engineOne,
+                request,
+                replay,
+            ),
+        )
+        assertFalse(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                engineOne,
+                request,
+                replay,
+            ),
+        )
+        val engineTwo = listenerRegistry.register("engine-2", "stream-2") {
+            engineTwoEvents += it
+        }
+        assertTrue(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                engineTwo,
+                request,
+                replay,
+            ),
+        )
+
+        assertEquals(1, engineOneEvents.size)
+        assertEquals(1, engineTwoEvents.size)
+        assertEquals(81L, replay["sessionGeneration"])
+        assertEquals(0L, replay["requestId"])
+        assertEquals(
+            "item/commandExecution/requestApproval",
+            replay["serverRequestMethod"],
+        )
+        assertEquals(params, replay["params"])
+        assertEquals(message, replay["message"])
+        assertEquals("thread-81", replay["threadId"])
+        assertEquals("turn-81", replay["turnId"])
+        assertEquals(810L, replay["conversationId"])
+        assertEquals(request.requestKey, replay["serverRequestKey"])
+        assertEquals(
+            codexPendingServerRequestDeliveryKey(request.requestKey),
+            replay["serverRequestDeliveryKey"],
+        )
+        assertEquals(true, replay["replayed"])
+    }
+
+    @Test
+    fun queuedLiveAndReplayDeduplicateWithoutSwallowingTerminalEvent() {
+        val requestRegistry = CodexServerRequestRegistry()
+        val listenerRegistry = CodexEventListenerRegistry()
+        val session = Any()
+        val request = requestRegistry.register(
+            82L,
+            session,
+            "request-82",
+            "item/fileChange/requestApproval",
+            "thread-82",
+            "turn-82",
+            params = mapOf("reason" to "write outside workspace"),
+        ).request
+        val receivedMethods = mutableListOf<String>()
+        val registration = listenerRegistry.register("engine-1", "stream-1") {
+            receivedMethods += it["method"].toString()
+        }
+        val live = buildCodexPendingServerRequestEvent(
+            request,
+            workspaceId = "default",
+            replayed = false,
+        )
+        val replay = buildCodexPendingServerRequestEvent(
+            request,
+            workspaceId = "default",
+            replayed = true,
+        )
+
+        assertTrue(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                registration,
+                request,
+                live,
+            ),
+        )
+        assertFalse(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                registration,
+                request,
+                replay,
+            ),
+        )
+        assertEquals(1, registration.pendingRequestDeliveryCount())
+        requestRegistry.resolve(
+            request.sessionGeneration,
+            session,
+            request.requestId,
+        )
+        val terminal = mapOf<String, Any?>(
+            "method" to "serverRequest/resolved",
+            "requestId" to request.requestId,
+            "serverRequestKey" to request.requestKey,
+            "resolved" to true,
+        )
+        assertTrue(listenerRegistry.deliver(registration, terminal))
+        assertEquals(0, registration.pendingRequestDeliveryCount())
+
+        assertEquals(
+            listOf(
+                "item/fileChange/requestApproval",
+                "serverRequest/resolved",
+            ),
+            receivedMethods,
+        )
+    }
+
+    @Test
+    fun snapshotAndDeliveryExcludeNonPendingOrDifferentSessionRequests() {
+        val registry = CodexServerRequestRegistry()
+        val session = Any()
+        val otherSession = Any()
+        val request = registry.register(
+            83L,
+            session,
+            3L,
+            "item/permissions/requestApproval",
+            "thread-83",
+            "turn-83",
+        ).request
+        registry.register(
+            84L,
+            otherSession,
+            3L,
+            "item/permissions/requestApproval",
+            "thread-84",
+            "turn-84",
+        )
+        val capturedPending = registry.snapshotPending(83L, session).single()
+        var deliveries = 0
+        val listenerRegistry = CodexEventListenerRegistry()
+        val registration = listenerRegistry.register(
+            "engine-83",
+            "stream-83",
+        ) {
+            deliveries += 1
+        }
+        val pendingEvent = buildCodexPendingServerRequestEvent(
+            capturedPending,
+            workspaceId = "default",
+            replayed = true,
+        )
+
+        val claimed = registry.claimForResponse(
+            sessionGeneration = 83L,
+            sessionIdentity = session,
+            requestId = 3L,
+            expectedMethod = request.method,
+        )
+        assertTrue(registry.snapshotPending(83L, session).isEmpty())
+        assertTrue(registry.snapshotPending(84L, session).isEmpty())
+        assertFalse(
+            deliverPending(
+                registry,
+                listenerRegistry,
+                registration,
+                capturedPending,
+                pendingEvent,
+            ),
+        )
+
+        registry.restorePendingAfterSendFailure(claimed)
+        assertEquals(
+            request.requestKey,
+            registry.snapshotPending(83L, session).single().requestKey,
+        )
+        assertTrue(
+            deliverPending(
+                registry,
+                listenerRegistry,
+                registration,
+                capturedPending,
+                pendingEvent,
+            ),
+        )
+
+        val claimedAgain = registry.claimForResponse(
+            sessionGeneration = 83L,
+            sessionIdentity = session,
+            requestId = 3L,
+            expectedMethod = request.method,
+        )
+        registry.markResponseSent(claimedAgain)
+        assertTrue(registry.snapshotPending(83L, session).isEmpty())
+        val responseSent = requireNotNull(registry.find(83L, 3L))
+        assertTrue(
+            runCatching {
+                buildCodexPendingServerRequestEvent(
+                    responseSent,
+                    workspaceId = "default",
+                    replayed = true,
+                )
+            }.exceptionOrNull() is IllegalArgumentException,
+        )
+        assertFalse(
+            deliverPending(
+                registry,
+                listenerRegistry,
+                registration,
+                capturedPending,
+                pendingEvent,
+            ),
+        )
+        registry.resolve(83L, session, 3L)
+        assertTrue(registry.snapshotPending(83L, session).isEmpty())
+        assertEquals(1, registry.invalidateGeneration(84L, otherSession).size)
+        assertTrue(registry.snapshotPending(84L, otherSession).isEmpty())
+        assertEquals(1, deliveries)
+    }
+
+    @Test
+    fun restoredPendingRedeliveryReachesOnlyStreamThatMissedOriginal() {
+        val requestRegistry = CodexServerRequestRegistry()
+        val listenerRegistry = CodexEventListenerRegistry()
+        val session = Any()
+        val request = requestRegistry.register(
+            85L,
+            session,
+            5L,
+            "item/commandExecution/requestApproval",
+            "thread-85",
+            "turn-85",
+        ).request
+        var oldStreamDeliveries = 0
+        var replacementStreamDeliveries = 0
+        val oldStream = listenerRegistry.register("engine-old", "stream-old") {
+            oldStreamDeliveries += 1
+        }
+        val event = buildCodexPendingServerRequestEvent(
+            request,
+            workspaceId = "default",
+            replayed = false,
+        )
+        assertTrue(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                oldStream,
+                request,
+                event,
+            ),
+        )
+
+        val claimed = requestRegistry.claimForResponse(
+            85L,
+            session,
+            5L,
+            request.method,
+        )
+        val replacementStream = listenerRegistry.register(
+            "engine-new",
+            "stream-new",
+        ) {
+            replacementStreamDeliveries += 1
+        }
+        assertTrue(requestRegistry.snapshotPending(85L, session).isEmpty())
+        requestRegistry.restorePendingAfterSendFailure(claimed)
+        val redelivery = buildCodexPendingServerRequestEvent(
+            request,
+            workspaceId = "default",
+            replayed = true,
+        )
+
+        assertFalse(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                oldStream,
+                request,
+                redelivery,
+            ),
+        )
+        assertTrue(
+            deliverPending(
+                requestRegistry,
+                listenerRegistry,
+                replacementStream,
+                request,
+                redelivery,
+            ),
+        )
+        assertEquals(1, oldStreamDeliveries)
+        assertEquals(1, replacementStreamDeliveries)
+    }
+
+    @Test
     fun responseWriteFailureRestoresPendingWithExactErrorCode() = runBlocking {
         val registry = CodexServerRequestRegistry()
         val responder = CodexServerRequestResponder(registry)
@@ -457,6 +796,23 @@ class CodexAppServerLifecycleRegistryTest {
         registry: CodexEventListenerRegistry,
         event: Map<String, Any?>,
     ) {
-        registry.snapshot().forEach { it.listener(event) }
+        registry.snapshot().forEach { registry.deliver(it, event) }
+    }
+
+    private fun deliverPending(
+        requestRegistry: CodexServerRequestRegistry,
+        listenerRegistry: CodexEventListenerRegistry,
+        registration: CodexEventListenerRegistration,
+        request: CodexPendingServerRequest,
+        event: Map<String, Any?>,
+    ): Boolean {
+        if (!requestRegistry.claimPendingDelivery(request, registration)) {
+            return false
+        }
+        return listenerRegistry.deliver(
+            registration = registration,
+            event = event,
+            pendingDeliveryPreclaimed = true,
+        )
     }
 }

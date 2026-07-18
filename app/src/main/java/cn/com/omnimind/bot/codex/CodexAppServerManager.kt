@@ -62,16 +62,48 @@ class CodexAppServerManager private constructor(
         listener: (Map<String, Any?>) -> Unit,
     ): String {
         val streamToken = "$engineToken-stream-${nextEventStreamToken.incrementAndGet()}"
-        eventListeners.register(
-            engineToken = engineToken,
-            streamToken = streamToken,
-            listener = listener,
-        )
+        lateinit var registration: CodexEventListenerRegistration
+        // Register first, then capture the exact current-session PENDING set
+        // under the same ordering boundary used by request registration,
+        // resolution, and generation invalidation. A queued live delivery and
+        // this replay converge on the per-stream pending delivery key.
+        val pendingReplay = synchronized(sessionStateLock) {
+            registration = eventListeners.register(
+                engineToken = engineToken,
+                streamToken = streamToken,
+                listener = listener,
+            )
+            val currentSession = session
+            val currentGeneration = activeSessionGeneration
+            if (currentSession?.isRunning == true &&
+                currentGeneration != NO_SESSION_GENERATION
+            ) {
+                serverRequests.snapshotPending(
+                    sessionGeneration = currentGeneration,
+                    sessionIdentity = currentSession,
+                )
+            } else {
+                emptyList()
+            }
+        }
         Log.i(
             TAG,
             "event_listener action=registered engineToken=$engineToken " +
-                "streamToken=$streamToken listenerCount=${eventListeners.size()}",
+                "streamToken=$streamToken listenerCount=${eventListeners.size()} " +
+                "pendingReplayCount=${pendingReplay.size}",
         )
+        pendingReplay.forEach { request ->
+            deliverEventToRegistration(
+                registration = registration,
+                event = buildCodexPendingServerRequestEvent(
+                    request = request,
+                    workspaceId = CodexAppServerSession.DEFAULT_WORKSPACE_ID,
+                    replayed = true,
+                ),
+                pendingRequest = request,
+                deliveryAction = "event_replayed",
+            )
+        }
         return streamToken
     }
 
@@ -607,6 +639,33 @@ class CodexAppServerManager private constructor(
                 resolved = false,
                 actionResult = error.errorCode,
             )
+            if (error.errorCode == "CODEX_SERVER_RESPONSE_WRITE_FAILED" &&
+                currentSession != null &&
+                requestedGeneration != null
+            ) {
+                val restoredPending = synchronized(sessionStateLock) {
+                    if (isCurrentSessionLocked(currentGeneration, currentSession) &&
+                        requestedGeneration == currentGeneration
+                    ) {
+                        serverRequests.find(requestedGeneration, requestId)
+                            ?.takeIf {
+                                it.state == CodexServerRequestState.PENDING
+                            }
+                    } else {
+                        null
+                    }
+                }
+                if (restoredPending != null) {
+                    // A replacement stream can subscribe while this request is
+                    // RESPONSE_SENDING and therefore correctly miss replay.
+                    // Once the write fails back to PENDING, redeliver it; streams
+                    // that already saw the prompt reject the duplicate key.
+                    emitPendingServerRequest(
+                        request = restoredPending,
+                        replayed = true,
+                    )
+                }
+            }
             throw error
         }
         logServerRequestLifecycle(
@@ -1257,6 +1316,8 @@ class CodexAppServerManager private constructor(
             var lifecycleMethod: String? = null
             var lifecycleResolved: Boolean? = null
             var lifecycleActionResult: String? = null
+            var pendingDeliveryRequest: CodexPendingServerRequest? = null
+            var terminalRequestKey: String? = null
 
             if (method == SERVER_REQUEST_RESOLVED_METHOD) {
                 lifecycleRequestId = extractResolvedServerRequestId(message, params)
@@ -1267,6 +1328,10 @@ class CodexAppServerManager private constructor(
                         requestId = lifecycleRequestId,
                     )
                 }
+                terminalRequestKey = lifecycleRequest?.requestKey
+                    ?: lifecycleRequestId?.let {
+                        codexServerRequestKey(sourceGeneration, it)
+                    }
                 lifecycleMethod = lifecycleRequest?.method
                     ?: params.stringValue("serverRequestMethod")
                     ?: params.stringValue("method")
@@ -1292,6 +1357,10 @@ class CodexAppServerManager private constructor(
                     method = requestEnvelope.method,
                     threadId = threadId,
                     turnId = turnId,
+                    eventMethod = method,
+                    params = params,
+                    message = message,
+                    conversationId = localConversationId,
                 )
                 lifecycleRequest = registration.request
                 lifecycleRequestId = registration.request.requestId
@@ -1311,6 +1380,7 @@ class CodexAppServerManager private constructor(
                 if (!registration.isNew) {
                     return@synchronized
                 }
+                pendingDeliveryRequest = registration.request
             }
 
             if (method == "codex/disconnected") {
@@ -1340,7 +1410,24 @@ class CodexAppServerManager private constructor(
                 event["resolved"] = lifecycleResolved
                 event["actionResult"] = lifecycleActionResult
             }
-            emitEvent(event)
+            val requestKey = pendingDeliveryRequest?.requestKey
+                ?: terminalRequestKey
+            if (requestKey != null) {
+                event["serverRequestKey"] = requestKey
+            }
+            pendingDeliveryRequest?.let { pending ->
+                event["serverRequestDeliveryKey"] =
+                    codexPendingServerRequestDeliveryKey(
+                        pending.requestKey,
+                    )
+                event["serverRequestState"] =
+                    pending.state.name.lowercase()
+                event["replayed"] = false
+            }
+            emitEvent(
+                event = event,
+                pendingRequest = pendingDeliveryRequest,
+            )
         }
     }
 
@@ -1520,21 +1607,23 @@ class CodexAppServerManager private constructor(
                 "oldGeneration" to request.sessionGeneration,
                 "requestId" to request.requestId,
                 "serverRequestMethod" to request.method,
+                "serverRequestKey" to request.requestKey,
                 "reason" to reason,
                 "resolved" to false,
                 "actionResult" to "invalidated",
             )
             emitEvent(
-                linkedMapOf(
+                event = linkedMapOf(
                     "method" to SERVER_REQUEST_INVALIDATED_METHOD,
                     "workspaceId" to CodexAppServerSession.DEFAULT_WORKSPACE_ID,
                     "sessionGeneration" to request.sessionGeneration,
                     "oldGeneration" to request.sessionGeneration,
                     "requestId" to request.requestId,
                     "serverRequestMethod" to request.method,
+                    "serverRequestKey" to request.requestKey,
                     "threadId" to request.threadId,
                     "turnId" to request.turnId,
-                    "conversationId" to null,
+                    "conversationId" to request.conversationId,
                     "reason" to reason,
                     "resolved" to false,
                     "actionResult" to "invalidated",
@@ -1584,35 +1673,101 @@ class CodexAppServerManager private constructor(
         )
     }
 
-    private fun emitEvent(event: Map<String, Any?>) {
+    private fun emitPendingServerRequest(
+        request: CodexPendingServerRequest,
+        replayed: Boolean,
+    ) {
+        emitEvent(
+            event = buildCodexPendingServerRequestEvent(
+                request = request,
+                workspaceId = CodexAppServerSession.DEFAULT_WORKSPACE_ID,
+                replayed = replayed,
+            ),
+            pendingRequest = request,
+        )
+    }
+
+    private fun emitEvent(
+        event: Map<String, Any?>,
+        pendingRequest: CodexPendingServerRequest? = null,
+    ) {
         mainHandler.post {
             val listeners = eventListeners.snapshot()
             listeners.forEach { registration ->
-                try {
-                    registration.listener(event)
-                    if (event["requestId"] != null) {
-                        logServerRequestLifecycle(
-                            action = "event_dispatched",
-                            engineToken = registration.engineToken,
-                            generation = (event["sessionGeneration"] as? Number)?.toLong(),
-                            method = event["serverRequestMethod"]?.toString(),
-                            requestId = event["requestId"],
-                            resolved = event["resolved"] == true,
-                            actionResult = event["actionResult"]?.toString() ?: "delivered",
-                            reason = event["reason"]?.toString(),
-                        )
-                    }
-                } catch (error: Throwable) {
-                    Log.e(
-                        TAG,
-                        "event_listener action=delivery_failed " +
-                            "engineToken=${registration.engineToken} " +
-                            "streamToken=${registration.streamToken} " +
-                            "method=${event["method"]}",
-                        error,
+                deliverEventToRegistration(
+                    registration = registration,
+                    event = event,
+                    pendingRequest = pendingRequest,
+                    deliveryAction = if (event["replayed"] == true) {
+                        "event_replayed"
+                    } else {
+                        "event_dispatched"
+                    },
+                )
+            }
+        }
+    }
+
+    private fun deliverEventToRegistration(
+        registration: CodexEventListenerRegistration,
+        event: Map<String, Any?>,
+        pendingRequest: CodexPendingServerRequest? = null,
+        deliveryAction: String,
+    ) {
+        try {
+            val delivered = if (pendingRequest == null) {
+                eventListeners.deliver(registration, event)
+            } else {
+                // Validate PENDING and claim this stream's delivery key at the
+                // same linearization point as response claim/resolve/invalidate.
+                // The external EventSink callback runs after that lock is released.
+                val claimed = serverRequests.claimPendingDelivery(
+                    request = pendingRequest,
+                    registration = registration,
+                )
+                if (!claimed) {
+                    false
+                } else {
+                    eventListeners.deliver(
+                        registration = registration,
+                        event = event,
+                        pendingDeliveryPreclaimed = true,
                     )
                 }
             }
+            if (!delivered) {
+                if (pendingRequest != null) {
+                    logServerRequestLifecycle(
+                        action = "event_pending_skipped",
+                        engineToken = registration.engineToken,
+                        request = pendingRequest,
+                        resolved = false,
+                        actionResult = "not_pending_or_duplicate",
+                    )
+                }
+                return
+            }
+            if (event["requestId"] != null) {
+                logServerRequestLifecycle(
+                    action = deliveryAction,
+                    engineToken = registration.engineToken,
+                    generation = (event["sessionGeneration"] as? Number)?.toLong(),
+                    method = event["serverRequestMethod"]?.toString(),
+                    requestId = event["requestId"],
+                    resolved = event["resolved"] == true,
+                    actionResult = event["actionResult"]?.toString() ?: "delivered",
+                    reason = event["reason"]?.toString(),
+                )
+            }
+        } catch (error: Throwable) {
+            Log.e(
+                TAG,
+                "event_listener action=delivery_failed " +
+                    "engineToken=${registration.engineToken} " +
+                    "streamToken=${registration.streamToken} " +
+                    "method=${event["method"]}",
+                error,
+            )
         }
     }
 

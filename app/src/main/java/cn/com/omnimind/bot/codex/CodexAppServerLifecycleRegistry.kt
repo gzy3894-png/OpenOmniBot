@@ -55,7 +55,22 @@ internal data class CodexEventListenerRegistration(
     val engineToken: String,
     val streamToken: String,
     val listener: (Map<String, Any?>) -> Unit,
-)
+) {
+    private val deliveredPendingRequestKeys =
+        ConcurrentHashMap.newKeySet<String>()
+
+    fun claimPendingRequestDelivery(deliveryKey: String): Boolean {
+        return deliveredPendingRequestKeys.add(deliveryKey)
+    }
+
+    fun releasePendingRequestDelivery(deliveryKey: String) {
+        deliveredPendingRequestKeys.remove(deliveryKey)
+    }
+
+    fun pendingRequestDeliveryCount(): Int {
+        return deliveredPendingRequestKeys.size
+    }
+}
 
 /**
  * Process-wide listener registry shared by every FlutterEngine.
@@ -89,6 +104,57 @@ internal class CodexEventListenerRegistry {
         return registrations.values.sortedBy { it.streamToken }
     }
 
+    /**
+     * The pending delivery key is claimed at the actual listener invocation
+     * boundary. This collapses a queued live event and registration replay for
+     * one stream without suppressing resolved/invalidated terminal events,
+     * which intentionally carry no pending delivery key.
+     */
+    fun deliver(
+        registration: CodexEventListenerRegistration,
+        event: Map<String, Any?>,
+        pendingDeliveryPreclaimed: Boolean = false,
+    ): Boolean {
+        val deliveryKey = event["serverRequestDeliveryKey"]
+            ?.toString()
+            ?.takeIf { it.isNotBlank() }
+        if (registrations[registration.streamToken] !== registration) {
+            if (pendingDeliveryPreclaimed && deliveryKey != null) {
+                registration.releasePendingRequestDelivery(deliveryKey)
+            }
+            return false
+        }
+        val terminalRequestKey = event["serverRequestKey"]
+            ?.toString()
+            ?.takeIf {
+                it.isNotBlank() &&
+                    deliveryKey == null &&
+                    (event["method"] == "serverRequest/resolved" ||
+                        event["method"] == "serverRequest/invalidated")
+            }
+        if (deliveryKey != null &&
+            !pendingDeliveryPreclaimed &&
+            !registration.claimPendingRequestDelivery(deliveryKey)
+        ) {
+            return false
+        }
+        try {
+            registration.listener(event)
+            return true
+        } catch (error: Throwable) {
+            if (deliveryKey != null) {
+                registration.releasePendingRequestDelivery(deliveryKey)
+            }
+            throw error
+        } finally {
+            if (terminalRequestKey != null) {
+                registration.releasePendingRequestDelivery(
+                    codexPendingServerRequestDeliveryKey(terminalRequestKey),
+                )
+            }
+        }
+    }
+
     fun size(): Int = registrations.size
 }
 
@@ -106,6 +172,10 @@ internal data class CodexPendingServerRequest(
     val method: String,
     val threadId: String?,
     val turnId: String?,
+    val eventMethod: String,
+    val params: Map<String, Any?>,
+    val message: Map<String, Any?>,
+    val conversationId: Long?,
     val state: CodexServerRequestState,
 )
 
@@ -130,6 +200,10 @@ internal class CodexServerRequestRegistry {
         method: String,
         threadId: String?,
         turnId: String?,
+        eventMethod: String = method,
+        params: Map<String, Any?> = emptyMap(),
+        message: Map<String, Any?> = emptyMap(),
+        conversationId: Long? = null,
     ): CodexServerRequestRegistration = synchronized(lock) {
         val requestKey = codexServerRequestKey(sessionGeneration, requestId)
         val existing = requests[requestKey]
@@ -147,6 +221,10 @@ internal class CodexServerRequestRegistry {
             method = method,
             threadId = threadId,
             turnId = turnId,
+            eventMethod = eventMethod.ifBlank { method },
+            params = LinkedHashMap(params),
+            message = LinkedHashMap(message),
+            conversationId = conversationId,
             state = CodexServerRequestState.PENDING,
         )
         requests[requestKey] = request
@@ -243,7 +321,83 @@ internal class CodexServerRequestRegistry {
         requests[codexServerRequestKey(sessionGeneration, requestId)]
     }
 
+    /**
+     * Captures only requests that are still actionable for the exact current
+     * session. RESPONSE_SENDING/RESPONSE_SENT must never be replayed as a fresh
+     * pending card.
+     */
+    fun snapshotPending(
+        sessionGeneration: Long,
+        sessionIdentity: Any,
+    ): List<CodexPendingServerRequest> = synchronized(lock) {
+        requests.values.filter {
+            it.sessionGeneration == sessionGeneration &&
+                it.sessionIdentity === sessionIdentity &&
+                it.state == CodexServerRequestState.PENDING
+        }
+    }
+
+    /**
+     * Revalidates PENDING and claims this stream's delivery key at one linear
+     * point with claimForResponse, resolve, and invalidateGeneration. The
+     * external EventSink callback runs only after [lock] is released.
+     */
+    fun claimPendingDelivery(
+        request: CodexPendingServerRequest,
+        registration: CodexEventListenerRegistration,
+    ): Boolean = synchronized(lock) {
+        val current = requests[request.requestKey] ?: return@synchronized false
+        if (current.sessionIdentity !== request.sessionIdentity ||
+            current.method != request.method ||
+            current.state != CodexServerRequestState.PENDING
+        ) {
+            return@synchronized false
+        }
+        registration.claimPendingRequestDelivery(
+            codexPendingServerRequestDeliveryKey(current.requestKey),
+        )
+    }
+
     fun size(): Int = synchronized(lock) { requests.size }
+}
+
+internal fun buildCodexPendingServerRequestEvent(
+    request: CodexPendingServerRequest,
+    workspaceId: String,
+    replayed: Boolean,
+): Map<String, Any?> {
+    require(request.state == CodexServerRequestState.PENDING) {
+        "Only pending Codex server requests can be delivered as actionable."
+    }
+    val params = LinkedHashMap(request.params)
+    val message = if (request.message.isNotEmpty()) {
+        LinkedHashMap(request.message)
+    } else {
+        linkedMapOf(
+            "id" to request.requestId,
+            "method" to request.method,
+            "params" to params,
+        )
+    }
+    return linkedMapOf(
+        "method" to request.eventMethod,
+        "workspaceId" to workspaceId,
+        "sessionGeneration" to request.sessionGeneration,
+        "threadId" to request.threadId,
+        "turnId" to request.turnId,
+        "conversationId" to request.conversationId,
+        "params" to params,
+        "message" to message,
+        "requestId" to request.requestId,
+        "serverRequestMethod" to request.method,
+        "serverRequestKey" to request.requestKey,
+        "serverRequestDeliveryKey" to
+            codexPendingServerRequestDeliveryKey(request.requestKey),
+        "serverRequestState" to request.state.name.lowercase(),
+        "resolved" to false,
+        "actionResult" to "pending",
+        "replayed" to replayed,
+    )
 }
 
 internal data class CodexServerRequestResponseResult(
@@ -318,7 +472,7 @@ internal class CodexServerRequestResponder(
     }
 }
 
-private fun codexServerRequestKey(
+internal fun codexServerRequestKey(
     sessionGeneration: Long,
     requestId: Any,
 ): String {
@@ -337,4 +491,8 @@ private fun codexServerRequestKey(
         else -> "other:${requestId::class.java.name}:$requestId"
     }
     return "$sessionGeneration/$idKey"
+}
+
+internal fun codexPendingServerRequestDeliveryKey(requestKey: String): String {
+    return "$requestKey/pending"
 }
