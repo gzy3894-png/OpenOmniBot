@@ -1,33 +1,46 @@
 # 当前交付单
 
-> 更新：2026-07-17 · Stage **B37 READY**（pending device retest）  
-> **真源：** `docs/results/PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `docs/results/EXEC-2026-07-17-b37-stale-thread.md`  
-> 上一包：B34–B36 · `7896a6c` · GHA #29565426990 · sha256 `aa34e473…e6d9a8` · **真机 FAIL**  
+> 更新：2026-07-18 · **B37 基线 APK 仍可用** · **下一刀 B38 方案已落盘、实现未开工**  
+> **B38 真源：** `docs/results/PLAN-2026-07-18-b38-models-api-and-regressions.md`  
+> **B38 交接：** `docs/results/HANDOFF-2026-07-18-b38-approval-models.md`  
+> **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
 > **主线程：方案/调度/验收** · push **仅 mine** · 禁本机 assemble  
-> 状态：**READY** · HEAD `898dc26` · GHA #29594207043 SUCCESS · APK staged · **待真机复测**
+> 状态：**B37 READY 包 staged** · HEAD 文档波待 push · **B38 等「开工」**
+
+---
+
+## 0. 下一刀 B38（新对话第一读）
+
+用户裁定：
+
+1. **T6（P0）**：审批只有 UI，**没有**走 Codex 自身 `requestApproval → 卡/auto_review → respondToServerRequest`。tip/setState **不算 PASS**。  
+2. **T3（P0）**：模型列表真源 = `GET {baseUrl}/models`（实测 9 id），不是 app-server `model/list`。
+
+| 读什么 | 路径 |
+|--------|------|
+| 完整方案 | `PLAN-2026-07-18-b38-models-api-and-regressions.md`（§0 官方审批 + AP1–AP5） |
+| 交接 | `HANDOFF-2026-07-18-b38-approval-models.md` |
+| 对照 | `reports/scout-b20-perm.md` · `reports/impl-b25-perm.md` |
+
+**硬缺口：** Dart `startThread` 不传 triad；settings 曾 `thread not found`；真机日志无 requestApproval 线。  
+**站规：** ≥6 子代理实现；push 仅 mine；GHA only。
 
 ---
 
 ## 1. 现在请你做
 
-**真机侧（装本包后复测）：**
+**若开新对话做 B38：** 读 §0 交接 → 说「开工」→ 主线程只调度。  
+
+**若仍要装 B37 基线摸底：**
 
 1. 安装 staged APK（见 §3）。  
-2. 按 §4 全表 + **优先清单** 复测。  
-3. 回传 PASS/FAIL 与关键日志（`omnibot-debug-*.log` / OmniBotLogs）。
-
-**优先复测清单：**
-
-- permission mode 切换  
-- model switch  
-- model labels（displayName / wire slug）  
-- Fast / auto-compact toggles  
-- 上述开关在 **goal clear / resume** 之后仍可用、无 `thread not found`
+2. 知悉：B37 **未**修 T6/T3；权限 tip 成功 ≠ Codex 审批环。  
+3. 回传日志时重点搜：`permission_set` / `requestApproval` / `model_list`。
 
 **开发侧：**
 
-- 本波代码与 GHA 已完成；无本机 assemble。  
-- 真机 FAIL 再开下一波 PLAN。
+- B38 **实现未开工**；本波仅文档落盘。  
+- 无本机 assemble。
 
 ---
 
