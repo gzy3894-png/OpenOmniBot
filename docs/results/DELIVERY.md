@@ -1,16 +1,16 @@
 # 当前交付单
 
-> 更新：2026-07-18 · **B38 CODE LANDED · awaiting GHA** · **未** READY/PASS  
+> 更新：2026-07-18 · **B38 GHA SUCCESS · APK STAGED · pending device** · **未** READY/PASS  
 > **B38 真源：** `docs/results/PLAN-2026-07-18-b38-models-api-and-regressions.md`  
 > **B38 交接：** `docs/results/HANDOFF-2026-07-18-b38-approval-models.md`  
 > **B38 EXEC：** `docs/results/EXEC-2026-07-18-b38-approval-models.md`  
 > **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
 > **主线程：方案/调度/验收** · push **仅 mine** · 禁本机 assemble  
-> 状态：**B38 功能 diff 已由 A1–A7 落地** · 等 push mine + GHA + 真机 AP1–AP5
+> 状态：**B38 GHA SUCCESS** · APK staged · 等真机 AP1–AP5
 
 ---
 
-## 0. 当前波 · B38（CODE LANDED · awaiting GHA）
+## 0. 当前波 · B38（GHA SUCCESS · APK STAGED · pending device）
 
 用户裁定：
 
@@ -28,7 +28,7 @@
 
 | 项 | 值 |
 |----|-----|
-| 状态 | **CODE LANDED** · **awaiting GHA** · 真机未测 |
+| 状态 | **GHA SUCCESS** · **APK STAGED** · 真机未测 |
 | 文档 commit | `c1e4341`（PLAN+HANDOFF） |
 | 功能 commit(s) | `68c1b79` |
 | HEAD（实现后） | `68c1b79` |
@@ -165,7 +165,7 @@
 - [x] B38 EXEC + 调度 A1–A7 实现  
 - [x] B38 功能实现 · `68c1b79`  
 - [x] B38 push mine · GHA `#29641064531` **in progress**  
-- [ ] B38 GHA SUCCESS + APK stage + sha256 回填  
+- [x] B38 GHA SUCCESS + APK stage + sha256 回填  
 - [ ] 真机 B38 AP1–AP5 / M1–R1 PASS  
 
 ---

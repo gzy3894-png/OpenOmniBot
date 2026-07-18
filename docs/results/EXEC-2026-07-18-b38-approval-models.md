@@ -1,6 +1,6 @@
 # EXEC · B38 · 2026-07-18
 
-> 状态：**CODE LANDED · AWAITING GHA** · 功能 diff 已提交待 push · **无**真机 PASS · tip 不算审批 PASS  
+> 状态：**GHA SUCCESS · APK STAGED · pending device AP1–AP5** · **未** READY/PASS · tip 不算审批 PASS  
 > 真源：`PLAN-2026-07-18-b38-models-api-and-regressions.md`  
 > 交接：`HANDOFF-2026-07-18-b38-approval-models.md`  
 > 基线：B37 `898dc26` / sha256 `9c560e73…` · staged（**未**修 T6/T3）  
@@ -27,7 +27,7 @@
 | approval_prompt / approval_decision 埋点 | **已落地** | A4：reducer + request card |
 | HTTP `GET baseUrl/models` 换列表真源 | **已落地** | A5：HTTP 主路径 + app_server_fallback |
 | thread 分叉 / MissingPlugin 加固 | **已落地（有限）** | A6：retry + channel rebind + rebind-before-start |
-| push mine · GHA · stage APK | **进行中** | push 后自动触发 baseline-standard-debug |
+| push mine · GHA · stage APK | **完成** | GHA  SUCCESS · staged |
 | 真机 AP1–AP5 / M1–R1 | **未开始** | 用户设备复测 |
 
 ## 代理分工
@@ -65,7 +65,7 @@
 | 编译/热修 commit（如有） | `_TBD_` |
 | HEAD | `68c1b791614e3447cd9faeeb5bd1a66ed922c6a7` |
 | GHA run id | `29641064531` |
-| GHA 结果 | **in progress** run `29641064531` |
+| GHA 结果 | **SUCCESS** run `29641064531` |
 | APK path（stage） | `_TBD_` |
 | 版本副本 path | `_TBD_` |
 | APK sha256 | `_TBD_` |
