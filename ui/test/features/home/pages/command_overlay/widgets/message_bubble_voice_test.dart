@@ -30,6 +30,9 @@ void main() {
 
   setUp(() async {
     await VoicePlaybackCoordinator.instance.debugResetForTest();
+    VoicePlaybackCoordinator.instance.debugSetAvailabilityForTest(
+      isBound: false,
+    );
   });
 
   tearDown(() async {

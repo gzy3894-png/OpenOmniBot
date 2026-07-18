@@ -424,16 +424,23 @@ jobs:
             echo "::error::APK signature verification failed (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2
             exit 1
           fi
-          mapfile -t cert_raw_values < <(printf '%s\n' "$verify_output" | awk '
-            tolower($0) ~ /^[[:space:]]*signer[[:space:]]*#[[:space:]]*[0-9]+[[:space:]]+certificate[[:space:]]+sha-?256[[:space:]]+digest[[:space:]]*:/ {
-              line = $0
-              sub(/^[^:]*:[[:space:]]*/, "", line)
-              print line
-            }
-          ')
-          [[ ${#cert_raw_values[@]} -eq 1 ]] ||
-            { echo "::error::Expected exactly one APK signer certificate, found ${#cert_raw_values[@]} (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2; exit 1; }
-          cert_sha="$(printf '%s' "${cert_raw_values[0]}" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          mapfile -t cert_sha_values < <(
+            while IFS= read -r line; do
+              lower="${line,,}"
+              if [[ "$lower" == *"signer"* &&
+                    "$lower" == *"certificate sha-256 digest:"* &&
+                    "$lower" != *"source stamp signer"* ]]; then
+                raw="${line#*:}"
+                normalized="$(printf '%s' "$raw" |
+                  tr -d '[:space:]:' |
+                  tr '[:lower:]' '[:upper:]')"
+                printf '%s\n' "$normalized"
+              fi
+            done <<< "$verify_output" | LC_ALL=C sort -u
+          )
+          [[ ${#cert_sha_values[@]} -eq 1 ]] ||
+            { echo "::error::Expected exactly one unique APK signer certificate, found ${#cert_sha_values[@]} (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2; exit 1; }
+          cert_sha="${cert_sha_values[0]}"
           [[ "$cert_sha" =~ ^[0-9A-F]{64}$ ]] ||
             { echo "::error::Could not parse a 64-hex APK certificate SHA-256 digest (tool: $apksigner_bin; output bytes: ${#verify_output})" >&2; exit 1; }
           [[ "$cert_sha" == "$EXPECTED_CERT_SHA256" ]] ||

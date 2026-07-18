@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -87,7 +88,11 @@ void main() {
           ),
         ),
       );
-      await _precacheAndPump(tester, MemoryImage(largePngBytes));
+      await _waitForPreviewBounds(
+        tester,
+        boundsFinder: find.byKey(boundsKey),
+        expectedSize: const Size(320, 240),
+      );
 
       final boundsSize = tester.getSize(find.byKey(boundsKey));
       expect(boundsSize.width, 320);
@@ -114,7 +119,11 @@ void main() {
         ),
       ),
     );
-    await _precacheAndPump(tester, MemoryImage(smallPngBytes));
+    await _waitForPreviewBounds(
+      tester,
+      boundsFinder: find.byKey(boundsKey),
+      expectedSize: const Size(200, 100),
+    );
 
     final boundsSize = tester.getSize(find.byKey(boundsKey));
     expect(boundsSize.width, 200);
@@ -140,7 +149,11 @@ void main() {
         ),
       ),
     );
-    await _precacheAndPump(tester, MemoryImage(widePngBytes));
+    await _waitForPreviewBounds(
+      tester,
+      boundsFinder: find.byKey(boundsKey),
+      expectedSize: const Size(400, 100),
+    );
 
     final boundsSize = tester.getSize(find.byKey(boundsKey));
     expect(boundsSize.width, 400);
@@ -167,9 +180,16 @@ void main() {
         ),
       ),
     );
-    await _precacheAndPump(tester, FileImage(imageFile));
 
-    await tester.longPress(find.byKey(boundsKey));
+    final gestureDetector = find.descendant(
+      of: find.byType(OmnibotInteractiveImageView),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is GestureDetector && widget.onLongPress != null,
+        description: 'file-share GestureDetector',
+      ),
+    );
+    expect(gestureDetector, findsOneWidget);
+    await tester.longPress(gestureDetector);
     for (
       var attempt = 0;
       attempt < 20 && fileChannelCalls.isEmpty;
@@ -195,15 +215,53 @@ void main() {
   });
 }
 
-Future<void> _precacheAndPump(
-  WidgetTester tester,
-  ImageProvider<Object> provider,
-) async {
-  final context = tester.element(
-    find.byType(OmnibotInteractiveImageView),
+Future<void> _waitForPreviewBounds(
+  WidgetTester tester, {
+  required Finder boundsFinder,
+  required Size expectedSize,
+}) async {
+  final imageFinder = find.descendant(
+    of: find.byType(OmnibotInteractiveImageView),
+    matching: find.byType(Image),
   );
-  await tester.runAsync(() => precacheImage(provider, context));
-  await tester.pump();
+  final image = tester.widget<Image>(imageFinder);
+  final context = tester.element(imageFinder);
+  final stream = image.image.resolve(createLocalImageConfiguration(context));
+  final decoded = Completer<void>();
+  late final ImageStreamListener listener;
+  listener = ImageStreamListener(
+    (_, __) {
+      if (!decoded.isCompleted) {
+        decoded.complete();
+      }
+    },
+    onError: (Object error, StackTrace? stackTrace) {
+      if (!decoded.isCompleted) {
+        decoded.completeError(error, stackTrace);
+      }
+    },
+  );
+  stream.addListener(listener);
+  try {
+    await tester.runAsync(
+      () => decoded.future.timeout(const Duration(seconds: 3)),
+    );
+  } finally {
+    stream.removeListener(listener);
+  }
+
+  Size? actualSize;
+  for (var attempt = 0; attempt < 20; attempt++) {
+    await tester.pump(const Duration(milliseconds: 16));
+    actualSize = tester.getSize(boundsFinder);
+    if (actualSize == expectedSize) {
+      return;
+    }
+  }
+  fail(
+    'Preview bounds did not settle at $expectedSize '
+    'after 20 pumps; last size was $actualSize.',
+  );
 }
 
 Future<Uint8List> _createPngBytes({
