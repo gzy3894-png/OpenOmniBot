@@ -430,7 +430,7 @@ jobs:
               if [[ "$lower" == *"signer"* &&
                     "$lower" == *"certificate sha-256 digest:"* &&
                     "$lower" != *"source stamp signer"* ]]; then
-                raw="${line#*:}"
+                raw="${lower#*certificate sha-256 digest:}"
                 normalized="$(printf '%s' "$raw" |
                   tr -d '[:space:]:' |
                   tr '[:lower:]' '[:upper:]')"
