@@ -35,4 +35,10 @@ output/
 # PC desktop port (Rust backend + Flutter macOS/Windows runner) lives on
 # its own feature branch; keep it out of main's `git status`.
 /desktop/
-reports/
+
+# Report governance: root-level generated reports stay local. Under
+# docs/results/reports, only explicitly reviewed evidence may be committed.
+/reports/
+/docs/results/reports/*
+!/docs/results/reports/scout-b20-perm.md
+!/docs/results/reports/impl-b25-perm.md

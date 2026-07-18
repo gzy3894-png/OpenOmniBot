@@ -1,14 +1,15 @@
 # HANDOFF · B38 · Codex 原生审批 + `/v1/models` · 2026-07-18
 
-> **给下一手（新对话）**：只信本文件 + 下列真源路径；不要靠会话摘要臆测。  
-> **状态**：方案已落盘，**实现未开工**。  
+> 文档生命周期：**SUPERSEDED**。本文件仅保留 2026-07-18 开工前的历史上下文，**不得再作为执行清单或状态真源**。
+> 当前状态只认 `EXEC-2026-07-18-b38-approval-models.md`：hardening 候选为 `IMPLEMENTED · REMOTE TEST PENDING`；旧 APK/日志为 `DEVICE_PARTIAL`。
+> 统一状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`。
 > **用户裁定**：审批「只有 UI、没走 Codex 自身审批」= **真 bug（T6）**，优先级 ≥ 模型列表。
 
 ---
 
 ## 0. 一句话
 
-B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**。下一刀必须让 **Codex 环**闭合：
+B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**。以下是开工前冻结的原始目标，不是当前进度：
 
 `triad 写入 thread/turn → requestApproval → 卡/auto_review → respondToServerRequest`
 
@@ -20,9 +21,9 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 
 | 规则 | 说明 |
 |------|------|
-| 主线程 | **只**方案 / 调度 / 验收；**≥6 并发子代理**写实现 |
+| 主线程 | **只**方案 / 调度 / 验收；当前要求 **≥8 并发工作线** |
 | 推送 | **仅** `mine` → `gzy3894-png/OpenOmniBot`；**禁止** push origin/upstream |
-| 出包 | **仅** GHA `baseline-standard-debug`；**禁本机 Gradle assemble** |
+| 出包 | **仅**最终九路 GHA `baseline-standard-debug`；**禁本机编译测试** |
 | 密钥 | 不写 memory/docs/logs；baseUrl 可写 host，key 用 conf 同源读 |
 | 验收 | tip/toast/setState **单独不算**权限 PASS |
 
@@ -48,7 +49,7 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 | Kotlin | `app/.../codex/CodexAppServerManager.kt` `startThread` ~178 | 默认 `on-request`；reviewer 仅 args 有才写 |
 | 事件卡 | `codex_event_reducer.dart` + `codex_request_card.dart` | requestApproval → 卡 → `respondToApproval` |
 | 真机日志 | `/storage/emulated/0/Download/OmniBotLogs/omnibot-debug-20260717.log` | permission_set fail thread not found；**无** requestApproval 线 |
-| 前序 READY | B37 APK `898dc26` sha `9c560e73…` Download 已 stage | 可作基线装机，**未**修 T6/T3 |
+| 前序 `DEVICE_PARTIAL` | B37 APK `898dc26` sha `9c560e73…` Download 已 stage | device retest 未完成，**未**修 T6/T3 |
 
 **upstream 路径说明**：若本机无 `codex-upstream-remote-test`，以 PLAN §0 摘要 + protocol 注释为准，勿拿沙盒 `~/.codex` 和 OmniBot 对账。
 
@@ -97,7 +98,7 @@ B37（`898dc26`）只治死 thread 报错；**tip/setState 不算审批 PASS**�
 
 ---
 
-## 5. 实现切片（调度用，≥6 子代理）
+## 5. 原始实现切片（历史，已 superseded）
 
 | ID | 任务 | 锁建议 |
 |----|------|--------|
@@ -145,10 +146,11 @@ B37 做了：soft conf harden、stale thread clear、本地 mode 继续、displa
 
 ## 8. 下一手第一件事
 
-1. `asm context` / 读本 HANDOFF + **PLAN-2026-07-18-b38…** 全文  
-2. 用户确认「开工」后：主线程 **只调度** ≥6 agent 按 §5  
-3. **不要**先做 tip 文案；**不要**本机 assemble；**不要**对照沙盒 Codex catalog  
-4. 交付时更新 `docs/results/DELIVERY.md` + 本 HANDOFF 状态行 → READY  
+1. **停止使用本 HANDOFF 做状态判断**；先读 EXEC §0 实时账本和 PLAN 冻结范围。
+2. 将各 topic commit 汇入同一 integration HEAD，完成源码级验收；此时最多保持 `IMPLEMENTED`。
+3. 只在最终九路远端门禁全绿并回填 run/HEAD 后升 `REMOTE_VERIFIED`；随后才允许 stage 同一 HEAD 的 APK。
+4. 设备证据不完整或有失败统一记 `DEVICE_PARTIAL`；完整 AP/M/F/A/R 通过后才可 `DEVICE_PASS → READY`。
+5. 不进入 S2，不改历史 commit/run/APK/log，不本机编译测试。
 
 ---
 
@@ -161,4 +163,4 @@ B37 做了：soft conf harden、stale thread clear、本地 mode 继续、displa
 
 ---
 
-*落盘：claude · 2026-07-18 · 用户要求开新对话前完整交接*
+*历史落盘：claude · 2026-07-18；2026-07-18 文档治理标记 SUPERSEDED，实时状态迁移至 EXEC。*

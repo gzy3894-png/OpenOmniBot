@@ -1,16 +1,44 @@
 # 当前交付单
 
-> 更新：2026-07-18 · **B38 GHA SUCCESS · APK STAGED · pending device** · **未** READY/PASS  
+> 更新：2026-07-18 · 当前 hardening 候选 **IMPLEMENTED · REMOTE TEST PENDING**
+> 旧 B38 APK/日志证据集：**DEVICE_PARTIAL**；不得拿旧 GHA/APK 给当前候选提级
 > **B38 真源：** `docs/results/PLAN-2026-07-18-b38-models-api-and-regressions.md`  
-> **B38 交接：** `docs/results/HANDOFF-2026-07-18-b38-approval-models.md`  
-> **B38 EXEC：** `docs/results/EXEC-2026-07-18-b38-approval-models.md`  
+> **唯一实时账本：** `docs/results/EXEC-2026-07-18-b38-approval-models.md`
+> **旧交接：** `docs/results/HANDOFF-2026-07-18-b38-approval-models.md`（**SUPERSEDED**）
 > **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
-> **主线程：方案/调度/验收** · push **仅 mine** · 禁本机 assemble  
-> 状态：**B38 GHA SUCCESS** · APK staged · 等真机 AP1–AP5
+> **主线程只调度/验收** · ≥8 并发工作线 · push **仅 mine** · 最终九路远端门禁 · 禁本机编译测试
+> 状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
 
 ---
 
-## 0. 当前波 · B38（GHA SUCCESS · APK STAGED · pending device）
+## 0. 当前波 · B38 hardening（IMPLEMENTED · REMOTE TEST PENDING）
+
+| 工作线 | 状态 | commit / 备注 |
+|--------|------|---------------|
+| Native 审批/会话所有权 | `IMPLEMENTED` | `10a169e029f248f4b9734cddcae327d48280e72a` |
+| Models/UI catalog 一致性 | `IMPLEMENTED` | `86cec55a85db446394ddbf1ebd306ee326dee960` |
+| Approval UI/幂等回归 | `IMPLEMENTED` | `3ceaba07290273a303b9398769666fb2de57442c` |
+| 八→九路远端质量门禁 | `IMPLEMENTED` | `6e56dd943319328148df965b251dfd215670fb1a` + `522c346e8a10dc37a1532e09bba56a4f3d30b2c2` |
+| 文档/证据治理 | `IMPLEMENTED` | 本提交后回填 |
+
+当前没有可交付的新 APK。以下字段全部待最终整合后按顺序回填：
+
+| 字段 | 状态 |
+|------|------|
+| integration HEAD | 待回填 |
+| 九路 GHA run ID / URL / result | 待运行；不得预写 SUCCESS |
+| APK artifact / stage path | 待 `REMOTE_VERIFIED` 后产出 |
+| APK SHA-256 / cert SHA-256 | 待回填 |
+| AP1–AP7 / M1–M3 / F1 / A1 / R1 | 待同一 APK 真机验证 |
+
+门禁纪律：
+
+- topic commit 与源码级静态自审只支持 `IMPLEMENTED`。
+- 九路远端全绿才到 `REMOTE_VERIFIED`；同一 HEAD 的签名包落位后才到 `APK_STAGED`。
+- 任一设备失败、未知或矩阵未完成都只能到 `DEVICE_PARTIAL`；完整通过才到 `DEVICE_PASS → READY`。
+- 本轮不进入 S2，不改写旧 commit、run、APK、SHA 或日志历史。
+
+## 1. 旧 B38 候选 `68c1b79`（DEVICE_PARTIAL）
 
 用户裁定：
 
@@ -24,11 +52,11 @@
 | EXEC 清单 | `EXEC-2026-07-18-b38-approval-models.md` |
 | 对照 | `reports/scout-b20-perm.md` · `reports/impl-b25-perm.md` |
 
-### B38 包状态（代码已落 · 勿当 READY）
+### 旧 B38 包状态（历史证据 · 勿当当前包）
 
 | 项 | 值 |
 |----|-----|
-| 状态 | **GHA SUCCESS** · **APK STAGED** · 真机未测 |
+| 状态 | **DEVICE_PARTIAL** · 历史 GHA SUCCESS / APK STAGED，但设备矩阵不完整 |
 | 文档 commit | `c1e4341`（PLAN+HANDOFF） |
 | 功能 commit(s) | `68c1b79` |
 | HEAD（实现后） | `68c1b79`（docs 最新 `92c0600`） |
@@ -41,9 +69,9 @@
 | 计划 / EXEC | `PLAN-2026-07-18-b38-models-api-and-regressions.md` · `EXEC-2026-07-18-b38-approval-models.md` |
 
 **已落地（代码，非真机）：** `startThread` triad；settings stale→ensure→re-apply；HTTP `/models` 主路径；`approval_prompt`/`approval_decision`；MissingPlugin 有限加固。  
-**站规：** ≥6 子代理实现；push 仅 mine；GHA only；tip 不算 PASS。
+**站规：** 该包只作历史证据；tip 不算 PASS，且不得证明当前 hardening 候选。
 
-### 测点（B38 · PLAN §6 · 用户真机后填）
+### 历史测点（矩阵未闭合）
 
 | # | PASS 摘要 | 结果 |
 |---|-----------|------|
@@ -51,29 +79,27 @@
 | M1–M3 | HTTP `/models` 与菜单一致；可切换 | |
 | F1 / A1 / R1 | Fast、auto-compact、10min 无成片 stale | |
 
-完整表与空白栏：见 EXEC。
+该历史包没有闭合完整矩阵，因此统一归类 `DEVICE_PARTIAL`。当前候选的待测表只在 EXEC 维护。
 
 ---
 
-## 1. 现在请你做
+## 2. 历史装机指令（SUPERSEDED）
 
-**用户真机（本波当前动作）：**
+以下路径只保留证据追溯，**不是当前装机动作**。当前 hardening 候选尚未远端验证、尚未出包。
 
-1. 安装 stage APK：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`  
-   （副本：`…-68c1b79-847c4aab.apk` · sha256 `847c4aab…04265bd8`）  
-2. **优先 AP1–AP5**（审批环），再 M1–R1（模型/回归）。  
-3. tip/setState **单独不算 PASS**；日志重点：`thread_start` triad、`permission_set`、`approval_prompt`/`approval_decision`、`model_list source=http_v1`。  
-4. 结果回填 EXEC 真机表；关键项有证据后再写 READY。
+- 历史 stage：`/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`
+- 历史副本：`…-68c1b79-847c4aab.apk`
+- 历史 SHA-256：`847c4aaba2b3e6c2251be1f098d8310858ab4909904a3eb0ef57d17604265bd8`
 
 ---
 
-## 2. B34–B36 包状态（归档 · 真机 FAIL）
+## 3. B34–B36 包状态（归档 · DEVICE_PARTIAL / 真机 FAIL）
 
 | 项 | 值 |
 |----|-----|
 | 文件 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk`（已被 B37 覆盖） |
 | 副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-7896a6c-standard-debug.apk` |
-| 状态 | **真机 FAIL**（设置 RPC stale thread） |
+| 状态 | **DEVICE_PARTIAL / 真机 FAIL**（设置 RPC stale thread） |
 | sha256 | `aa34e473d781302247188bc925425893fe8e1b7a0ce9e3ad219a412437e6d9a8` |
 | 功能 commit | `d7abe18` + `7896a6c` |
 | HEAD（该波） | `7896a6c9342303d964f9908e2571a4471d619afd` |
@@ -99,11 +125,11 @@
 
 ---
 
-## 3. 前序 · B37 READY 包（pending device retest · 非 B38）
+## 4. 前序 · B37（DEVICE_PARTIAL · 非 B38）
 
 | 项 | 值 |
 |----|-----|
-| 状态 | **READY** · **pending device retest**（B37 范围） |
+| 状态 | **DEVICE_PARTIAL** · APK staged，但 device retest 未完成 |
 | 计划 | `PLAN-2026-07-17-b37-stale-thread-settings.md` |
 | EXEC | `EXEC-2026-07-17-b37-stale-thread.md` |
 | 功能 commit | `1220a4d`（stale-thread + soft conf harden + model display + auto-compact） |
@@ -127,7 +153,7 @@
 
 ---
 
-## 4. 测点（B37 · PLAN §7 · 归档）
+## 5. 测点（B37 · PLAN §7 · 归档）
 
 | # | 操作 | PASS 标准 |
 |---|------|-----------|
@@ -143,7 +169,7 @@
 
 ---
 
-## 5. 状态勾选
+## 6. 状态勾选
 
 - [x] B34–B36 实现 + GHA SUCCESS + APK stage  
 - [x] 真机复测 → **FAIL**（stale thread settings）  
@@ -151,19 +177,23 @@
 - [x] B37 实现 · `1220a4d` + `898dc26`  
 - [x] push mine · GHA #29594207043 SUCCESS  
 - [x] APK stage · sha256 `9c560e73…` / shortsha `898dc26`  
-- [ ] 真机 B37 §4 PASS  
+- [ ] 真机 B37 §5 完整 PASS（当前仅 `DEVICE_PARTIAL`）
 - [x] B38 PLAN + HANDOFF 落盘 · `c1e4341`  
 - [x] B38 EXEC + 调度 A1–A7 实现  
 - [x] B38 功能实现 · `68c1b79`  
 - [x] B38 push mine · GHA `#29641064531` **SUCCESS**  
 - [x] B38 APK stage · sha256 `847c4aab…` / shortsha `68c1b79`  
-- [ ] 真机 B38 AP1–AP5 / M1–R1 PASS  
+- [x] 旧 B38 `68c1b79` 证据重分类为 `DEVICE_PARTIAL`
+- [x] 当前 hardening topic 实现完成，状态仅 `IMPLEMENTED`
+- [ ] 最终 integration HEAD + 九路 `REMOTE_VERIFIED`
+- [ ] 当前候选 `APK_STAGED` + SHA/cert 回填
+- [ ] 当前候选 AP1–AP7 / M1–R1 达 `DEVICE_PASS`
 
 ---
 
-## 6. 未改 / 残余
+## 7. 未改 / 残余
 
 - Remote 2s poll、每 event `debugPrint`：仍未改  
-- MissingPlugin connect：B38 可选加固；无新证据不优先全量修  
 - hard 字段（baseUrl / model / apiKey）变更仍应 reconnect  
-- **B38 完成前**：审批 tip ≠ Codex 审批 PASS；model_list 仍可能为 app-server 7 id  
+- topic commits 尚未汇成并验证同一 integration HEAD；Native/Flutter 联调未知
+- **当前 hardening 完成前**：审批 tip ≠ Codex 审批 PASS；远端和设备证据均待回填

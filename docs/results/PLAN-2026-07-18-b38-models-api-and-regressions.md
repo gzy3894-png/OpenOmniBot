@@ -1,12 +1,42 @@
 # PLAN · B38 · 模型真源 `/v1/models` + **Codex 原生审批流水线** + 真机回归 · 2026-07-18
 
-> 状态：**待开工**（2026-07-18 补丁：用户裁定 **T6 审批只 UI、未进 Codex 自身审批** 为真 bug，优先级 ≥ 模型列表）  
+> 计划状态：**PLANNED · SCOPE FROZEN**。本文件只冻结范围，不承担实时进度；实时状态唯一真源是 `EXEC-2026-07-18-b38-approval-models.md`。
 > 输入：真机 FAIL 日志 `omnibot-debug-20260717.log` + `GET {base_url}/models` 实测 + Codex 对照文档（`scout-b20-perm` / `impl-b25-perm` / PLAN B20）+ upstream TUI `permissions_menu.rs` + protocol `ApprovalsReviewer`  
 > 前序：B37（`898dc26`）治 stale-thread / soft conf；**未** HTTP models；**未**保证 requestApproval 闭环进 live thread  
-> 规则：主线程调度/验收 · ≥6 子代理 · push **仅 mine** · GHA `baseline-standard-debug` · 禁本机 assemble  
+> 规则：主线程只调度/验收 · ≥8 并发工作线 · push **仅 mine** · 远端 `baseline-standard-debug` 最终九路门禁 · 禁本机编译测试
 > **禁止**把 tip/toast / 本地 setState 当成审批 PASS
 
 ---
+
+## 状态协议与冻结边界
+
+所有 B38 文档只使用以下交付状态，按证据单向推进：
+
+`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
+
+| 状态 | 必须已有的证据 |
+|------|----------------|
+| `PLANNED` | 范围、非目标和验收条件冻结 |
+| `IMPLEMENTED` | 候选改动已形成聚焦 commit 并完成源码级静态自审；不代表编译或运行成功 |
+| `REMOTE_VERIFIED` | 最终整合 HEAD 的远端九路门禁全绿，并记录 run URL/ID |
+| `APK_STAGED` | 同一 verified HEAD 的固定签名 APK 已 stage，记录路径、SHA-256 和证书指纹 |
+| `DEVICE_PARTIAL` | 有同一 APK 的设备证据，但必测矩阵未完成或仍有失败/未知项 |
+| `DEVICE_PASS` | 冻结的 AP/M/F/A/R 关键矩阵有设备日志和结果支撑 |
+| `READY` | 上述证据闭环，DELIVERY 与 EXEC 字段完整且无更高优先级阻塞 |
+
+### 本轮 hardening 冻结范围
+
+1. **Native 审批/会话所有权**：多 Engine listener registry、session generation、pending server request 归属，以及 stale/no-reconnect 防护；审批只能由当前 generation 响应。
+2. **Approval UI/幂等生命周期**：三类真实 approval schema；generation + typed requestId + method 生命周期；resolved/invalidated；`ALREADY_RESPONDED` 中性 `handled_elsewhere`；可重试写入/断连；EventChannel 监听与有界退避。
+3. **模型/UI 一致性**：local/remote catalog 真源隔离、provider/runtime/session generation latest-wins、authoritative empty/ghost 防护、per-model effort 合法化、model+effort 原子切换和 Overlay live refresh。
+4. **远端质量门禁**：首版八路并行升级为最终九路；四个 Flutter test shard、analyze、Android unit/lint/APK、source-policy 必须来自同一 commit，summary 全绿才可进入 `REMOTE_VERIFIED`。
+5. **证据治理**：只纳入经审查的 `scout-b20-perm.md`、`impl-b25-perm.md`；统一状态机并保留旧包/日志的 `DEVICE_PARTIAL` 事实。
+
+### 明确排除
+
+- **不进入 S2**，不做模块物理删除、包名/品牌/签名迁移或产品线扩张。
+- 不改写 B34–B37 及旧 B38 commit、GHA、APK、SHA 和日志事实；旧证据只能重新归类，不能拔高为 PASS。
+- 本地不运行 Flutter、Dart、Gradle、Android 构建或测试；实现候选只能先记 `IMPLEMENTED`。
 
 ## 1. 真机测出的问题（用户原话 → 证据）
 
@@ -217,6 +247,8 @@ B37 只治了「死 thread 报错」的表层；**不能**把 stale_cleared + ti
 | **AP3** | **autoReview**：settings/turn 日志 `approvalsReviewer=auto_review` + `on-request`；自动决策可观测（或明确 guardian/auto 事件），非仅 UI 标签 |
 | **AP4** | **fullAccess**：`never` + `dangerFullAccess`；同任务 **不**弹人工审批卡 |
 | **AP5** | 切三档：live thread 时 `permission_set settingsRpc=ok`；失败不得假 tip 成功 |
+| **AP6** | 双 Engine 竞争同一请求：只允许一个终态；另一端 `ALREADY_RESPONDED` 记 `handled_elsewhere`，不得显示伪失败 |
+| **AP7** | 断连/重连或 generation 更新：旧卡失效且不能响应新 session；retryable 请求按有界策略恢复 |
 | M1 | 模型菜单 id 集合 = `GET {baseUrl}/models` 的 `data[].id` |
 | M2 | 日志 `model_list source=http_v1 count=…` 与菜单一致 |
 | M3 | 切模型成功；无 `select_failed` |
@@ -226,7 +258,7 @@ B37 只治了「死 thread 报错」的表层；**不能**把 stale_cleared + ti
 
 ---
 
-## 7. 建议实现切片（子代理，≥6）
+## 7. 建议实现切片（并发工作线，≥8）
 
 | 代理 | 任务 |
 |------|------|
@@ -236,15 +268,17 @@ B37 只治了「死 thread 报错」的表层；**不能**把 stale_cleared + ti
 | A4 | `approval_prompt` / `approval_decision` 埋点 + 事件进 reducer 不丢 |
 | A5 | HTTP `GET baseUrl/models` + `_loadCodexModelOptions` 换真源 |
 | A6 | thread 分叉 / MissingPlugin 加固 |
-| A7 | 文档 EXEC/DELIVERY + 真机 AP1–AP5 / M1–R1 表 |
+| A7 | 文档 EXEC/DELIVERY + 真机 AP1–AP7 / M1–R1 表 |
+| A8 | 远端九路质量门禁、source-policy 与最终整合验收 |
 
 ---
 
 ## 8. 交付物
 
-- 功能 commit（mine）+ GHA SUCCESS + Download APK  
-- EXEC 填 run/sha  
-- 用户复测 **AP1–AP5 优先**，再 M1–R1  
+- 聚焦功能/CI/文档 commits；整合前均只到 `IMPLEMENTED`。
+- 最终整合 HEAD 的远端九路 SUCCESS 后，EXEC 回填 run/commit 并升 `REMOTE_VERIFIED`。
+- 同一 HEAD 的固定签名 APK 回填 path/SHA/cert 后升 `APK_STAGED`。
+- 用户复测 **AP1–AP7 优先**，再 M1–R1；部分证据只到 `DEVICE_PARTIAL`，完整通过后才到 `DEVICE_PASS` / `READY`。
 
 ---
 

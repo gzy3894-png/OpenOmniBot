@@ -4,15 +4,13 @@
 > - 路线：[`docs/slim-roadmap.md`](docs/slim-roadmap.md) — **一步步 Stage，禁止一刀砍模块**  
 > - 模块地图：[`docs/module-map/`](docs/module-map/)  
 > - 真机金线：[`docs/smoke-codex.md`](docs/smoke-codex.md)  
-> - **唯一推荐 debug 构建**：
->   ```bash
->   cd ui && flutter pub get
->   cd .. && ./gradlew :app:assembleDevelopStandardDebug -Ptarget=lib/main_standard.dart
->   ```
+> - **secondary 交付只走远端** `.github/workflows/baseline-standard-debug.yml`；Android/Alpine 本机不运行 Flutter、Gradle、assemble 或 test。
+> - 本轮门禁从首版 **8 路**（4 Flutter test shard + 1 analyze + 3 Android matrix）升级为最终 **9 路**（再加 1 个 source-policy）；全部成功后才可进入远端验证状态。
+> - workflow 的 APK 任务固定为 `developStandardDebug` + `lib/main_standard.dart`；这是远端任务参数，不是本机构建指令。
 > - **禁止**裸 `./gradlew assemble` / `./gradlew build` / `./gradlew test`（空 `omniinfer` submodule 时会在 settings 失败）  
 > - **禁止**未做 S4 解耦就删除 `:assists` / `:accessibility`  
 > - 生命线：Codex LOCAL + TerminalManager 长进程 + proot/alpine + baselib CodexThreadBinding + Flutter codex channel  
-> - 本机无 Flutter/Android SDK 时不要硬编；走 CI（`.github/workflows/ci.yml` 已是 standard 路径）
+> - 构建、测试、lint、签名 APK 与 source-policy 证据统一由 secondary 远端门禁产出。
 
 ---
 
@@ -31,50 +29,21 @@ OmnibotApp is an AI-powered intelligent robot assistant application for Android.
 
 ## Build and Development Commands
 
-### Android/Gradle Commands
-```bash
-# Full project build
-./gradlew build
+### Secondary remote gate
 
-# Build debug APK (develop flavor)
-./gradlew assembleDevelopDebug
+Do not use the historical naked Gradle/Flutter commands for secondary delivery.
+Dispatch `Baseline Standard Debug` and require its final nine-way summary:
 
-# Build release APK (production flavor)
-./gradlew assembleProductionRelease
+- four deterministic Flutter test shards;
+- one Flutter analyze execution;
+- Android unit, lint, and signed APK executions;
+- one source-policy execution checking commit identity, tracked source/evidence,
+  application ID, and brand invariants.
 
-# Run tests
-./gradlew test
-
-# Run instrumented tests
-./gradlew connectedAndroidTest
-
-# Lint checking
-./gradlew lint
-
-# Install debug APK to connected device
-./gradlew installDevelopDebug
-```
-
-### Flutter Commands (for ui/ module)
-```bash
-cd ui
-
-# Install dependencies
-flutter pub get
-
-# If you encounter "Could not read script '.../ui/.android/include_flutter.groovy'" error:
-flutter clean
-flutter pub get
-
-# Build Flutter module as AAR
-flutter build aar
-
-# Run Flutter tests
-flutter test
-
-# Analyze Flutter code
-flutter analyze
-```
+The first hardening revision had eight parallel executions; the source-policy
+follow-up is the ninth and is required by the final summary. Local source-only
+review may use read-only searches, parsers, and diff checks, but not compilation
+or tests in the Android/Alpine workspace.
 
 ### Project Setup
 The project requires importing the OmniIntelligence module as an external module:
@@ -155,7 +124,8 @@ The project uses product flavors for different environments:
 **develop**: Development environment
 - Optional backend via `OMNIBOT_BASE_URL` (empty by default in open-source mode)
 - Includes testbot module
-- Debug signing config (Android default debug keystore)
+- Secondary CI requires the fixed `stableDebug` signing inputs; AGP's default
+  debug keystore is only a local fallback and is not a deliverable
 
 **production**: Production environment
 - Optional backend via `OMNIBOT_BASE_URL` (empty by default in open-source mode)
@@ -190,24 +160,19 @@ OMNI_RELEASE_KEY_PWD=***
 - When a Codex bot run cannot safely act, prefer a clear maintainer-facing comment or `needs_info` result over speculative edits.
 
 Recommended verification for Codex bot changes:
-```bash
-# Flutter checks
-cd ui
-flutter test
-flutter analyze --no-fatal-warnings --no-fatal-infos
 
-# Android checks
-./gradlew --no-daemon :app:testDevelopStandardDebugUnitTest
-./gradlew --no-daemon :app:assembleDevelopStandardDebug -Ptarget=lib/main_standard.dart
-```
+- Use the remote `Baseline Standard Debug` gate for changes targeting
+  `secondary/**`.
+- Require all nine first-wave executions and the final summary to succeed.
+- Do not translate these remote checks into local naked build commands.
 
 ### Platform Requirements
-- **Min SDK**: 30 (Android 11)
+- **Min SDK**: 29 (Android 10)
 - **Target SDK**: 34 (Android 14)
 - **Compile SDK**: 36
-- **NDK**: ARMv7 and ARM64 architectures
-- **JDK**: 11+
-- **Flutter**: 3.9.2+
+- **Packaged ABI**: `arm64-v8a` only
+- **JDK**: 17
+- **Flutter (secondary CI pin)**: 3.38.7
 - **Kotlin**: Latest (via Gradle plugin)
 
 ### Module Dependencies
@@ -249,8 +214,8 @@ flutter analyze --no-fatal-warnings --no-fatal-infos
 ## Version Management
 
 The app includes automatic version update checking and forced update functionality. Version info is in `app/build.gradle.kts`:
-- `versionCode`: 14
-- `versionName`: "1.6.1"
+- `versionCode`: 1
+- `versionName`: "0.5.6.4"
 
 ## External Integrations
 
