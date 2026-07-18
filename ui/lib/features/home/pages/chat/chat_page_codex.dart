@@ -359,10 +359,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   }
 
   Future<void> _loadCodexModelOptionsWhenReady() async {
-    if ((_codexModelOptions.isNotEmpty &&
-            (_activeCodexModelId ?? '').trim().isNotEmpty &&
-            (_activeCodexReasoningEffort ?? '').trim().isNotEmpty) ||
-        _isCodexModelListLoading) {
+    if (!shouldLoadCodexModelCatalogWhenReady(
+      isLoading: _isCodexModelListLoading,
+      appliedProviderIdentity: _codexModelCatalogProviderIdentity,
+      loadError: _codexModelListError,
+    )) {
       return;
     }
     var status = _codexStatus;
@@ -7970,6 +7971,24 @@ String? resolveCodexModelEffortForTesting({
     modelDefault: modelDefault,
     preservePreferredWhenOptionsEmpty: !catalogAuthoritative,
   );
+}
+
+@visibleForTesting
+bool shouldLoadCodexModelCatalogWhenReady({
+  required bool isLoading,
+  required String? appliedProviderIdentity,
+  required String? loadError,
+}) {
+  if (isLoading) {
+    return false;
+  }
+  if (loadError?.trim().isNotEmpty == true) {
+    return true;
+  }
+  // A provider identity is written only after an authoritative generation has
+  // reached state. Its catalog may legitimately contain no models, or the
+  // selected model may expose no effort metadata; neither is a cache miss.
+  return appliedProviderIdentity?.trim().isEmpty ?? true;
 }
 
 bool isCodexModelSelectableFromCatalog({

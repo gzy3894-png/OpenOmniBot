@@ -55,6 +55,49 @@ void main() {
     });
   });
 
+  group('Codex model catalog ready-load gating', () {
+    test('authoritative empty or no-effort catalog is not fetched again', () {
+      expect(
+        shouldLoadCodexModelCatalogWhenReady(
+          isLoading: false,
+          appliedProviderIdentity: 'local:/codex|local:https://provider#1',
+          loadError: null,
+        ),
+        isFalse,
+      );
+    });
+
+    test('never-applied and failed catalogs remain retryable', () {
+      expect(
+        shouldLoadCodexModelCatalogWhenReady(
+          isLoading: false,
+          appliedProviderIdentity: null,
+          loadError: null,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldLoadCodexModelCatalogWhenReady(
+          isLoading: false,
+          appliedProviderIdentity: 'remote:wss://pc|remote',
+          loadError: 'temporary failure',
+        ),
+        isTrue,
+      );
+    });
+
+    test('in-flight catalog request is never duplicated', () {
+      expect(
+        shouldLoadCodexModelCatalogWhenReady(
+          isLoading: true,
+          appliedProviderIdentity: null,
+          loadError: 'stale error',
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group(
     'ChatConversationRuntimeCoordinator.replaceConversationSnapshot '
     'preserveLiveStreamingState',
