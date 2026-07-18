@@ -342,8 +342,14 @@ jobs:
 
       - name: Install Android NDK
         if: steps.cache-android-ndk.outputs.cache-hit != 'true'
+        shell: bash
         run: |
+          set -euo pipefail
+          # `yes` normally exits on SIGPIPE after sdkmanager accepts all
+          # licenses. Judge this pipeline by sdkmanager (the last command).
+          set +o pipefail
           yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
           sdkmanager "ndk;${{ env.NDK_VERSION }}"
 
       - name: Export Android NDK environment
