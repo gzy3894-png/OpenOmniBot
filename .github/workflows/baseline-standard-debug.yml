@@ -226,7 +226,9 @@ jobs:
             echo "selected_tests=${#selected[@]}"
             printf '%s\n' "${selected[@]}"
           } | tee "$manifest"
-          flutter test --concurrency=4 "${selected[@]}"
+          # Keep the four matrix shards parallel, but serialize suites inside
+          # each shard to avoid cross-suite global view/locale/channel/singleton state interference.
+          flutter test --concurrency=1 "${selected[@]}"
 
       - name: Upload shard manifest
         if: always()
