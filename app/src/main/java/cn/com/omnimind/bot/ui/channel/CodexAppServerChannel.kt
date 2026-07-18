@@ -33,6 +33,12 @@ class CodexAppServerChannel {
     }
 
     fun setChannel(flutterEngine: FlutterEngine) {
+        // B38 T5: tear down prior handlers first so re-configure on the same
+        // engine (or messenger reuse) never leaves a null handler race that
+        // surfaces as Flutter MissingPluginException(connect).
+        methodChannel?.setMethodCallHandler(null)
+        eventChannel?.setStreamHandler(null)
+
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
         methodChannel?.setMethodCallHandler(::handleMethodCall)
 

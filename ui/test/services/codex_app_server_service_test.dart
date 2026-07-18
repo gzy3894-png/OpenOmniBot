@@ -49,6 +49,40 @@ void main() {
     expect(args['collaborationMode'], 'plan');
   });
 
+  test('B38 startThread forwards permission triad', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true, 'threadId': 't1'};
+    });
+
+    await CodexAppServerService.startThread(
+      conversationId: 7,
+      cwd: '/workspace',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandboxPolicy: <String, dynamic>{
+        'type': 'workspaceWrite',
+        'writableRoots': <String>['/workspace'],
+        'networkAccess': true,
+      },
+    );
+
+    expect(capturedCall?.method, 'thread/start');
+    final args = Map<String, dynamic>.from(
+      (capturedCall?.arguments as Map).cast<String, dynamic>(),
+    );
+    expect(args['conversationId'], 7);
+    expect(args['cwd'], '/workspace');
+    expect(args['approvalPolicy'], 'on-request');
+    expect(args['approvalsReviewer'], 'auto_review');
+    expect(args['sandboxPolicy'], <String, dynamic>{
+      'type': 'workspaceWrite',
+      'writableRoots': <String>['/workspace'],
+      'networkAccess': true,
+    });
+  });
+
   test('startReview forwards codex review payload', () async {
     MethodCall? capturedCall;
     messenger.setMockMethodCallHandler(channel, (call) async {

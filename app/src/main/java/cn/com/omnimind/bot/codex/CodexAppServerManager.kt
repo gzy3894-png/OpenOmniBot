@@ -649,10 +649,15 @@ class CodexAppServerManager private constructor(
                 activeTurnsByThreadId.clear()
                 finishedNotifyOnceByThread.clear()
             }
-        } else if (localComplete && !existingTomlKnown && hasLiveSession) {
+        } else {
+            // B38 T5: explicit soft-path observability (PLAN soft conf disconnect).
+            val softReason = when {
+                localComplete && !existingTomlKnown && hasLiveSession -> "soft_toml_unknown"
+                else -> "soft"
+            }
             Log.i(
                 "CodexAppServerManager",
-                "B37 writeLocalConfig skip restart: existing toml unknown while session live"
+                "B38 writeLocalConfig restart=skipped reason=$softReason hasLiveSession=$hasLiveSession"
             )
         }
         return buildCodexLocalConfigPayload(

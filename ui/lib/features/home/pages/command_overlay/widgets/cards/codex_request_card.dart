@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:ui/models/conversation_model.dart';
 import 'package:ui/services/codex_app_server_service.dart';
 import 'package:ui/services/conversation_history_service.dart';
+import 'package:ui/services/debug_file_log.dart';
 import 'package:ui/services/storage_service.dart';
 import 'package:ui/theme/theme_context.dart';
 
@@ -221,12 +222,33 @@ class _CodexRequestCardState extends State<CodexRequestCard>
   Future<void> _respondApproval(bool accepted) async {
     final requestId = widget.cardData['requestId'];
     if (requestId == null) return;
-    await _submit(() {
-      return CodexAppServerService.respondToApproval(
-        requestId: requestId,
-        accepted: accepted,
-      );
-    }, accepted ? 'accepted' : 'declined');
+    final decision = accepted ? 'accepted' : 'declined';
+    final threadId = (widget.cardData['threadId'] ?? '').toString().trim();
+    final requestIdText = requestId.toString();
+    Object? submitError;
+    await _submit(() async {
+      try {
+        return await CodexAppServerService.respondToApproval(
+          requestId: requestId,
+          accepted: accepted,
+        );
+      } catch (e) {
+        submitError = e;
+        rethrow;
+      }
+    }, decision);
+    // _submit swallows RPC errors after updating UI; log ring outcome here.
+    final ok = submitError == null;
+    unawaited(
+      DebugFileLog.logApproval(
+        'decision',
+        requestId: requestIdText,
+        decision: decision,
+        threadId: threadId.isEmpty ? null : threadId,
+        success: ok,
+        error: submitError,
+      ),
+    );
   }
 
   Future<void> _ignoreUserInput() async {

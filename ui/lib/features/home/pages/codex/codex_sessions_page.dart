@@ -261,8 +261,20 @@ class _CodexSessionsPageState extends State<CodexSessionsPage> {
         status = await CodexAppServerService.connect();
       }
       final cwd = _workspacePathForStatus(status);
+      // B38 T6: no permission UI here — use defaultMode triad so remote
+      // sessions do not rely on Kotlin silent defaults alone.
+      final writableRoot = cwd.startsWith('/') ? cwd : '/workspace';
       final response = await CodexAppServerService.startThread(
         cwd: cwd.isEmpty ? null : cwd,
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'user',
+        sandboxPolicy: <String, dynamic>{
+          'type': 'workspaceWrite',
+          'writableRoots': <String>[writableRoot],
+          'networkAccess': true,
+          'excludeTmpdirEnvVar': false,
+          'excludeSlashTmp': false,
+        },
       );
       final threadId = _threadIdFromResponse(response);
       if (threadId == null) {

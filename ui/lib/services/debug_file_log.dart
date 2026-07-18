@@ -172,11 +172,12 @@ class DebugFileLog {
 
   /// B21: Turn start payload actually sent (service tier / effort / policy).
   ///
-  /// Matrix: serviceTier, effort, approvalPolicy, sandboxType.
+  /// Matrix: serviceTier, effort, approvalPolicy, approvalsReviewer, sandboxType.
   static Future<void> logTurnStart({
     String? serviceTier,
     String? effort,
     String? approvalPolicy,
+    String? approvalsReviewer,
     String? sandboxType,
     String? threadId,
     int? conversationId,
@@ -190,6 +191,36 @@ class DebugFileLog {
         if (serviceTier != null) 'serviceTier': serviceTier,
         if (effort != null) 'effort': effort,
         if (approvalPolicy != null) 'approvalPolicy': approvalPolicy,
+        if (approvalsReviewer != null) 'approvalsReviewer': approvalsReviewer,
+        if (sandboxType != null) 'sandboxType': sandboxType,
+        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (conversationId != null) 'conversationId': conversationId,
+        if (model != null) 'model': model,
+        if (error != null) 'error': error.toString(),
+      },
+    );
+  }
+
+  /// B38 T6: thread/start payload triad (approval / reviewer / sandbox).
+  static Future<void> logThreadStart({
+    String? serviceTier,
+    String? effort,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    String? sandboxType,
+    String? threadId,
+    int? conversationId,
+    String? model,
+    Object? error,
+  }) {
+    return log(
+      'thread_start',
+      error == null ? 'start' : 'fail',
+      fields: <String, Object?>{
+        if (serviceTier != null) 'serviceTier': serviceTier,
+        if (effort != null) 'effort': effort,
+        if (approvalPolicy != null) 'approvalPolicy': approvalPolicy,
+        if (approvalsReviewer != null) 'approvalsReviewer': approvalsReviewer,
         if (sandboxType != null) 'sandboxType': sandboxType,
         if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
         if (conversationId != null) 'conversationId': conversationId,
@@ -226,24 +257,53 @@ class DebugFileLog {
     );
   }
 
-  /// B21: Approval prompt shown or user decision.
+  /// B38 T6: Approval ring observability.
   ///
-  /// [action] typically `prompt` or `decision`.
-  /// Matrix: requestId, decision.
+  /// [action] `prompt` / `approval_prompt` → tag `approval_prompt` (request
+  /// arrived, card surfaced). `decision` / `approval_decision` → tag
+  /// `approval_decision` (user accept/deny + success/error).
+  ///
+  /// Matrix: requestId, threadId?, summary? (prompt); decision, requestId,
+  /// success/error (decision).
   static Future<void> logApproval(
     String action, {
     String? requestId,
     String? decision,
     String? threadId,
+    String? summary,
+    bool? success,
     Object? error,
   }) {
+    final normalized = action.trim().toLowerCase();
+    final String tag;
+    final String message;
+    if (normalized == 'prompt' ||
+        normalized == 'approval_prompt' ||
+        normalized == 'received') {
+      tag = 'approval_prompt';
+      message = 'received';
+    } else if (normalized == 'decision' ||
+        normalized == 'approval_decision') {
+      tag = 'approval_decision';
+      final failed = error != null || success == false;
+      message = failed ? 'fail' : 'ok';
+    } else if (normalized.startsWith('approval_')) {
+      tag = normalized;
+      message = action;
+    } else {
+      tag = 'approval_$normalized';
+      message = action;
+    }
+    final resolvedSuccess = success ?? (error == null ? null : false);
     return log(
-      'approval',
-      action,
+      tag,
+      message,
       fields: <String, Object?>{
         if (requestId != null && requestId.isNotEmpty) 'requestId': requestId,
         if (decision != null) 'decision': decision,
         if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (summary != null && summary.isNotEmpty) 'summary': summary,
+        if (resolvedSuccess != null) 'success': resolvedSuccess,
         if (error != null) 'error': error.toString(),
       },
     );

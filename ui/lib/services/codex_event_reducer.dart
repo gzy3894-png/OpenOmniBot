@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:ui/features/home/pages/chat/mixins/agent_stream_handler.dart';
@@ -6,6 +7,7 @@ import 'package:ui/models/chat_message_model.dart';
 import 'package:ui/services/agent_stream_meta.dart';
 import 'package:ui/services/codex_diff_parser.dart';
 import 'package:ui/services/codex_tool_call_parser.dart';
+import 'package:ui/services/debug_file_log.dart';
 
 class CodexReduceResult {
   const CodexReduceResult({
@@ -245,15 +247,19 @@ class CodexEventReducer {
         );
       } else if (itemType.contains('requestApproval')) {
         final cardId = '$startedItemId-codex-approval';
+        final approvalRequestId = params['requestId'] ?? message['id'];
+        final approvalTitle = _approvalTitle(itemType, item);
+        final approvalDetail = _approvalDetail(item);
         _upsertCodexRequestCard(
           runtime,
           cardId: cardId,
           taskId: parentTaskId,
-          requestId: params['requestId'] ?? message['id'],
+          requestId: approvalRequestId,
           requestKind: 'approval',
-          title: _approvalTitle(itemType, item),
-          detail: _approvalDetail(item),
+          title: approvalTitle,
+          detail: approvalDetail,
           params: item,
+          threadId: threadId,
           streamMeta: _streamMeta(
             runtime,
             parentTaskId: parentTaskId,
@@ -261,6 +267,16 @@ class CodexEventReducer {
             kind: 'permission_required',
           ),
         );
+        // item/updated may re-emit the same request; only log first surface.
+        if (method == 'item/started') {
+          _logApprovalPrompt(
+            requestId: approvalRequestId,
+            threadId: threadId,
+            title: approvalTitle,
+            detail: approvalDetail,
+            method: itemType,
+          );
+        }
       } else if (itemType.contains('requestUserInput')) {
         final question = _firstQuestion(item);
         final cardId = '$startedItemId-codex-user-input';
@@ -485,23 +501,33 @@ class CodexEventReducer {
     }
 
     if (method.endsWith('requestApproval')) {
-      final requestId = message['id'];
+      final requestId = message['id'] ?? params['requestId'];
       final cardId = '${requestId ?? itemId ?? parentTaskId}-codex-approval';
+      final approvalTitle = _approvalTitle(method, params);
+      final approvalDetail = _approvalDetail(params);
       _upsertCodexRequestCard(
         runtime,
         cardId: cardId,
         taskId: parentTaskId,
         requestId: requestId,
         requestKind: 'approval',
-        title: _approvalTitle(method, params),
-        detail: _approvalDetail(params),
+        title: approvalTitle,
+        detail: approvalDetail,
         params: params,
+        threadId: threadId,
         streamMeta: _streamMeta(
           runtime,
           parentTaskId: parentTaskId,
           entryId: cardId,
           kind: 'permission_required',
         ),
+      );
+      _logApprovalPrompt(
+        requestId: requestId,
+        threadId: threadId,
+        title: approvalTitle,
+        detail: approvalDetail,
+        method: method,
       );
       return CodexReduceResult(
         handled: true,
@@ -1822,6 +1848,34 @@ class CodexEventReducer {
     runtime.lastAgentToolType = effectiveToolType;
   }
 
+  void _logApprovalPrompt({
+    required Object? requestId,
+    String? threadId,
+    required String title,
+    required String detail,
+    String? method,
+  }) {
+    final id = _string(requestId)?.trim();
+    final summaryParts = <String>[
+      if (method != null && method.trim().isNotEmpty) method.trim(),
+      if (title.trim().isNotEmpty) title.trim(),
+      if (detail.trim().isNotEmpty) detail.trim(),
+    ];
+    final summary = summaryParts.isEmpty
+        ? null
+        : (summaryParts.join(' | ').length > 240
+            ? '${summaryParts.join(' | ').substring(0, 240)}…'
+            : summaryParts.join(' | '));
+    unawaited(
+      DebugFileLog.logApproval(
+        'prompt',
+        requestId: id,
+        threadId: threadId,
+        summary: summary,
+      ),
+    );
+  }
+
   void _upsertCodexRequestCard(
     ChatConversationRuntimeState runtime, {
     required String cardId,
@@ -1833,6 +1887,7 @@ class CodexEventReducer {
     required Map<String, dynamic> params,
     required Map<String, dynamic> streamMeta,
     String? questionId,
+    String? threadId,
   }) {
     _touchActiveTurn(runtime, taskId);
     final index = runtime.messages.indexWhere(
@@ -1858,6 +1913,10 @@ class CodexEventReducer {
           ? existingCardData['status']
           : null,
     );
+    final resolvedThreadId =
+        (threadId != null && threadId.trim().isNotEmpty)
+        ? threadId.trim()
+        : _string(existingCardData['threadId'])?.trim();
     final cardData = <String, dynamic>{
       'type': 'codex_request',
       'taskId': taskId,
@@ -1871,6 +1930,8 @@ class CodexEventReducer {
       'conversationId': runtime.conversationId,
       'cardId': cardId,
       'startTime': startTime,
+      if (resolvedThreadId != null && resolvedThreadId.isNotEmpty)
+        'threadId': resolvedThreadId,
     };
     final message = ChatMessageModel(
       id: cardId,

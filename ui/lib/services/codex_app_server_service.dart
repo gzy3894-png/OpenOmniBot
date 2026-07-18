@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 
 class CodexStatus {
   const CodexStatus({
@@ -329,6 +330,17 @@ class CodexAppServerService {
     /// [updateThreadSettings] for live threads; native start path may still
     /// drop null until Kotlin optional-param helper preserves it.
     bool clearServiceTier = false,
+    /// B38 T6: permission triad — must match current UI mode so new threads
+    /// do not silently inherit Kotlin defaults (on-request / workspace only).
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    /// SandboxPolicy object; Kotlin [resolveCodexSandboxMode] maps `type` to
+    /// ThreadStartParams `sandbox` kebab string. Prefer this over bare
+    /// [sandbox] when writableRoots matter for turn/settings consistency.
+    Map<String, dynamic>? sandboxPolicy,
+    /// Optional explicit SandboxMode kebab/camel string. Wins over policy
+    /// object type when both are set (Kotlin prefers explicit `sandbox`).
+    String? sandbox,
   }) {
     final args = <String, dynamic>{
       if (conversationId != null) 'conversationId': conversationId,
@@ -337,6 +349,12 @@ class CodexAppServerService {
       if (effort != null && effort.trim().isNotEmpty) 'effort': effort.trim(),
       if (collaborationMode != null && collaborationMode.trim().isNotEmpty)
         'collaborationMode': collaborationMode.trim(),
+      if (approvalPolicy != null && approvalPolicy.trim().isNotEmpty)
+        'approvalPolicy': approvalPolicy.trim(),
+      if (approvalsReviewer != null && approvalsReviewer.trim().isNotEmpty)
+        'approvalsReviewer': approvalsReviewer.trim(),
+      if (sandboxPolicy != null) 'sandboxPolicy': sandboxPolicy,
+      if (sandbox != null && sandbox.trim().isNotEmpty) 'sandbox': sandbox.trim(),
     };
     _putServiceTierArg(
       args,
@@ -589,6 +607,74 @@ class CodexAppServerService {
 
   static Future<Map<String, dynamic>> listModels() {
     return _invokeMap('model/list', {'limit': 100});
+  }
+
+  /// Provider true source for Codex model menu ids (B38 T3).
+  ///
+  /// `GET {localConfig.baseUrl}/models` with Bearer [apiKey] from the same
+  /// `config/local/read` source used for conf/auth. [baseUrl] may already
+  /// include `/v1` — path is `{baseUrl}/models`, never forced `/api/v1/models`.
+  ///
+  /// Returns OpenAI-compatible ids from `data[].id` (order preserved).
+  /// Does **not** use sandbox `~/.codex` catalog or app-server `model/list`.
+  /// Never logs the API key.
+  static Future<CodexHttpModelsResult> listModelsFromProviderHttp({
+    String? baseUrl,
+    String? apiKey,
+    Duration timeout = const Duration(seconds: 15),
+    http.Client? client,
+  }) async {
+    final String resolvedBase;
+    final String resolvedKey;
+    if (baseUrl != null && apiKey != null) {
+      resolvedBase = baseUrl.trim();
+      resolvedKey = apiKey.trim();
+    } else {
+      final local = await readLocalConfig();
+      resolvedBase = (baseUrl ?? local.baseUrl).trim();
+      resolvedKey = (apiKey ?? local.apiKey).trim();
+    }
+
+    final normalizedBase = _normalizeProviderBaseUrl(resolvedBase);
+    if (normalizedBase.isEmpty) {
+      throw StateError('Codex localConfig.baseUrl is empty; cannot list models');
+    }
+    if (resolvedKey.isEmpty) {
+      throw StateError('Codex localConfig.apiKey is empty; cannot list models');
+    }
+
+    final uri = Uri.parse('$normalizedBase/models');
+    final httpClient = client ?? http.Client();
+    final ownsClient = client == null;
+    try {
+      final response = await httpClient
+          .get(
+            uri,
+            headers: <String, String>{
+              'Authorization': 'Bearer $resolvedKey',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw CodexHttpModelsException(
+          'HTTP ${response.statusCode} listing models from provider',
+          statusCode: response.statusCode,
+          endpoint: uri.toString(),
+        );
+      }
+      final ids = _parseOpenAiModelsDataIds(response.body);
+      return CodexHttpModelsResult(
+        modelIds: ids,
+        endpoint: uri.toString(),
+        statusCode: response.statusCode,
+        source: 'http_v1',
+      );
+    } finally {
+      if (ownsClient) {
+        httpClient.close();
+      }
+    }
   }
 
   static Future<Map<String, dynamic>> listCollaborationModes() {
@@ -851,8 +937,27 @@ class CodexAppServerService {
     String method, [
     Map<String, dynamic> args = const <String, dynamic>{},
   ]) async {
-    final result = await _methodChannel.invokeMethod<dynamic>(method, args);
-    return _normalizeMap(result) ?? <String, dynamic>{};
+    // B38 T5: MissingPlugin on connect/status is often a brief engine/channel
+    // rebind window (half-screen clear, activity reattach). Retry short-lived.
+    const maxAttempts = 3;
+    Object? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final result =
+            await _methodChannel.invokeMethod<dynamic>(method, args);
+        return _normalizeMap(result) ?? <String, dynamic>{};
+      } on MissingPluginException catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts) {
+          rethrow;
+        }
+        // 50/100ms: enough for MainActivity reconfigure without stalling UI.
+        await Future<void>.delayed(Duration(milliseconds: 50 * attempt));
+      }
+    }
+    // Unreachable; keep analyzer happy.
+    throw lastError ??
+        MissingPluginException('No implementation found for method $method');
   }
 }
 
@@ -919,4 +1024,69 @@ double? _doubleOrNull(dynamic value) {
   if (value is double) return value;
   if (value is num) return value.toDouble();
   return double.tryParse(value?.toString() ?? '');
+}
+
+/// Result of [CodexAppServerService.listModelsFromProviderHttp].
+class CodexHttpModelsResult {
+  const CodexHttpModelsResult({
+    required this.modelIds,
+    required this.endpoint,
+    required this.statusCode,
+    this.source = 'http_v1',
+  });
+
+  /// Provider `data[].id` values, order preserved, no invent display names.
+  final List<String> modelIds;
+  final String endpoint;
+  final int statusCode;
+  final String source;
+}
+
+class CodexHttpModelsException implements Exception {
+  CodexHttpModelsException(
+    this.message, {
+    this.statusCode,
+    this.endpoint,
+  });
+
+  final String message;
+  final int? statusCode;
+  final String? endpoint;
+
+  @override
+  String toString() {
+    final code = statusCode == null ? '' : ' status=$statusCode';
+    final ep = (endpoint == null || endpoint!.isEmpty) ? '' : ' endpoint=$endpoint';
+    return 'CodexHttpModelsException: $message$code$ep';
+  }
+}
+
+/// Strip trailing slashes only; keep `/v1` if present (do not rewrite path).
+String _normalizeProviderBaseUrl(String baseUrl) {
+  var value = baseUrl.trim();
+  while (value.endsWith('/')) {
+    value = value.substring(0, value.length - 1);
+  }
+  return value;
+}
+
+/// Parse OpenAI-compatible `{ "data": [ { "id": "..." }, ... ] }` body.
+List<String> _parseOpenAiModelsDataIds(String body) {
+  final decoded = jsonDecode(body);
+  if (decoded is! Map) {
+    throw const FormatException('Provider /models body is not a JSON object');
+  }
+  final data = decoded['data'];
+  if (data is! List) {
+    throw const FormatException('Provider /models missing data[] array');
+  }
+  final seen = <String>{};
+  final ids = <String>[];
+  for (final item in data) {
+    if (item is! Map) continue;
+    final id = item['id']?.toString().trim() ?? '';
+    if (id.isEmpty || !seen.add(id)) continue;
+    ids.add(id);
+  }
+  return ids;
 }

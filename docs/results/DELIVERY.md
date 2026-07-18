@@ -1,15 +1,16 @@
 # 当前交付单
 
-> 更新：2026-07-18 · **B37 基线 APK 仍可用** · **下一刀 B38 方案已落盘、实现未开工**  
+> 更新：2026-07-18 · **B38 CODE LANDED · awaiting GHA** · **未** READY/PASS  
 > **B38 真源：** `docs/results/PLAN-2026-07-18-b38-models-api-and-regressions.md`  
 > **B38 交接：** `docs/results/HANDOFF-2026-07-18-b38-approval-models.md`  
+> **B38 EXEC：** `docs/results/EXEC-2026-07-18-b38-approval-models.md`  
 > **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
 > **主线程：方案/调度/验收** · push **仅 mine** · 禁本机 assemble  
-> 状态：**B37 READY 包 staged** · HEAD 文档波待 push · **B38 等「开工」**
+> 状态：**B38 功能 diff 已由 A1–A7 落地** · 等 push mine + GHA + 真机 AP1–AP5
 
 ---
 
-## 0. 下一刀 B38（新对话第一读）
+## 0. 当前波 · B38（CODE LANDED · awaiting GHA）
 
 用户裁定：
 
@@ -20,27 +21,58 @@
 |--------|------|
 | 完整方案 | `PLAN-2026-07-18-b38-models-api-and-regressions.md`（§0 官方审批 + AP1–AP5） |
 | 交接 | `HANDOFF-2026-07-18-b38-approval-models.md` |
+| EXEC 清单 | `EXEC-2026-07-18-b38-approval-models.md` |
 | 对照 | `reports/scout-b20-perm.md` · `reports/impl-b25-perm.md` |
 
-**硬缺口：** Dart `startThread` 不传 triad；settings 曾 `thread not found`；真机日志无 requestApproval 线。  
-**站规：** ≥6 子代理实现；push 仅 mine；GHA only。
+### B38 包状态（代码已落 · 勿当 READY）
+
+| 项 | 值 |
+|----|-----|
+| 状态 | **CODE LANDED** · **awaiting GHA** · 真机未测 |
+| 文档 commit | `c1e4341`（PLAN+HANDOFF） |
+| 功能 commit(s) | `_TBD_ after this commit` |
+| HEAD（实现后） | `_TBD_` |
+| GHA run id | `_TBD_` |
+| GHA 结果 | `_TBD_`（目标 `baseline-standard-debug` SUCCESS） |
+| APK path | `_TBD_` |
+| APK sha256 | `_TBD_` |
+| 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
+| 计划 / EXEC | `PLAN-2026-07-18-b38-models-api-and-regressions.md` · `EXEC-2026-07-18-b38-approval-models.md` |
+
+**已落地（代码，非真机）：** `startThread` triad；settings stale→ensure→re-apply；HTTP `/models` 主路径；`approval_prompt`/`approval_decision`；MissingPlugin 有限加固。  
+**站规：** ≥6 子代理实现；push 仅 mine；GHA only；tip 不算 PASS。
+
+### 测点（B38 · PLAN §6 · 用户真机后填）
+
+| # | PASS 摘要 | 结果 |
+|---|-----------|------|
+| AP1–AP5 | Codex 审批环（卡 + requestApproval + respond；三档映射） | |
+| M1–M3 | HTTP `/models` 与菜单一致；可切换 | |
+| F1 / A1 / R1 | Fast、auto-compact、10min 无成片 stale | |
+
+完整表与空白栏：见 EXEC。
 
 ---
 
 ## 1. 现在请你做
 
-**若开新对话做 B38：** 读 §0 交接 → 说「开工」→ 主线程只调度。  
+**调度侧（本波）：**
 
-**若仍要装 B37 基线摸底：**
+1. push **mine** → 等 GHA `baseline-standard-debug` SUCCESS → stage Download → 回填 EXEC/DELIVERY 的 commit / run / sha256。  
+2. **禁止**在无 GHA SUCCESS 时写 READY/PASS；**禁止**本机 assemble。  
+3. 出包后用户优先 AP1–AP5，再 M1–R1。
 
-1. 安装 staged APK（见 §3）。  
+**若仍要装 B37 基线摸底（非 B38 包）：**
+
+1. 安装 §3 staged APK。  
 2. 知悉：B37 **未**修 T6/T3；权限 tip 成功 ≠ Codex 审批环。  
-3. 回传日志时重点搜：`permission_set` / `requestApproval` / `model_list`。
+3. 回传日志重点：`permission_set` / `requestApproval` / `model_list`。
 
-**开发侧：**
+**B38 出包后：**
 
-- B38 **实现未开工**；本波仅文档落盘。  
-- 无本机 assemble。
+1. 安装新 stage APK（路径/sha 见 EXEC 回填）。  
+2. 优先 AP1–AP5，再 M1–R1。  
+3. 结果写入 EXEC 真机表；全 PASS 后再把 DELIVERY 状态改为 READY。
 
 ---
 
@@ -67,19 +99,20 @@
 - `MissingPluginException connect` intermittent
 - `model_list` 加载 7 wire ids **OK**
 
-### 根因摘要（→ B37）
+### 根因摘要（→ B37 → B38）
 
 1. Soft conf 写假阳性 hard/bootstrap（toml 读空）→ session kill → stale threadId  
 2. Flutter 死线程 settings RPC：无 clear / 无本地 apply  
-3. 模型 UI 仅 wire（次要）
+3. 模型 UI 仅 wire（次要）→ B38 改 HTTP `/models`  
+4. **T6**：triad 未稳定进 thread → 无 requestApproval 环（B38 P0）
 
 ---
 
-## 3. 当前波 · B37 READY（pending device retest）
+## 3. 前序 · B37 READY 包（pending device retest · 非 B38）
 
 | 项 | 值 |
 |----|-----|
-| 状态 | **READY** · **pending device retest** |
+| 状态 | **READY** · **pending device retest**（B37 范围） |
 | 计划 | `PLAN-2026-07-17-b37-stale-thread-settings.md` |
 | EXEC | `EXEC-2026-07-17-b37-stale-thread.md` |
 | 功能 commit | `1220a4d`（stale-thread + soft conf harden + model display + auto-compact） |
@@ -92,17 +125,18 @@
 | 版本副本 | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-898dc26-9c560e73.apk` |
 | 分支 / fork | `secondary/s1-baseline` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
 
-### 本波已实现
+### B37 已实现（不含 T6/T3）
 
 | ID | 修复 |
 |----|------|
-| **B37** | Manager `writeLocalConfig` 硬化（`existingTomlKnown` / `existingAuthKnown` / `firstLocalBootstrap` 仅无 live session）；Flutter stale clear + model/perm/fast 本地 apply；displayName map（cards/composer）；auto-compact slash → `_setCodexAutoCompactionEnabled` |
+| **B37** | Manager `writeLocalConfig` 硬化；Flutter stale clear + model/perm/fast 本地 apply；displayName map；auto-compact slash → `_setCodexAutoCompactionEnabled` |
 
-**保留不回滚：** B34 Fast≠compact · B35 权限按钮 · B36 soft 意图（修假阳性 kill）· B32 wire slug
+**保留不回滚：** B34 Fast≠compact · B35 权限按钮 · B36 soft 意图 · B32 wire slug  
+**B37 未做 → B38：** requestApproval 闭环、HTTP `/models`、MissingPlugin 根治
 
 ---
 
-## 4. 测点（B37 · PLAN §7）
+## 4. 测点（B37 · PLAN §7 · 归档）
 
 | # | 操作 | PASS 标准 |
 |---|------|-----------|
@@ -113,10 +147,8 @@
 | 5 | soft 写后立刻 perm/model/fast | session 仍活；无连环 fail |
 | 6 | 回归 B34 | Fast ≠ 压缩 |
 | 7 | 回归 B35 | 权限按钮可见可点 |
-| 8 | model_list | wire ids 仍加载 |
+| 8 | model_list | wire ids 仍加载（B38 将改为 HTTP 真源） |
 | 9 | 使用 5–10 min | reconnect 不误杀；MissingPlugin 偶发可记日志 |
-
-**设备优先复测：** permission mode · model switch · model labels · Fast/auto-compact toggles after goal clear / resume。
 
 ---
 
@@ -128,12 +160,19 @@
 - [x] B37 实现 · `1220a4d` + `898dc26`  
 - [x] push mine · GHA #29594207043 SUCCESS  
 - [x] APK stage · sha256 `9c560e73…` / shortsha `898dc26`  
-- [ ] 真机 §4 PASS  
+- [ ] 真机 B37 §4 PASS  
+- [x] B38 PLAN + HANDOFF 落盘 · `c1e4341`  
+- [x] B38 EXEC 占位 + DELIVERY 标 **IN PROGRESS**（本波 A7）  
+- [ ] B38 功能实现 commit(s)  
+- [ ] B38 push mine · GHA SUCCESS  
+- [ ] B38 APK stage + sha256 回填  
+- [ ] 真机 B38 AP1–AP5 / M1–R1 PASS  
 
 ---
 
 ## 6. 未改 / 残余
 
 - Remote 2s poll、每 event `debugPrint`：仍未改  
-- MissingPlugin connect：B37 不优先全量修，除非阻断设置且有新证据  
+- MissingPlugin connect：B38 可选加固；无新证据不优先全量修  
 - hard 字段（baseUrl / model / apiKey）变更仍应 reconnect  
+- **B38 完成前**：审批 tip ≠ Codex 审批 PASS；model_list 仍可能为 app-server 7 id  
