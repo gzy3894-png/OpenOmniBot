@@ -2,10 +2,13 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ui/features/home/pages/chat_history/chat_history_page.dart';
+import 'package:ui/features/home/state/habitual_hand_controller.dart';
 import 'package:ui/models/conversation_model.dart';
+import 'package:ui/models/habitual_hand.dart';
 
 class _SvgTestAssetBundle extends CachingAssetBundle {
   static final Uint8List _svgBytes = Uint8List.fromList(
@@ -84,10 +87,17 @@ void main() {
         });
 
     await tester.pumpWidget(
-      MaterialApp(
-        home: DefaultAssetBundle(
-          bundle: _SvgTestAssetBundle(),
-          child: const ChatHistoryPage(archivedOnly: true),
+      ProviderScope(
+        overrides: [
+          habitualHandProvider.overrideWith(
+            (ref) => HabitualHandController(initial: HabitualHand.right),
+          ),
+        ],
+        child: MaterialApp(
+          home: DefaultAssetBundle(
+            bundle: _SvgTestAssetBundle(),
+            child: const ChatHistoryPage(archivedOnly: true),
+          ),
         ),
       ),
     );

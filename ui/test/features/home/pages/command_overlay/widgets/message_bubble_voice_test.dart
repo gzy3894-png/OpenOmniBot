@@ -222,9 +222,16 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.byType(FilledButton), findsOneWidget);
+    final continueButton = find.ancestor(
+      of: find.byIcon(Icons.play_arrow_rounded),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is FilledButton,
+        description: 'continue FilledButton.tonalIcon',
+      ),
+    );
+    expect(continueButton, findsOneWidget);
 
-    await tester.tap(find.byType(FilledButton));
+    await tester.tap(continueButton);
     await tester.pump();
 
     expect(continueTapped, 1);

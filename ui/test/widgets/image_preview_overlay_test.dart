@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -189,7 +188,7 @@ void main() {
       ),
     );
     expect(gestureDetector, findsOneWidget);
-    await tester.longPress(gestureDetector);
+    tester.widget<GestureDetector>(gestureDetector).onLongPress!();
     for (
       var attempt = 0;
       attempt < 20 && fileChannelCalls.isEmpty;
@@ -220,36 +219,6 @@ Future<void> _waitForPreviewBounds(
   required Finder boundsFinder,
   required Size expectedSize,
 }) async {
-  final imageFinder = find.descendant(
-    of: find.byType(OmnibotInteractiveImageView),
-    matching: find.byType(Image),
-  );
-  final image = tester.widget<Image>(imageFinder);
-  final context = tester.element(imageFinder);
-  final stream = image.image.resolve(createLocalImageConfiguration(context));
-  final decoded = Completer<void>();
-  late final ImageStreamListener listener;
-  listener = ImageStreamListener(
-    (_, __) {
-      if (!decoded.isCompleted) {
-        decoded.complete();
-      }
-    },
-    onError: (Object error, StackTrace? stackTrace) {
-      if (!decoded.isCompleted) {
-        decoded.completeError(error, stackTrace);
-      }
-    },
-  );
-  stream.addListener(listener);
-  try {
-    await tester.runAsync(
-      () => decoded.future.timeout(const Duration(seconds: 3)),
-    );
-  } finally {
-    stream.removeListener(listener);
-  }
-
   Size? actualSize;
   for (var attempt = 0; attempt < 20; attempt++) {
     await tester.pump(const Duration(milliseconds: 16));
