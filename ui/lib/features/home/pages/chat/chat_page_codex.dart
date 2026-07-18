@@ -40,6 +40,33 @@ Keep the file practical and avoid generic advice. If AGENTS.md already exists, p
 ''';
 
 mixin _ChatPageCodexMixin on _ChatPageStateBase {
+  bool _applyCodexStatusSnapshot(
+    CodexStatus status, {
+    bool resetModelCatalog = false,
+  }) {
+    final runtimeChanged =
+        codexModelRuntimeIdentity(_codexStatus) !=
+        codexModelRuntimeIdentity(status);
+    final shouldResetCatalog = resetModelCatalog || runtimeChanged;
+    if (shouldResetCatalog) {
+      _codexModelCatalogRequestGate.invalidate();
+    }
+    _codexStatus = status;
+    if (shouldResetCatalog) {
+      _isCodexModelListLoading = false;
+      _codexModelListError = null;
+      _codexModelOptions = const <String>[];
+      _codexModelDisplayNames = const <String, String>{};
+      _codexModelEffortCatalog = const <String, List<String>>{};
+      _codexModelDefaultEffortCatalog = const <String, String>{};
+      _codexReasoningEffortOptions = const <String>[];
+      _activeCodexModelId = null;
+      _activeCodexReasoningEffort = null;
+      _codexModelCatalogProviderIdentity = null;
+    }
+    return shouldResetCatalog;
+  }
+
   @override
   Future<void> _refreshCodexStatus() async {
     if (!mounted || _isCodexStatusLoading) return;
@@ -50,7 +77,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final status = await CodexAppServerService.status();
       if (!mounted) return;
       setState(() {
-        _codexStatus = status;
+        _applyCodexStatusSnapshot(status);
         _isCodexStatusLoading = false;
       });
       if (_activeMode == ChatPageMode.codex) {
@@ -59,7 +86,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _codexStatus = CodexStatus.disconnected;
+        _applyCodexStatusSnapshot(
+          CodexStatus.disconnected,
+          resetModelCatalog: true,
+        );
         _isCodexStatusLoading = false;
       });
     }
@@ -95,7 +125,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     if (!mounted) return;
     setState(() {
-      _codexStatus = status;
+      _applyCodexStatusSnapshot(
+        status,
+        resetModelCatalog: !status.ready,
+      );
       _isCodexStatusLoading = false;
     });
     if (!status.ready) {
@@ -196,7 +229,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final status = await CodexAppServerService.status();
       if (!mounted) return;
       setState(() {
-        _codexStatus = status;
+        _applyCodexStatusSnapshot(status);
         _activeCodexThreadId = null;
         _activeCodexTurnId = null;
       });
@@ -352,14 +385,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       return;
     }
     setState(() {
-      _codexStatus = status;
+      _applyCodexStatusSnapshot(status);
     });
     await _loadCodexModelOptions(force: true);
   }
 
   @override
   Future<void> _loadCodexModelOptions({bool force = false}) async {
-    if (_isCodexModelListLoading) {
+    if (_isCodexModelListLoading && !force) {
       return;
     }
     if (!force &&
@@ -368,103 +401,106 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       return;
     }
     if (!mounted) return;
+    final statusSnapshot = _codexStatus;
+    if (!statusSnapshot.ready) {
+      setState(() {
+        _isCodexModelListLoading = false;
+        _codexModelListError = LegacyTextLocalizer.isEnglish
+            ? 'Codex runtime is unavailable'
+            : 'Codex runtime 不可用';
+        if (force) {
+          _codexModelOptions = const <String>[];
+          _codexModelDisplayNames = const <String, String>{};
+          _codexReasoningEffortOptions = const <String>[];
+        }
+      });
+      return;
+    }
+    final runtimeIdentity = codexModelRuntimeIdentity(statusSnapshot);
+    final remoteRuntime =
+        statusSnapshot.remoteEnabled ||
+        statusSnapshot.runtime?.trim().toLowerCase() == 'remote';
+    final activeModelAtRequest = (_activeCodexModelId ?? '').trim();
+    final activeEffortAtRequest =
+        (_activeCodexReasoningEffort ?? '').trim();
+    final request = _codexModelCatalogRequestGate.begin(
+      runtimeIdentity: runtimeIdentity,
+    );
     setState(() {
       _isCodexModelListLoading = true;
       _codexModelListError = null;
+      if (force) {
+        // The menu must not expose a previous provider/runtime snapshot while
+        // the new generation is loading.
+        _codexModelOptions = const <String>[];
+        _codexModelDisplayNames = const <String, String>{};
+        _codexReasoningEffortOptions = const <String>[];
+        _activeCodexReasoningEffort = null;
+      }
     });
     try {
-      final configSettings = await _readCodexRunSettingsFromServerConfig();
-
-      // B38 T3: primary source = GET {localConfig.baseUrl}/models (OpenAI data[].id).
-      // app-server model/list is fallback only when HTTP fails.
-      List<String> models = const <String>[];
-      Map<String, String> displayNames = const <String, String>{};
-      Map<String, dynamic> listResponse = const <String, dynamic>{};
-      var listSource = 'http_v1';
-      String? httpEndpoint;
-      Object? httpError;
-
-      try {
-        final httpResult =
-            await CodexAppServerService.listModelsFromProviderHttp();
-        models = httpResult.modelIds;
-        // Provider /models has no displayName — UI label equals wire id.
-        displayNames = {for (final id in models) id: id};
-        httpEndpoint = httpResult.endpoint;
-        listSource = httpResult.source;
-      } catch (error) {
-        httpError = error;
-        debugPrint('[Codex] provider HTTP /models failed: $error');
-        unawaited(
-          DebugFileLog.log(
-            'model_list',
-            'http_failed',
-            fields: <String, Object?>{
-              'error': error.toString(),
-              if (error is CodexHttpModelsException) ...<String, Object?>{
-                'httpStatus': error.statusCode,
-                'endpoint': error.endpoint,
-              },
-            },
-          ),
+      final sourceResult = await _codexModelCatalogLoader.load(
+        remoteRuntime: remoteRuntime,
+      );
+      final configSettings = _CodexRunSettingsSnapshot(
+        modelId: _extractCodexConfigModelId(sourceResult.runConfigResponse),
+        reasoningEffort: _extractCodexConfigReasoningEffort(
+          sourceResult.runConfigResponse,
+        ),
+      );
+      if (sourceResult.runConfigError != null) {
+        debugPrint(
+          'Read Codex config run settings failed: '
+          '${sourceResult.runConfigError}',
         );
       }
+      if (!mounted ||
+          !_codexModelCatalogRequestGate.isCurrent(
+            request,
+            runtimeIdentity: codexModelRuntimeIdentity(_codexStatus),
+          )) {
+        return;
+      }
 
-      if (models.isEmpty) {
-        // Fallback: app-server model/list (effort catalog still useful).
-        listResponse = await CodexAppServerService.listModels();
+      final listResponse = sourceResult.appServerResponse;
+      final List<String> models;
+      final Map<String, String> displayNames;
+      if (sourceResult.useAppServerModelIds) {
         models = _extractCodexModelOptionIds(listResponse);
         displayNames = _extractCodexModelDisplayNames(listResponse);
-        listSource = 'app_server_fallback';
         if (models.isEmpty) {
           debugPrint(
-            '[Codex] model/list fallback returned no parseable models: ${jsonEncode(listResponse)}',
+            '[Codex] ${sourceResult.source} returned no parseable models: '
+            '${jsonEncode(listResponse)}',
           );
         }
-        unawaited(
-          DebugFileLog.log(
-            'model_list',
-            'loaded',
-            fields: <String, Object?>{
-              'source': listSource,
-              'count': models.length,
-              'models': models.join(','),
-              'displayNameCount': displayNames.length,
-              if (httpError != null) 'httpError': httpError.toString(),
-            },
-          ),
-        );
       } else {
-        unawaited(
-          DebugFileLog.log(
-            'model_list',
-            'loaded',
-            fields: <String, Object?>{
-              'source': listSource,
-              'count': models.length,
-              'models': models.join(','),
-              'displayNameCount': displayNames.length,
-              if (httpEndpoint != null) 'endpoint': httpEndpoint,
-            },
-          ),
+        // A successful HTTP data: [] is authoritative. Never replace it with
+        // app-server ids; that would resurrect models absent from the provider.
+        models = List<String>.from(
+          sourceResult.httpResult?.modelIds ?? const <String>[],
         );
-        // Best-effort effort catalog from app-server (ids still from HTTP).
-        try {
-          listResponse = await CodexAppServerService.listModels();
-        } catch (error) {
+        displayNames = <String, String>{for (final id in models) id: id};
+        if (sourceResult.metadataError != null) {
           debugPrint(
-            '[Codex] model/list effort catalog optional fetch failed: $error',
+            '[Codex] model/list effort catalog optional fetch failed: '
+            '${sourceResult.metadataError}',
           );
-          listResponse = const <String, dynamic>{};
         }
       }
 
+      final appliedProviderIdentity =
+          '$runtimeIdentity|${sourceResult.providerIdentity}';
+      final providerChanged =
+          _codexModelCatalogProviderIdentity != appliedProviderIdentity;
       final preferredModel =
           configSettings.modelId ??
           _extractCodexPreferredOptionId(listResponse) ??
           _extractCodexDefaultModelId(listResponse) ??
           (models.isNotEmpty ? models.first : null);
-      final activeModel = (_activeCodexModelId ?? '').trim();
+      final activeModel = providerChanged
+          ? ''
+          : activeModelAtRequest;
       // Clamp selection to pure list: active ∈ models → preferred ∈ models → first/empty.
       final String? nextActiveModel;
       if (activeModel.isNotEmpty && models.contains(activeModel)) {
@@ -482,9 +518,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           activeModel.isNotEmpty && nextActiveModel != activeModel;
       final effectiveModel = nextActiveModel;
       // B26: per-model supportedReasoningEfforts + defaults (not a global union).
-      final parsedCatalog = _extractCodexModelEffortCatalog(listResponse);
-      final parsedDefaults = _extractCodexModelDefaultEffortCatalog(
-        listResponse,
+      final modelIdsLower = models
+          .map((modelId) => modelId.toLowerCase())
+          .toSet();
+      final parsedCatalog = Map<String, List<String>>.fromEntries(
+        _extractCodexModelEffortCatalog(listResponse).entries.where(
+          (entry) => modelIdsLower.contains(entry.key.toLowerCase()),
+        ),
+      );
+      final parsedDefaults = Map<String, String>.fromEntries(
+        _extractCodexModelDefaultEffortCatalog(
+          listResponse,
+        ).entries.where(
+          (entry) => modelIdsLower.contains(entry.key.toLowerCase()),
+        ),
       );
       final modelDefaultEffort =
           (effectiveModel != null
@@ -498,39 +545,36 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         catalog: parsedCatalog,
         modelId: effectiveModel,
       );
-      // Prefer per-model list; if empty keep prior catalog for that model /
-      // empty — never invent low..xhigh.
+      // This request is authoritative for the provider/runtime generation.
+      // Missing effort metadata means the selected model does not expose an
+      // effort control; never carry an effort over from a prior provider.
       final effortOptions = _mergeCodexReasoningEffortOptions(
         current: null,
-        options: modelEfforts.isNotEmpty
-            ? modelEfforts
-            : _lookupCodexModelEfforts(
-                catalog: _codexModelEffortCatalog,
-                modelId: effectiveModel,
-              ),
+        options: modelEfforts,
       );
+      final previousActiveEffort = providerChanged
+          ? ''
+          : activeEffortAtRequest;
       final nextActiveEffort = _clampCodexReasoningEffortToOptions(
         preferred:
-            (_activeCodexReasoningEffort ?? '').trim().isNotEmpty
+            previousActiveEffort.isNotEmpty
             ? _activeCodexReasoningEffort
             : (configSettings.reasoningEffort ?? modelDefaultEffort),
         options: effortOptions,
         modelDefault: modelDefaultEffort,
+        preservePreferredWhenOptionsEmpty: false,
       );
-      if (!mounted) return;
+      if (!mounted ||
+          !_codexModelCatalogRequestGate.isCurrent(
+            request,
+            runtimeIdentity: codexModelRuntimeIdentity(_codexStatus),
+          )) {
+        return;
+      }
       setState(() {
-        if (parsedCatalog.isNotEmpty) {
-          _codexModelEffortCatalog = {
-            ..._codexModelEffortCatalog,
-            ...parsedCatalog,
-          };
-        }
-        if (parsedDefaults.isNotEmpty) {
-          _codexModelDefaultEffortCatalog = {
-            ..._codexModelDefaultEffortCatalog,
-            ...parsedDefaults,
-          };
-        }
+        _codexModelCatalogProviderIdentity = appliedProviderIdentity;
+        _codexModelEffortCatalog = parsedCatalog;
+        _codexModelDefaultEffortCatalog = parsedDefaults;
         _codexModelOptions = models;
         _codexModelDisplayNames = displayNames;
         if ((_activeCodexModelId ?? '').trim() != (nextActiveModel ?? '')) {
@@ -541,6 +585,25 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _isCodexModelListLoading = false;
         _codexModelListError = null;
       });
+      // Log only after this generation has actually reached UI/state.
+      unawaited(
+        DebugFileLog.log(
+          'model_list',
+          'loaded',
+          fields: <String, Object?>{
+            'source': sourceResult.source,
+            'count': models.length,
+            'models': models.join(','),
+            'displayNameCount': displayNames.length,
+            if (sourceResult.httpResult != null)
+              'endpoint': sourceResult.httpResult!.endpoint,
+            if (sourceResult.httpError != null)
+              'httpError': sourceResult.httpError.toString(),
+            'providerChanged': providerChanged,
+            'generation': request.generation,
+          },
+        ),
+      );
       if (selectionClamped) {
         unawaited(
           DebugFileLog.logModel(
@@ -548,6 +611,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
             model: nextActiveModel,
             previous: activeModel,
           ),
+        );
+      }
+      if (nextActiveModel == null) {
+        unawaited(_clearCodexPreference(_kCodexModelPreferenceKey));
+      }
+      if (nextActiveEffort == null) {
+        unawaited(
+          _clearCodexPreference(_kCodexReasoningEffortPreferenceKey),
         );
       }
       if (parsedCatalog.isNotEmpty) {
@@ -561,25 +632,27 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
       }
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted ||
+          !_codexModelCatalogRequestGate.isCurrent(
+            request,
+            runtimeIdentity: codexModelRuntimeIdentity(_codexStatus),
+          )) {
+        return;
+      }
       setState(() {
         _isCodexModelListLoading = false;
         _codexModelListError = error.toString();
       });
-    }
-  }
-
-  Future<_CodexRunSettingsSnapshot>
-  _readCodexRunSettingsFromServerConfig() async {
-    try {
-      final response = await CodexAppServerService.readConfig();
-      return _CodexRunSettingsSnapshot(
-        modelId: _extractCodexConfigModelId(response),
-        reasoningEffort: _extractCodexConfigReasoningEffort(response),
+      unawaited(
+        DebugFileLog.log(
+          'model_list',
+          'failed',
+          fields: <String, Object?>{
+            'error': error.toString(),
+            'generation': request.generation,
+          },
+        ),
       );
-    } catch (error) {
-      debugPrint('Read Codex config run settings failed: $error');
-      return const _CodexRunSettingsSnapshot();
     }
   }
 
@@ -630,7 +703,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     // B32: reject ghost ids not present in pure model/list options.
     final catalog = _codexModelOptions;
-    if (catalog.isNotEmpty && !catalog.contains(normalized)) {
+    if (!isCodexModelSelectableFromCatalog(
+      modelId: normalized,
+      modelOptions: catalog,
+      catalogAuthoritative: _codexModelCatalogProviderIdentity != null,
+    )) {
       unawaited(
         DebugFileLog.logModel(
           'select_rejected',
@@ -651,13 +728,43 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     final previous = (_activeCodexModelId ?? '').trim();
     final changed = previous != normalized;
+    // B26: rebind effort options to the newly selected model's supported set.
+    final modelEfforts = _lookupCodexModelEfforts(
+      catalog: _codexModelEffortCatalog,
+      modelId: normalized,
+    );
+    final effortOptions = _mergeCodexReasoningEffortOptions(
+      current: null,
+      options: modelEfforts,
+    );
+    final modelDefault = _normalizeCodexReasoningEffort(
+      _codexModelDefaultEffortCatalog[normalized],
+    );
+    final previousEffort = (_activeCodexReasoningEffort ?? '').trim();
+    final clampedEffort = _clampCodexReasoningEffortToOptions(
+      preferred: previousEffort.isEmpty ? null : previousEffort,
+      options: effortOptions,
+      modelDefault: modelDefault,
+      preservePreferredWhenOptionsEmpty: false,
+    );
+    final effortChanged =
+        previousEffort.isNotEmpty &&
+        clampedEffort != null &&
+        previousEffort != clampedEffort;
+    final effortCleared =
+        previousEffort.isNotEmpty &&
+        clampedEffort == null;
     final threadId = (_activeCodexThreadId ?? '').trim();
-    // Thread settings are the live source of truth when a thread is active.
+    // Resolve the target model/effort pair before touching a live thread.
+    // Sending the model first could make app-server validate the previous
+    // model's now-illegal effort, while a follow-up RPC also exposes an
+    // avoidable intermediate settings state.
     if (threadId.isNotEmpty && changed) {
       try {
         await CodexAppServerService.updateThreadSettings(
           threadId: threadId,
           model: normalized,
+          effort: clampedEffort,
         );
       } catch (error) {
         // B37: stale thread id → clear and still apply model locally.
@@ -683,39 +790,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       }
     }
     if (!mounted) return;
-    // B26: rebind effort options to the newly selected model's supported set.
-    final modelEfforts = _lookupCodexModelEfforts(
-      catalog: _codexModelEffortCatalog,
-      modelId: normalized,
-    );
-    final effortOptions = _mergeCodexReasoningEffortOptions(
-      current: null,
-      options: modelEfforts,
-    );
-    final modelDefault = _normalizeCodexReasoningEffort(
-      _codexModelDefaultEffortCatalog[normalized],
-    );
-    final previousEffort = (_activeCodexReasoningEffort ?? '').trim();
-    final clampedEffort = _clampCodexReasoningEffortToOptions(
-      preferred: previousEffort.isEmpty ? null : previousEffort,
-      options: effortOptions,
-      modelDefault: modelDefault,
-    );
-    final effortChanged =
-        previousEffort.isNotEmpty &&
-        clampedEffort != null &&
-        previousEffort != clampedEffort;
-    final effortCleared =
-        previousEffort.isNotEmpty &&
-        clampedEffort == null &&
-        effortOptions.isNotEmpty;
     setState(() {
       _activeCodexModelId = normalized;
       _codexReasoningEffortOptions = effortOptions;
-      if (effortOptions.isNotEmpty) {
-        _activeCodexReasoningEffort = clampedEffort;
-      }
-      // When catalog empty (still loading), keep prior effort cautiously.
+      _activeCodexReasoningEffort = clampedEffort;
     });
     unawaited(
       DebugFileLog.logModel(
@@ -738,9 +816,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           _writeCodexPreference(_kCodexReasoningEffortPreferenceKey, nextEffort),
         );
       }
-      // Live thread: clamp effort on server when model change invalidates it.
-      final threadId = (_activeCodexThreadId ?? '').trim();
-      if (threadId.isNotEmpty && nextEffort.isNotEmpty && effortChanged) {
+      // A same-model refresh can still discover a newly clamped effort. Model
+      // switches already sent the resolved pair atomically above.
+      if (!changed &&
+          threadId.isNotEmpty &&
+          nextEffort.isNotEmpty &&
+          effortChanged) {
         try {
           await CodexAppServerService.updateThreadSettings(
             threadId: threadId,
@@ -2054,7 +2135,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     // B32: never append server model into options. Accept only when ∈ pure
     // list (or list still empty / not loaded — keep server truth cautiously).
     final options = _codexModelOptions;
-    if (options.isNotEmpty && !options.contains(normalized)) {
+    if (!isCodexModelSelectableFromCatalog(
+      modelId: normalized,
+      modelOptions: options,
+      catalogAuthoritative: _codexModelCatalogProviderIdentity != null,
+    )) {
       unawaited(
         DebugFileLog.logModel(
           'sync_skip_not_in_list',
@@ -2085,6 +2170,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           _codexModelDefaultEffortCatalog[normalized],
         ),
       );
+    } else if (_codexModelCatalogProviderIdentity != null) {
+      _codexReasoningEffortOptions = const <String>[];
+      _activeCodexReasoningEffort = null;
+      unawaited(
+        _clearCodexPreference(_kCodexReasoningEffortPreferenceKey),
+      );
     }
     unawaited(_writeCodexPreference(_kCodexModelPreferenceKey, normalized));
   }
@@ -2100,6 +2191,9 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         .map((e) => e.trim().toLowerCase())
         .where((e) => e.isNotEmpty)
         .toSet();
+    if (_codexModelCatalogProviderIdentity != null && allowed.isEmpty) {
+      return;
+    }
     if (allowed.isNotEmpty && !allowed.contains(normalized)) {
       return;
     }
@@ -3053,10 +3147,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     if (mounted) {
       setState(() {
-        _codexStatus = status;
+        _applyCodexStatusSnapshot(status);
       });
     } else {
-      _codexStatus = status;
+      _applyCodexStatusSnapshot(status);
     }
     if (!status.connected) {
       throw StateError(
@@ -3288,7 +3382,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         status = await CodexAppServerService.connect();
         if (mounted) {
           setState(() {
-            _codexStatus = status;
+            _applyCodexStatusSnapshot(status);
           });
         }
       }
@@ -3694,10 +3788,10 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final turnUsesPlanMode = _isCodexPlanMode(collaborationModeForTurn);
     // B21: capture actual startTurn payload (tier omitted when Fast off).
     final turnServiceTier = _activeCodexServiceTierOrNull;
-    final turnEffort = _activeCodexReasoningEffort;
+    var turnEffort = _activeCodexReasoningEffort;
     final turnApprovalPolicy = _codexPermissionMode.approvalPolicy;
     final turnSandboxType = _codexPermissionMode.sandboxType;
-    final turnModel = modelOverride ?? _activeCodexModelId;
+    var turnModel = modelOverride ?? _activeCodexModelId;
     final turnThreadId = _activeCodexThreadId;
     final turnConversationId = remoteCodex ? null : resolvedConversationId;
     final turnServiceTierLog = turnServiceTier ?? 'omitted';
@@ -3707,10 +3801,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         status = await CodexAppServerService.connect();
         if (mounted) {
           setState(() {
-            _codexStatus = status;
+            _applyCodexStatusSnapshot(status);
           });
         }
       }
+      // A reconnect can advance sessionGeneration and invalidate the prior
+      // runtime's model catalog. Capture the actual payload only afterwards.
+      turnEffort = _activeCodexReasoningEffort;
+      turnModel = modelOverride ?? _activeCodexModelId;
       unawaited(
         DebugFileLog.logTurnStart(
           threadId: turnThreadId,
@@ -3732,8 +3830,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         sandboxPolicy: _codexPermissionMode.sandboxPolicy(
           writableRoot: _codexResolvedWritableRoot,
         ),
-        model: modelOverride ?? _activeCodexModelId,
-        effort: _activeCodexReasoningEffort,
+        model: turnModel,
+        effort: turnEffort,
         collaborationMode: collaborationModeForTurn,
         serviceTier: turnServiceTier,
       );
@@ -4326,6 +4424,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
             runtime.currentThinkingMessages.isNotEmpty ||
             runtime.messages.any(_isPendingCodexRequestMessage));
     final preserveLiveStreamingState = fromPoll && hasLivePushStreaming;
+    var modelCatalogInvalidated = false;
     setState(() {
       _activeCodexRemoteRuntimeId = runtimeId;
       _activeCodexThreadId = resolvedThreadId;
@@ -4333,7 +4432,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         _activeCodexTurnId = activeTurnId;
       }
       if (status != null) {
-        _codexStatus = status;
+        modelCatalogInvalidated = _applyCodexStatusSnapshot(status);
       }
       _currentConversationIdByMode[ChatPageMode.codex] = runtimeId;
       _currentConversationByMode[ChatPageMode.codex] = conversation;
@@ -4389,6 +4488,9 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     );
     if (updatedRuntime != null) {
       _syncCodexModeStateFromRuntime(updatedRuntime);
+    }
+    if (modelCatalogInvalidated) {
+      unawaited(_loadCodexModelOptionsWhenReady());
     }
   }
 
@@ -7830,14 +7932,19 @@ String? _clampCodexReasoningEffortToOptions({
   String? preferred,
   required List<String> options,
   String? modelDefault,
+  bool preservePreferredWhenOptionsEmpty = true,
 }) {
   final allowed = options
       .map((e) => _normalizeCodexReasoningEffort(e))
       .whereType<String>()
       .toList(growable: false);
   if (allowed.isEmpty) {
-    // Empty catalog: keep preferred cautiously (loading / last-known).
-    return _normalizeCodexReasoningEffort(preferred);
+    // Before a catalog is authoritative callers may preserve last-known UI.
+    // Once the provider/runtime load completed, an empty effort list means
+    // the selected model does not support an effort override.
+    return preservePreferredWhenOptionsEmpty
+        ? _normalizeCodexReasoningEffort(preferred)
+        : null;
   }
   final preferredNorm = _normalizeCodexReasoningEffort(preferred);
   if (preferredNorm != null && allowed.contains(preferredNorm)) {
@@ -7848,6 +7955,37 @@ String? _clampCodexReasoningEffortToOptions({
     return defaultNorm;
   }
   return allowed.first;
+}
+
+@visibleForTesting
+String? resolveCodexModelEffortForTesting({
+  String? preferred,
+  required List<String> supportedEfforts,
+  String? modelDefault,
+  required bool catalogAuthoritative,
+}) {
+  return _clampCodexReasoningEffortToOptions(
+    preferred: preferred,
+    options: supportedEfforts,
+    modelDefault: modelDefault,
+    preservePreferredWhenOptionsEmpty: !catalogAuthoritative,
+  );
+}
+
+bool isCodexModelSelectableFromCatalog({
+  required String modelId,
+  required List<String> modelOptions,
+  required bool catalogAuthoritative,
+}) {
+  final normalized = modelId.trim();
+  if (normalized.isEmpty) {
+    return false;
+  }
+  if (!catalogAuthoritative && modelOptions.isEmpty) {
+    // Cold path only: server state may arrive before the first catalog.
+    return true;
+  }
+  return modelOptions.contains(normalized);
 }
 
 List<String> _mergeCodexReasoningEffortOptions({

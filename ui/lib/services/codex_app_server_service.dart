@@ -21,6 +21,7 @@ class CodexStatus {
     this.remoteDesktopAvailable,
     this.remoteActiveConnections,
     this.remoteUptimeMs,
+    this.sessionGeneration,
   });
 
   final bool connected;
@@ -38,6 +39,7 @@ class CodexStatus {
   final bool? remoteDesktopAvailable;
   final int? remoteActiveConnections;
   final int? remoteUptimeMs;
+  final int? sessionGeneration;
 
   bool get canConnect => ready;
 
@@ -59,6 +61,9 @@ class CodexStatus {
       remoteDesktopAvailable: _boolOrNull(source['remoteDesktopAvailable']),
       remoteActiveConnections: _intOrNull(source['remoteActiveConnections']),
       remoteUptimeMs: _intOrNull(source['remoteUptimeMs']),
+      sessionGeneration:
+          _intOrNull(source['sessionGeneration']) ??
+          _intOrNull(source['session_generation']),
     );
   }
 

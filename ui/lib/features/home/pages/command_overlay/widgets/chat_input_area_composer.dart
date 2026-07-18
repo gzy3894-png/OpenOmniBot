@@ -18,10 +18,6 @@ const List<Color> _kDarkComposerFlowGradientColors = <Color>[
   Color(0xFF8C775D),
 ];
 
-// B26: do not invent low..xhigh when catalog is empty — show empty effort
-// row / last-known options from settings.reasoningEffortOptions only.
-const List<String> _kDefaultCodexReasoningEfforts = <String>[];
-
 const String _kCodexRunSettingsProviderId = '__codex_run_settings__';
 
 enum _CodexRunSettingsMenuKind { model, effort }
@@ -55,8 +51,19 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
 
   @override
   void dispose() {
-    unawaited(_codexRunSettingsMenuHandle?.dismiss());
+    final settingsMenuDismissal = _codexRunSettingsMenuHandle?.dismiss();
     _codexRunSettingsMenuHandle = null;
+    if (settingsMenuDismissal == null) {
+      _codexRunSettingsNotifier.dispose();
+    } else {
+      // OverlayEntry owns a ValueListenableBuilder. Keep its notifier alive
+      // until dismiss has removed the entry, then release it exactly once.
+      unawaited(
+        settingsMenuDismissal.whenComplete(
+          _codexRunSettingsNotifier.dispose,
+        ),
+      );
+    }
     unawaited(_codexPermissionMenuHandle?.dismiss());
     _codexPermissionMenuHandle = null;
     super.dispose();
@@ -982,94 +989,43 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       }
       final opened = widget.onCodexRunSettingsOpened;
       if (opened != null) {
+        // Never seed a newly opened overlay with a previous provider snapshot.
+        // Keep the current labels, but wait for this opening's live catalog.
+        _codexRunSettingsNotifier.value = CodexRunSettings(
+          modelId: settings.modelId,
+          reasoningEffort: '',
+          modelOptions: const <String>[],
+          reasoningEffortOptions: const <String>[],
+          modelDisplayNames: const <String, String>{},
+          isLoadingModels: true,
+        );
         unawaited(Future<void>.sync(opened));
       }
-      // B32: model menu is pure catalog — do not inject current if absent.
-      final modelOptions = _codexRunSettingsOptions(
-        current: modelId,
-        options: settings.modelOptions,
-        injectCurrent: false,
-      );
-      // B26: empty catalog stays empty; no global fake effort fallbacks.
-      final effortOptions = _codexRunSettingsOptions(
-        current: effort,
-        options: settings.reasoningEffortOptions.isEmpty
-            ? _kDefaultCodexReasoningEfforts
-            : settings.reasoningEffortOptions,
-      );
-      final disabledModelLabel = settings.isLoadingModels
-          ? (english ? 'Loading...' : '正在获取模型...')
-          : (settings.modelListError?.trim().isNotEmpty ?? false)
-          ? (english ? 'Load failed' : '模型获取失败')
-          : (english ? 'No models available' : '未获取到可用模型');
-      final models = [
-        for (final option in modelOptions)
-          ProviderModelOption(
-            id: option,
-            displayName: settings.modelDisplayNames[option] ?? option,
-          ),
-      ];
-      final currentSelection = modelId.isEmpty
-          ? null
-          : ConversationModelSelection(
-              providerProfileId: _kCodexRunSettingsProviderId,
-              modelId: modelId,
-            );
       final handle = showOverlayGlassPopup<_CodexRunSettingsMenuAction>(
         context: anchorContext,
         anchor: anchor,
         reverseTransitionDuration: Duration.zero,
         dismissOnBackButton: false,
-        builder: (handle) => ConversationModelSelectorContent(
-          width: 280,
-          maxHeight: 420,
-          profiles: [
-            ModelProviderProfileSummary(
-              id: _kCodexRunSettingsProviderId,
-              name: 'Codex',
-              baseUrl: '',
-              apiKey: '',
-              customHeaders: const <String, String>{},
-              sourceType: 'codex',
-              readOnly: true,
-              ready: true,
-              statusText: '',
-              configured: true,
-            ),
-          ],
-          providerModelsByProfileId: {_kCodexRunSettingsProviderId: models},
-          currentSelection: currentSelection,
-          showSearchField: false,
-          showProfileHeaders: false,
-          allowProfileCollapse: false,
-          groupBuiltinLocalModels: false,
-          emptyModelsLabel: disabledModelLabel,
-          modelRowKeyPrefix: 'chat-input-codex-run-settings-option-model',
-          onSelect: (selection) {
-            unawaited(
-              handle.dismiss(
-                _CodexRunSettingsMenuAction.model(selection.modelId),
-              ),
+        builder: (handle) => ValueListenableBuilder<CodexRunSettings?>(
+          valueListenable: _codexRunSettingsNotifier,
+          builder: (context, liveSettings, _) {
+            return _buildCodexRunSettingsMenu(
+              settings: liveSettings ?? settings,
+              english: english,
+              selectedColor: selectedColor,
+              textColor: menuTextColor,
+              onSelectModel: (modelId) {
+                unawaited(
+                  handle.dismiss(_CodexRunSettingsMenuAction.model(modelId)),
+                );
+              },
+              onSelectEffort: (effort) {
+                unawaited(
+                  handle.dismiss(_CodexRunSettingsMenuAction.effort(effort)),
+                );
+              },
             );
           },
-          footer: _CodexReasoningEffortSelectorFooter(
-            header: english ? 'Reasoning' : '推理强度',
-            options: [
-              for (final option in effortOptions)
-                _CodexRunSettingsOptionData(
-                  value: option,
-                  label: _codexReasoningEffortLabel(option),
-                ),
-            ],
-            selectedEffort: effort,
-            selectedColor: selectedColor,
-            textColor: menuTextColor,
-            onSelect: (value) {
-              unawaited(
-                handle.dismiss(_CodexRunSettingsMenuAction.effort(value)),
-              );
-            },
-          ),
         ),
       );
       _codexRunSettingsMenuHandle = handle;
@@ -1144,6 +1100,89 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildCodexRunSettingsMenu({
+    required CodexRunSettings settings,
+    required bool english,
+    required Color selectedColor,
+    required Color textColor,
+    required ValueChanged<String> onSelectModel,
+    required ValueChanged<String> onSelectEffort,
+  }) {
+    final modelId = settings.modelId.trim();
+    final effort = settings.reasoningEffort.trim();
+    // B32: model menu is pure catalog — do not inject current if absent.
+    final modelOptions = _codexRunSettingsOptions(
+      current: modelId,
+      options: settings.modelOptions,
+      injectCurrent: false,
+    );
+    // B26: empty catalog stays empty; no global fake effort fallbacks.
+    final effortOptions = _codexRunSettingsOptions(
+      current: effort,
+      options: settings.reasoningEffortOptions,
+      injectCurrent: false,
+    );
+    final disabledModelLabel = settings.isLoadingModels
+        ? (english ? 'Loading...' : '正在获取模型...')
+        : (settings.modelListError?.trim().isNotEmpty ?? false)
+        ? (english ? 'Load failed' : '模型获取失败')
+        : (english ? 'No models available' : '未获取到可用模型');
+    final models = [
+      for (final option in modelOptions)
+        ProviderModelOption(
+          id: option,
+          displayName: settings.modelDisplayNames[option] ?? option,
+        ),
+    ];
+    final currentSelection = modelId.isEmpty
+        ? null
+        : ConversationModelSelection(
+            providerProfileId: _kCodexRunSettingsProviderId,
+            modelId: modelId,
+          );
+    return ConversationModelSelectorContent(
+      width: 280,
+      maxHeight: 420,
+      profiles: [
+        ModelProviderProfileSummary(
+          id: _kCodexRunSettingsProviderId,
+          name: 'Codex',
+          baseUrl: '',
+          apiKey: '',
+          customHeaders: const <String, String>{},
+          sourceType: 'codex',
+          readOnly: true,
+          ready: true,
+          statusText: '',
+          configured: true,
+        ),
+      ],
+      providerModelsByProfileId: {_kCodexRunSettingsProviderId: models},
+      currentSelection: currentSelection,
+      showSearchField: false,
+      showProfileHeaders: false,
+      allowProfileCollapse: false,
+      groupBuiltinLocalModels: false,
+      emptyModelsLabel: disabledModelLabel,
+      modelRowKeyPrefix: 'chat-input-codex-run-settings-option-model',
+      onSelect: (selection) => onSelectModel(selection.modelId),
+      footer: _CodexReasoningEffortSelectorFooter(
+        header: english ? 'Reasoning' : '推理强度',
+        options: [
+          for (final option in effortOptions)
+            _CodexRunSettingsOptionData(
+              value: option,
+              label: _codexReasoningEffortLabel(option),
+            ),
+        ],
+        selectedEffort: effort,
+        selectedColor: selectedColor,
+        textColor: textColor,
+        onSelect: onSelectEffort,
       ),
     );
   }

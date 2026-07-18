@@ -165,30 +165,65 @@ void main() {
     expect(calls.first.arguments, {'limit': 100});
   });
 
-  test('updateThreadSettings forwards model and effort only', () async {
-    MethodCall? capturedCall;
+  test('model switch sends clamped effort atomically, never old effort',
+      () async {
+    final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
-      capturedCall = call;
+      calls.add(call);
       return <String, dynamic>{'ok': true};
     });
 
+    const oldEffort = 'xhigh';
     await CodexAppServerService.updateThreadSettings(
       threadId: ' thread-9 ',
       model: ' gpt-custom ',
       effort: ' high ',
     );
 
-    expect(capturedCall?.method, 'thread/settings/update');
-    expect(capturedCall?.arguments, {
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'thread/settings/update');
+    expect(calls.single.arguments, {
       'threadId': 'thread-9',
       'model': 'gpt-custom',
       'effort': 'high',
     });
+    expect(
+      (calls.single.arguments as Map)['effort'],
+      isNot(oldEffort),
+    );
     // Omission: no serviceTier key when neither set nor clear.
     expect(
-      (capturedCall?.arguments as Map).containsKey('serviceTier'),
+      (calls.single.arguments as Map).containsKey('serviceTier'),
       isFalse,
     );
+  });
+
+  test('HTTP-only model updates and turns omit cleared effort', () async {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.updateThreadSettings(
+      threadId: 'thread-http-only',
+      model: 'provider-only-model',
+      effort: null,
+    );
+    await CodexAppServerService.startTurn(
+      threadId: 'thread-http-only',
+      text: 'hello',
+      model: 'provider-only-model',
+      effort: null,
+    );
+
+    for (final call in calls) {
+      final args = Map<String, dynamic>.from(
+        (call.arguments as Map).cast<String, dynamic>(),
+      );
+      expect(args['model'], 'provider-only-model', reason: call.method);
+      expect(args.containsKey('effort'), isFalse, reason: call.method);
+    }
   });
 
   test('B14 updateThreadSettings can clear serviceTier with JSON null',

@@ -256,6 +256,106 @@ void main() {
     expect(selectedEffort, 'xhigh');
   });
 
+  testWidgets(
+    'open codex run settings overlay follows fresh and live model catalogs',
+    (tester) async {
+      var settings = const CodexRunSettings(
+        modelId: 'stale-model',
+        reasoningEffort: 'high',
+        modelOptions: <String>['stale-model'],
+        reasoningEffortOptions: <String>['high'],
+      );
+      late StateSetter rebuild;
+      var opened = 0;
+      await tester.pumpWidget(
+        StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return _buildTestApp(
+              contextUsageRatio: null,
+              useLargeComposerStyle: true,
+              codexRunSettings: settings,
+              onCodexRunSettingsOpened: () {
+                opened += 1;
+                setState(() {
+                  settings = const CodexRunSettings(
+                    modelId: 'fresh-model',
+                    reasoningEffort: '',
+                    modelOptions: <String>['fresh-model'],
+                    reasoningEffortOptions: <String>[],
+                  );
+                });
+              },
+              onCodexRunSettingsChanged: ({modelId, reasoningEffort}) {},
+            );
+          },
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(
+        find.byKey(const ValueKey('chat-input-codex-run-settings-button')),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(opened, 1);
+      expect(
+        find.byKey(
+          const ValueKey(
+            'chat-input-codex-run-settings-option-model-stale-model',
+          ),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byKey(
+          const ValueKey(
+            'chat-input-codex-run-settings-option-model-fresh-model',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey('chat-input-codex-run-settings-option-effort-high'),
+        ),
+        findsNothing,
+      );
+
+      rebuild(() {
+        settings = const CodexRunSettings(
+          modelId: 'live-model',
+          reasoningEffort: '',
+          modelOptions: <String>['live-model'],
+          reasoningEffortOptions: <String>[],
+        );
+      });
+      await tester.pump();
+
+      expect(
+        find.byKey(
+          const ValueKey(
+            'chat-input-codex-run-settings-option-model-fresh-model',
+          ),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byKey(
+          const ValueKey(
+            'chat-input-codex-run-settings-option-model-live-model',
+          ),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('normal chat model picker renders inside input actions', (
     tester,
   ) async {
@@ -545,6 +645,7 @@ Widget _buildTestApp({
   CodexPermissionMode? codexPermissionMode,
   ValueChanged<CodexPermissionMode>? onCodexPermissionModeChanged,
   CodexRunSettings? codexRunSettings,
+  VoidCallback? onCodexRunSettingsOpened,
   CodexRunSettingsChanged? onCodexRunSettingsChanged,
   ChatModelPickerSettings? modelPickerSettings,
   String initialText = '',
@@ -567,6 +668,7 @@ Widget _buildTestApp({
           onTriggerSkillMention: onTriggerSkillMention,
           modelPickerSettings: modelPickerSettings,
           codexRunSettings: codexRunSettings,
+          onCodexRunSettingsOpened: onCodexRunSettingsOpened,
           onCodexRunSettingsChanged: onCodexRunSettingsChanged,
           codexPermissionMode: codexPermissionMode,
           onCodexPermissionModeChanged: onCodexPermissionModeChanged,

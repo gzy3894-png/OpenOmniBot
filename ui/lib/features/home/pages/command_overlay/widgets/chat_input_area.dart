@@ -501,6 +501,7 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
   static const double _keyboardMotionEpsilon = 1.0;
 
   late ValueNotifier<_ComposerInteractionState> _composerStateNotifier;
+  late ValueNotifier<CodexRunSettings?> _codexRunSettingsNotifier;
   bool _isPopupVisible = false;
   double _lastKeyboardInset = 0;
 
@@ -532,6 +533,9 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
         hasFocus: widget.focusNode.hasFocus,
         keyboardPhase: _ComposerKeyboardPhase.hidden,
       ),
+    );
+    _codexRunSettingsNotifier = ValueNotifier<CodexRunSettings?>(
+      widget.codexRunSettings,
     );
     widget.controller.addListener(_onTextChanged);
     widget.focusNode.addListener(_onFocusChanged);
@@ -758,6 +762,9 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
   @override
   void didUpdateWidget(covariant ChatInputArea oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.codexRunSettings, widget.codexRunSettings)) {
+      _codexRunSettingsNotifier.value = widget.codexRunSettings;
+    }
     if (oldWidget.attachments != widget.attachments ||
         oldWidget.useLargeComposerStyle != widget.useLargeComposerStyle ||
         oldWidget.useFrostedGlass != widget.useFrostedGlass ||

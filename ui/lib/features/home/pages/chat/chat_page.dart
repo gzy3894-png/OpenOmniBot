@@ -35,6 +35,7 @@ import 'package:ui/services/app_background_service.dart';
 import 'package:ui/services/agent_browser_session_service.dart';
 import 'package:ui/services/chat_terminal_environment_service.dart';
 import 'package:ui/services/codex_app_server_service.dart';
+import 'package:ui/services/codex_model_catalog_loader.dart';
 import 'package:ui/services/codex_diff_parser.dart';
 import 'package:ui/services/codex_tool_call_parser.dart';
 import 'package:ui/services/conversation_model_override_service.dart';
@@ -449,6 +450,11 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   List<String> _codexModelOptions = const <String>[];
   // wireId → display label from model/list (fallback to wireId when absent)
   Map<String, String> _codexModelDisplayNames = const <String, String>{};
+  final CodexModelCatalogLoader _codexModelCatalogLoader =
+      CodexModelCatalogLoader();
+  final CodexModelCatalogRequestGate _codexModelCatalogRequestGate =
+      CodexModelCatalogRequestGate();
+  String? _codexModelCatalogProviderIdentity;
   // B26: efforts for the *active* model only. Cold start empty (or last catalog
   // restore) — never fake low..xhigh as universal truth.
   List<String> _codexReasoningEffortOptions = const <String>[];

@@ -1,10 +1,60 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ui/features/home/pages/chat/chat_page.dart';
 import 'package:ui/features/home/pages/chat/chat_page_models.dart';
 import 'package:ui/features/home/pages/chat/mixins/agent_stream_handler.dart';
 import 'package:ui/features/home/pages/chat/services/chat_conversation_runtime_coordinator.dart';
 import 'package:ui/models/chat_message_model.dart';
 
 void main() {
+  group('Codex model effort resolution', () {
+    test('authoritative empty effort catalog clears an old override', () {
+      expect(
+        resolveCodexModelEffortForTesting(
+          preferred: 'high',
+          supportedEfforts: const <String>[],
+          catalogAuthoritative: true,
+        ),
+        isNull,
+      );
+    });
+
+    test('model switch clamps old effort to the target model default', () {
+      expect(
+        resolveCodexModelEffortForTesting(
+          preferred: 'xhigh',
+          supportedEfforts: const <String>['low', 'high'],
+          modelDefault: 'high',
+          catalogAuthoritative: true,
+        ),
+        'high',
+      );
+    });
+  });
+
+  group('Codex authoritative model catalog', () {
+    test('successful empty catalog rejects app-server ghost models', () {
+      expect(
+        isCodexModelSelectableFromCatalog(
+          modelId: 'ghost-model',
+          modelOptions: const <String>[],
+          catalogAuthoritative: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('pre-catalog server state remains a cautious cold-start fallback', () {
+      expect(
+        isCodexModelSelectableFromCatalog(
+          modelId: 'server-model',
+          modelOptions: const <String>[],
+          catalogAuthoritative: false,
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group(
     'ChatConversationRuntimeCoordinator.replaceConversationSnapshot '
     'preserveLiveStreamingState',

@@ -666,6 +666,15 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     if (!mounted || !isConversationLifecycleTokenCurrent(lifecycleToken)) {
       return;
     }
+    if (_activeMode == ChatPageMode.codex) {
+      // Returning from Codex settings may have switched local/remote runtime.
+      // Refresh that identity before any model catalog request can inspect a
+      // phone-local provider configuration.
+      await _refreshCodexStatus();
+      if (!mounted || !isConversationLifecycleTokenCurrent(lifecycleToken)) {
+        return;
+      }
+    }
     await _loadNormalChatModelContext();
     if (!mounted || !isConversationLifecycleTokenCurrent(lifecycleToken)) {
       return;
