@@ -226,10 +226,9 @@ android {
     }
 
     lint {
-        // 使用项目根目录的 lint.xml 配置
         lintConfig = file("../lint.xml")
-        // 将错误视为警告继续构建
-        abortOnError = false
+        abortOnError = true
+        warningsAsErrors = false
     }
 }
 

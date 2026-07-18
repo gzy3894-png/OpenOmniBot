@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Keep Android Lint defaults; make API compatibility explicitly blocking. -->
+    <issue id="NewApi" severity="error" />
+    <issue id="InlinedApi" severity="warning" />
+</lint>

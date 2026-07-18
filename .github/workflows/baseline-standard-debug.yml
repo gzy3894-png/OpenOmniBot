@@ -1,6 +1,4 @@
-# Secondary-dev: standard debug APK with FIXED debug signing (upgrade-install safe).
-# Secrets: AWB_DEBUG_KEYSTORE_BASE64, AWB_DEBUG_STORE_PASSWORD, AWB_DEBUG_KEY_ALIAS, AWB_DEBUG_KEY_PASSWORD
-
+# Secondary development gate: eight parallel executions from one source commit.
 name: Baseline Standard Debug
 
 on:
@@ -20,6 +18,7 @@ on:
       - "gradle/**"
       - "*.gradle*"
       - "gradle.properties"
+      - "lint.xml"
       - ".github/workflows/baseline-standard-debug.yml"
 
 permissions:
@@ -34,48 +33,163 @@ env:
   FLUTTER_VERSION: "3.38.7"
   NDK_VERSION: "28.2.13676358"
   ALLOWED_THIRD_PARTY_WRAPPER_SHA: "ee3739525a995bcb5601621a6e2daec1f183bbefc375743acc235cec33547e04"
-  AWB_DEBUG_KEYSTORE_BASE64: ${{ secrets.AWB_DEBUG_KEYSTORE_BASE64 }}
-  AWB_DEBUG_STORE_PASSWORD: ${{ secrets.AWB_DEBUG_STORE_PASSWORD }}
-  AWB_DEBUG_KEY_ALIAS: ${{ secrets.AWB_DEBUG_KEY_ALIAS }}
-  AWB_DEBUG_KEY_PASSWORD: ${{ secrets.AWB_DEBUG_KEY_PASSWORD }}
 
 jobs:
-  apk:
+  flutter-tests:
+    name: Flutter tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
-      - name: Checkout
+      - name: Checkout source commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           submodules: false
 
-      - name: Materialize fixed debug keystore
+      - name: Verify source commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ env.FLUTTER_VERSION }}-${{ hashFiles('ui/pubspec.lock') }}
+          restore-keys: ${{ runner.os }}-pub-${{ env.FLUTTER_VERSION }}-
+
+      - name: Flutter pub get
+        working-directory: ui
+        run: flutter pub get --enforce-lockfile
+
+      - name: Verify partition and run shard
+        working-directory: ui
         shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_COUNT: "4"
         run: |
           set -euo pipefail
-          missing=0
-          for v in AWB_DEBUG_KEYSTORE_BASE64 AWB_DEBUG_STORE_PASSWORD AWB_DEBUG_KEY_ALIAS AWB_DEBUG_KEY_PASSWORD; do
-            eval "val=\${$v:-}"
-            if [ -z "$val" ]; then
-              echo "::error::Missing secret/env: $v" >&2
-              missing=1
-            else
-              echo "OK: $v is set (redacted)"
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "::error::Fixed debug signing required for secondary-dev baseline APKs." >&2
+          export LC_ALL=C
+          mapfile -d '' -t tests < <(find test -type f -name '*_test.dart' -print0 | sort -z)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "::error::No Flutter tests discovered under ui/test" >&2
             exit 1
           fi
-          ks="${RUNNER_TEMP}/omnibot-debug.jks"
-          printf '%s' "${AWB_DEBUG_KEYSTORE_BASE64}" | base64 -d > "$ks"
-          test -s "$ks"
-          echo "AWB_DEBUG_KEYSTORE_FILE=$ks" >> "$GITHUB_ENV"
-          if command -v keytool >/dev/null 2>&1; then
-            keytool -list -v -keystore "$ks" -storepass "${AWB_DEBUG_STORE_PASSWORD}" 2>/dev/null \
-              | grep -E 'Alias name:|SHA256:' || true
+
+          partition=()
+          selected=()
+          for ((shard=0; shard<SHARD_COUNT; shard++)); do
+            for ((index=0; index<${#tests[@]}; index++)); do
+              if (( index % SHARD_COUNT == shard )); then
+                partition+=("${tests[index]}")
+                if (( shard == SHARD_INDEX )); then
+                  selected+=("${tests[index]}")
+                fi
+              fi
+            done
+          done
+          mapfile -t sorted_partition < <(printf '%s\n' "${partition[@]}" | sort)
+          for ((index=0; index<${#tests[@]}; index++)); do
+            if [[ "${tests[index]}" != "${sorted_partition[index]:-}" ]]; then
+              echo "::error::Flutter test partition has an omission or duplicate" >&2
+              exit 1
+            fi
+          done
+          if [[ ${#partition[@]} -ne ${#tests[@]} || ${#selected[@]} -eq 0 ]]; then
+            echo "::error::Invalid Flutter test shard cardinality" >&2
+            exit 1
           fi
+
+          manifest="${RUNNER_TEMP}/flutter-test-shard-${SHARD_INDEX}.txt"
+          {
+            echo "source_commit=${GITHUB_SHA}"
+            echo "shard=${SHARD_INDEX}/${SHARD_COUNT}"
+            echo "total_tests=${#tests[@]}"
+            echo "selected_tests=${#selected[@]}"
+            printf '%s\n' "${selected[@]}"
+          } | tee "$manifest"
+          flutter test --concurrency=4 "${selected[@]}"
+
+      - name: Upload shard manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-test-shard-${{ matrix.shard }}-manifest
+          path: ${{ runner.temp }}/flutter-test-shard-${{ matrix.shard }}.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  flutter-analyze:
+    name: Flutter analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Verify source commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ env.FLUTTER_VERSION }}-${{ hashFiles('ui/pubspec.lock') }}
+          restore-keys: ${{ runner.os }}-pub-${{ env.FLUTTER_VERSION }}-
+
+      - name: Analyze all Flutter sources
+        working-directory: ui
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter analyze --no-fatal-warnings --no-fatal-infos
+
+  android-gates:
+    name: Android ${{ matrix.gate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - gate: unit
+            gradle_task: ":app:testDevelopStandardDebugUnitTest"
+          - gate: lint
+            gradle_task: ":app:lintDevelopStandardDebug"
+          - gate: apk
+            gradle_task: ":app:assembleDevelopStandardDebug"
+    env:
+      GRADLE_OPTS: "-Xmx8g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Verify source commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -88,7 +202,7 @@ jobs:
         with:
           allow-checksums: ${{ env.ALLOWED_THIRD_PARTY_WRAPPER_SHA }}
 
-      - name: Set up Gradle
+      - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
           validate-wrappers: false
@@ -99,6 +213,13 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ env.FLUTTER_VERSION }}-${{ hashFiles('ui/pubspec.lock') }}
+          restore-keys: ${{ runner.os }}-pub-${{ env.FLUTTER_VERSION }}-
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -115,7 +236,7 @@ jobs:
       - name: Install Android NDK
         if: steps.cache-android-ndk.outputs.cache-hit != 'true'
         run: |
-          yes | sdkmanager --licenses >/dev/null
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "ndk;${{ env.NDK_VERSION }}"
 
       - name: Export Android NDK environment
@@ -127,53 +248,121 @@ jobs:
         working-directory: ui
         run: flutter pub get --enforce-lockfile
 
-      - name: Assemble develop standard debug (stable signing)
+      - name: Materialize fixed debug keystore
+        if: matrix.gate == 'apk'
+        shell: bash
         env:
-          AWB_DEBUG_KEYSTORE_FILE: ${{ env.AWB_DEBUG_KEYSTORE_FILE }}
-          AWB_DEBUG_STORE_PASSWORD: ${{ env.AWB_DEBUG_STORE_PASSWORD }}
-          AWB_DEBUG_KEY_ALIAS: ${{ env.AWB_DEBUG_KEY_ALIAS }}
-          AWB_DEBUG_KEY_PASSWORD: ${{ env.AWB_DEBUG_KEY_PASSWORD }}
-          # D8 mergeExtDex OOMs at project default 2g and sometimes at 6g on
-          # busy runners; pin both GRADLE_OPTS and org.gradle.jvmargs, and cap
-          # workers so dex merge does not fan out memory.
-          GRADLE_OPTS: "-Xmx8g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
+          AWB_DEBUG_KEYSTORE_BASE64: ${{ secrets.AWB_DEBUG_KEYSTORE_BASE64 }}
+          AWB_DEBUG_STORE_PASSWORD: ${{ secrets.AWB_DEBUG_STORE_PASSWORD }}
+          AWB_DEBUG_KEY_ALIAS: ${{ secrets.AWB_DEBUG_KEY_ALIAS }}
+          AWB_DEBUG_KEY_PASSWORD: ${{ secrets.AWB_DEBUG_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in AWB_DEBUG_KEYSTORE_BASE64 AWB_DEBUG_STORE_PASSWORD AWB_DEBUG_KEY_ALIAS AWB_DEBUG_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing fixed debug signing value: $name" >&2
+              exit 1
+            fi
+          done
+          keystore="${RUNNER_TEMP}/omnibot-debug.jks"
+          printf '%s' "$AWB_DEBUG_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          test -s "$keystore"
+          echo "AWB_DEBUG_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
+
+      - name: Run Android unit or lint gate
+        if: matrix.gate != 'apk'
         run: >-
           ./gradlew --no-daemon --build-cache --max-workers=2
           -Dorg.gradle.jvmargs="-Xmx8g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
-          :app:assembleDevelopStandardDebug
+          ${{ matrix.gradle_task }}
           -Ptarget=lib/main_standard.dart
 
-      - name: Collect APK + SHA256
+      - name: Assemble signed standard APK
+        if: matrix.gate == 'apk'
+        env:
+          AWB_DEBUG_STORE_PASSWORD: ${{ secrets.AWB_DEBUG_STORE_PASSWORD }}
+          AWB_DEBUG_KEY_ALIAS: ${{ secrets.AWB_DEBUG_KEY_ALIAS }}
+          AWB_DEBUG_KEY_PASSWORD: ${{ secrets.AWB_DEBUG_KEY_PASSWORD }}
+        run: >-
+          ./gradlew --no-daemon --build-cache --max-workers=2
+          -Dorg.gradle.jvmargs="-Xmx8g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
+          ${{ matrix.gradle_task }}
+          -Ptarget=lib/main_standard.dart
+
+      - name: Collect APK, hashes, certificate and commit manifest
+        if: matrix.gate == 'apk'
         shell: bash
+        env:
+          EXPECTED_CERT_SHA256: "6D79D352E68FC7E1956FE14C41B6AFFAD2A1403EB22AF9E76B4E213FA10244C6"
         run: |
           set -euo pipefail
-          out="/tmp/omnibot-baseline-apk"
+          out="${RUNNER_TEMP}/omnibot-baseline-apk"
           mkdir -p "$out"
-          mapfile -t apks < <(find app/build/outputs/apk -type f -name "*.apk" | sort)
-          if [[ ${#apks[@]} -eq 0 ]]; then
-            echo "No APK under app/build/outputs/apk" >&2
-            exit 1
-          fi
-          for apk in "${apks[@]}"; do
-            cp -f "$apk" "$out/"
-          done
-          (
-            cd "$out"
-            sha256sum *.apk | tee SHA256SUMS
-            ls -la
-          )
-          primary="$(ls -1 "$out"/*standard*.apk 2>/dev/null | head -1 || ls -1 "$out"/*.apk | head -1)"
-          cp -f "$primary" "$out/OpenOmniBot-standard-debug.apk"
-          sha256sum "$out/OpenOmniBot-standard-debug.apk" | tee -a "$out/SHA256SUMS"
-          # Expected cert fingerprint (Agent Workbench internal debug)
-          echo "EXPECTED_CERT_SHA256=6D79D352E68FC7E1956FE14C41B6AFFAD2A1403EB22AF9E76B4E213FA10244C6"
+          mapfile -t apks < <(find app/build/outputs/apk -type f -name '*.apk' | sort)
+          [[ ${#apks[@]} -gt 0 ]] || { echo "::error::No APK produced" >&2; exit 1; }
+          primary="$(printf '%s\n' "${apks[@]}" | grep -m1 'standard' || printf '%s\n' "${apks[@]}" | head -1)"
+          cp "$primary" "$out/OpenOmniBot-standard-debug.apk"
+          apk_sha="$(sha256sum "$out/OpenOmniBot-standard-debug.apk" | awk '{print toupper($1)}')"
+          apksigner_bin="$(command -v apksigner || find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          [[ -n "$apksigner_bin" ]] || { echo "::error::apksigner not found" >&2; exit 1; }
+          cert_sha="$("$apksigner_bin" verify --print-certs "$out/OpenOmniBot-standard-debug.apk" |
+            awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print toupper($2); exit}')"
+          [[ "$cert_sha" == "$EXPECTED_CERT_SHA256" ]] ||
+            { echo "::error::Unexpected APK certificate: $cert_sha" >&2; exit 1; }
+          (cd "$out" && sha256sum *.apk > SHA256SUMS)
+          {
+            echo "SOURCE_COMMIT=$GITHUB_SHA"
+            echo "SOURCE_REF=$GITHUB_REF"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+            echo "BUILD_VARIANT=developStandardDebug"
+            echo "FLUTTER_TARGET=lib/main_standard.dart"
+            echo "APK_SHA256=$apk_sha"
+            echo "CERT_SHA256=$cert_sha"
+            echo "EXPECTED_CERT_SHA256=$EXPECTED_CERT_SHA256"
+          } | tee "$out/BUILD-MANIFEST.txt"
 
-      - name: Upload APK artifact
+      - name: Upload Android reports
+        if: always() && matrix.gate != 'apk'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.gate }}-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload signed APK artifact
+        if: matrix.gate == 'apk'
         uses: actions/upload-artifact@v4
         with:
           name: omnibot-standard-debug-apk
           path: |
-            /tmp/omnibot-baseline-apk/*.apk
-            /tmp/omnibot-baseline-apk/SHA256SUMS
+            ${{ runner.temp }}/omnibot-baseline-apk/OpenOmniBot-standard-debug.apk
+            ${{ runner.temp }}/omnibot-baseline-apk/SHA256SUMS
+            ${{ runner.temp }}/omnibot-baseline-apk/BUILD-MANIFEST.txt
           if-no-files-found: error
           retention-days: 14
+
+  gate-summary:
+    name: Eight-way gate summary
+    if: always()
+    needs:
+      - flutter-tests
+      - flutter-analyze
+      - android-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every parallel gate
+        env:
+          FLUTTER_TESTS_RESULT: ${{ needs.flutter-tests.result }}
+          FLUTTER_ANALYZE_RESULT: ${{ needs.flutter-analyze.result }}
+          ANDROID_GATES_RESULT: ${{ needs.android-gates.result }}
+        run: |
+          set -euo pipefail
+          printf 'flutter-tests=%s\nflutter-analyze=%s\nandroid-gates=%s\n' \
+            "$FLUTTER_TESTS_RESULT" "$FLUTTER_ANALYZE_RESULT" "$ANDROID_GATES_RESULT"
+          [[ "$FLUTTER_TESTS_RESULT" == success ]]
+          [[ "$FLUTTER_ANALYZE_RESULT" == success ]]
+          [[ "$ANDROID_GATES_RESULT" == success ]]
