@@ -1,4 +1,4 @@
-# Secondary development gate: eight parallel executions from one source commit.
+# Secondary development gate: nine parallel executions from one source commit.
 name: Baseline Standard Debug
 
 on:
@@ -19,6 +19,8 @@ on:
       - "*.gradle*"
       - "gradle.properties"
       - "lint.xml"
+      - "docs/results/reports/scout-b20-perm.md"
+      - "docs/results/reports/impl-b25-perm.md"
       - ".github/workflows/baseline-standard-debug.yml"
 
 permissions:
@@ -35,6 +37,111 @@ env:
   ALLOWED_THIRD_PARTY_WRAPPER_SHA: "ee3739525a995bcb5601621a6e2daec1f183bbefc375743acc235cec33547e04"
 
 jobs:
+  source-policy:
+    name: Source policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Verify source policy and write manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_commit="$(git rev-parse HEAD)"
+          [[ "$source_commit" == "$GITHUB_SHA" ]] ||
+            { echo "::error::Checkout HEAD does not match GITHUB_SHA" >&2; exit 1; }
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] ||
+            { echo "::error::Checkout worktree is not clean" >&2; git status --short >&2; exit 1; }
+
+          required_files=(
+            "lint.xml"
+            "app/build.gradle.kts"
+            "app/src/main/res/values/strings.xml"
+            "app/src/main/res/values-en/strings.xml"
+            "docs/results/reports/scout-b20-perm.md"
+            "docs/results/reports/impl-b25-perm.md"
+          )
+          for path in "${required_files[@]}"; do
+            git ls-files --error-unmatch -- "$path" >/dev/null ||
+              { echo "::error::Required tracked file is missing: $path" >&2; exit 1; }
+          done
+
+          for module in assists accessibility; do
+            [[ -d "$module" ]] ||
+              { echo "::error::Required source directory is missing: $module/" >&2; exit 1; }
+            mapfile -d '' -t tracked_files < <(git ls-files -z -- "$module/")
+            [[ ${#tracked_files[@]} -gt 0 ]] ||
+              { echo "::error::No tracked files found under $module/" >&2; exit 1; }
+          done
+
+          mapfile -t application_ids < <(
+            sed -nE 's/^[[:space:]]*applicationId[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' \
+              app/build.gradle.kts
+          )
+          [[ ${#application_ids[@]} -eq 1 ]] ||
+            { echo "::error::Expected exactly one applicationId assignment" >&2; exit 1; }
+          [[ "${application_ids[0]}" == "cn.com.omnimind.bot" ]] ||
+            { echo "::error::applicationId drifted to ${application_ids[0]}" >&2; exit 1; }
+
+          python3 <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          expected = {
+              Path("app/src/main/res/values/strings.xml"): {
+                  "app_name": r"\u5c0f\u4e07",
+                  "omni_app_name": r"\u5c0f\u4e07",
+              },
+              Path("app/src/main/res/values-en/strings.xml"): {
+                  "app_name": "Omnibot",
+                  "omni_app_name": "Omnibot",
+              },
+          }
+          for path, names in expected.items():
+              values = {
+                  element.attrib.get("name"): element.text
+                  for element in ET.parse(path).getroot().findall("string")
+              }
+              for name, wanted in names.items():
+                  actual = values.get(name)
+                  if actual != wanted:
+                      raise SystemExit(
+                          f"::error::{path}:{name} brand drift: expected {wanted!r}, got {actual!r}"
+                      )
+          PY
+
+          manifest="${RUNNER_TEMP}/SOURCE-POLICY-MANIFEST.txt"
+          {
+            printf 'SOURCE_COMMIT=%s\n' "$source_commit"
+            printf 'SOURCE_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'APPLICATION_ID=%s\n' "${application_ids[0]}"
+            printf 'BRAND_DEFAULT=%s\n' '\u5c0f\u4e07'
+            printf 'BRAND_ENGLISH=%s\n' 'Omnibot'
+            for path in "${required_files[@]}"; do
+              printf 'TRACKED_FILE=%s\t%s\n' "$(git rev-parse "HEAD:$path")" "$path"
+            done
+            for module in assists accessibility; do
+              printf 'TRACKED_TREE=%s\t%s/\n' "$(git rev-parse "HEAD:$module")" "$module"
+            done
+          } | tee "$manifest"
+
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+
+      - name: Upload source policy manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-policy-manifest
+          path: ${{ runner.temp }}/SOURCE-POLICY-MANIFEST.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   flutter-tests:
     name: Flutter tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
@@ -236,7 +343,7 @@ jobs:
       - name: Install Android NDK
         if: steps.cache-android-ndk.outputs.cache-hit != 'true'
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null
           sdkmanager "ndk;${{ env.NDK_VERSION }}"
 
       - name: Export Android NDK environment
@@ -346,9 +453,10 @@ jobs:
           retention-days: 14
 
   gate-summary:
-    name: Eight-way gate summary
+    name: Nine-way gate summary
     if: always()
     needs:
+      - source-policy
       - flutter-tests
       - flutter-analyze
       - android-gates
@@ -356,13 +464,16 @@ jobs:
     steps:
       - name: Require every parallel gate
         env:
+          SOURCE_POLICY_RESULT: ${{ needs.source-policy.result }}
           FLUTTER_TESTS_RESULT: ${{ needs.flutter-tests.result }}
           FLUTTER_ANALYZE_RESULT: ${{ needs.flutter-analyze.result }}
           ANDROID_GATES_RESULT: ${{ needs.android-gates.result }}
         run: |
           set -euo pipefail
-          printf 'flutter-tests=%s\nflutter-analyze=%s\nandroid-gates=%s\n' \
-            "$FLUTTER_TESTS_RESULT" "$FLUTTER_ANALYZE_RESULT" "$ANDROID_GATES_RESULT"
+          printf 'source-policy=%s\nflutter-tests=%s\nflutter-analyze=%s\nandroid-gates=%s\n' \
+            "$SOURCE_POLICY_RESULT" "$FLUTTER_TESTS_RESULT" \
+            "$FLUTTER_ANALYZE_RESULT" "$ANDROID_GATES_RESULT"
+          [[ "$SOURCE_POLICY_RESULT" == success ]]
           [[ "$FLUTTER_TESTS_RESULT" == success ]]
           [[ "$FLUTTER_ANALYZE_RESULT" == success ]]
           [[ "$ANDROID_GATES_RESULT" == success ]]
