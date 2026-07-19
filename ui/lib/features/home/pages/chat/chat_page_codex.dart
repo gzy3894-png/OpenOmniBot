@@ -1407,8 +1407,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         ? roots.map((e) => e.toString()).join(',')
         : writableRoot;
     // Guard: never push empty roots for on-request workspace modes.
-    if ((mode == CodexPermissionMode.defaultMode ||
-            mode == CodexPermissionMode.autoReview) &&
+    if (mode == CodexPermissionMode.defaultMode &&
         (roots is! List || roots.isEmpty)) {
       debugPrint(
         '[Codex] B35 abort permission set: empty writableRoots for ${mode.name}',
@@ -3850,8 +3849,6 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     switch (mode) {
       case CodexPermissionMode.defaultMode:
         return LegacyTextLocalizer.isEnglish ? 'Default' : '默认';
-      case CodexPermissionMode.autoReview:
-        return LegacyTextLocalizer.isEnglish ? 'Auto review' : '自动审查';
       case CodexPermissionMode.fullAccess:
         return LegacyTextLocalizer.isEnglish ? 'Full access' : '完全访问';
     }
@@ -9414,31 +9411,25 @@ extension _CodexPermissionModePayload on CodexPermissionMode {
   String get approvalPolicy {
     return switch (this) {
       CodexPermissionMode.fullAccess => 'never',
-      CodexPermissionMode.defaultMode ||
-      CodexPermissionMode.autoReview => 'on-request',
+      CodexPermissionMode.defaultMode => 'on-request',
     };
   }
 
   String get approvalsReviewer {
-    return switch (this) {
-      // Schema ApprovalsReviewer: "user" | "auto_review" | "guardian_subagent".
-      // Product autoReview maps to auto_review (not guardian_subagent).
-      CodexPermissionMode.autoReview => 'auto_review',
-      CodexPermissionMode.defaultMode ||
-      CodexPermissionMode.fullAccess => 'user',
-    };
+    // Schema ApprovalsReviewer: "user" | "auto_review" | "guardian_subagent".
+    // Product menu no longer exposes auto_review; always user.
+    return 'user';
   }
 
   /// Policy type string for logs (camelCase SandboxPolicy.type).
   String get sandboxType {
     return switch (this) {
       CodexPermissionMode.fullAccess => 'dangerFullAccess',
-      CodexPermissionMode.defaultMode ||
-      CodexPermissionMode.autoReview => 'workspaceWrite',
+      CodexPermissionMode.defaultMode => 'workspaceWrite',
     };
   }
 
-  /// B20/B25: default + autoReview send explicit workspaceWrite (not null).
+  /// B20/B25: defaultMode sends explicit workspaceWrite (not null).
   /// B25: NEVER emit empty [writableRoots] — empty list overrides native
   /// cwd-rooted default and blocks exec / approval popups.
   Map<String, dynamic>? sandboxPolicy({required String writableRoot}) {
@@ -9449,8 +9440,7 @@ extension _CodexPermissionModePayload on CodexPermissionMode {
       CodexPermissionMode.fullAccess => const <String, dynamic>{
         'type': 'dangerFullAccess',
       },
-      CodexPermissionMode.defaultMode ||
-      CodexPermissionMode.autoReview => <String, dynamic>{
+      CodexPermissionMode.defaultMode => <String, dynamic>{
         'type': 'workspaceWrite',
         'writableRoots': <String>[root],
         'networkAccess': true,

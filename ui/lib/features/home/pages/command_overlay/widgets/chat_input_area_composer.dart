@@ -1362,7 +1362,6 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     return switch (mode) {
       CodexPermissionMode.defaultMode =>
         english ? 'Request approval' : '请求审批',
-      CodexPermissionMode.autoReview => english ? 'Auto review' : '自动审',
       CodexPermissionMode.fullAccess => english ? 'Full access' : '全放行',
     };
   }
@@ -1370,7 +1369,6 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
   String _codexPermissionIconAsset(CodexPermissionMode mode) {
     return switch (mode) {
       CodexPermissionMode.defaultMode => _kCodexPermissionDefaultIconAsset,
-      CodexPermissionMode.autoReview => _kCodexPermissionAutoReviewIconAsset,
       CodexPermissionMode.fullAccess => _kCodexPermissionFullAccessIconAsset,
     };
   }

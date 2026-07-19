@@ -34,12 +34,12 @@ const String _kLucideCommandSvg =
 
 const String _kCodexPermissionDefaultIconAsset =
     'assets/home/chat/permission_hand.svg';
-const String _kCodexPermissionAutoReviewIconAsset =
-    'assets/home/chat/codex.svg';
 const String _kCodexPermissionFullAccessIconAsset =
     'assets/home/chat/permission_shield_alert.svg';
 
-enum CodexPermissionMode { defaultMode, autoReview, fullAccess }
+/// Product permission menu: request approval + full access only.
+/// Auto-review removed (unstable / unused on device).
+enum CodexPermissionMode { defaultMode, fullAccess }
 
 typedef CodexRunSettingsChanged =
     FutureOr<void> Function({String? modelId, String? reasoningEffort});

@@ -164,7 +164,7 @@ void main() {
       find.byKey(
         const ValueKey('chat-input-codex-permission-option-autoReview'),
       ),
-      findsOneWidget,
+      findsNothing,
     );
     expect(
       find.byKey(
@@ -186,13 +186,13 @@ void main() {
 
     await tester.tap(
       find.byKey(
-        const ValueKey('chat-input-codex-permission-option-autoReview'),
+        const ValueKey('chat-input-codex-permission-option-fullAccess'),
       ),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
 
-    expect(selected, CodexPermissionMode.autoReview);
+    expect(selected, CodexPermissionMode.fullAccess);
   });
 
   testWidgets('codex run settings selector selects model and effort', (
