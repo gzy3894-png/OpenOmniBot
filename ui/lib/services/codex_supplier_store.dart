@@ -718,7 +718,7 @@ class CodexSupplierStore {
 
   static Future<CodexSupplierRecord> mergeFetchedModels({
     required String supplierId,
-    required List<String> remoteModelIds, {
+    required List<String> remoteModelIds,
     bool defaultEnableNew = true,
   }) async {
     await ensureMigrated();
@@ -819,7 +819,7 @@ class CodexSupplierStore {
 
   static Future<CodexSupplierRecord> addManualModel({
     required String supplierId,
-    required String modelId, {
+    required String modelId,
     bool enabled = true,
   }) async {
     final id = modelId.trim();
