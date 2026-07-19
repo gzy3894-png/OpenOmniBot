@@ -720,9 +720,9 @@ void main() {
     );
   });
 
-  testWidgets(
+  test(
     'terminal Codex persistence merges dirty flags and flushes once',
-    (tester) async {
+    () async {
       const conversationId = 2003;
       final runtime = coordinator.ensureRuntime(
         conversationId: conversationId,
@@ -765,7 +765,6 @@ void main() {
         conversationId: conversationId,
         mode: kChatRuntimeModeCodex,
       );
-      await tester.pump(const Duration(milliseconds: 400));
 
       final replaceCalls = recordedMethodCalls
           .where((call) => call.method == 'replaceConversationMessages')
@@ -784,7 +783,7 @@ void main() {
     'coalesces a streaming Codex burst to one UI invalidation per frame',
     (tester) async {
       const conversationId = 2002;
-      final runtime = coordinator.ensureRuntime(
+      final runtime = coordinator.ensureEphemeralRuntime(
         conversationId: conversationId,
         mode: kChatRuntimeModeCodex,
       );

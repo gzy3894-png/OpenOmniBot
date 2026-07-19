@@ -1844,6 +1844,8 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   /// Refreshes the active Goal text for the current thread.
   Future<void> _refreshCodexActiveGoalText({bool force = false});
 
+  Future<void> _executeCodexClearGoalCommand();
+
   Future<void> _activateCodexPlanMode({
     bool persistOnly = false,
     bool dismissPanel = true,
