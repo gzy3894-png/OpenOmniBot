@@ -766,6 +766,67 @@ void main() {
     );
   });
 
+  test('CodexLocalConfig.webSearchMode parses and effective defaults to cached',
+      () {
+    final empty = CodexLocalConfig.fromMap(const {});
+    expect(empty.webSearchMode, isNull);
+    expect(empty.effectiveWebSearchMode, 'cached');
+
+    expect(
+      CodexLocalConfig.fromMap(const {'webSearchMode': 'live'}).webSearchMode,
+      'live',
+    );
+    expect(
+      CodexLocalConfig.fromMap(const {'web_search': 'disabled'}).webSearchMode,
+      'disabled',
+    );
+    expect(
+      CodexLocalConfig.fromMap(const {'webSearchMode': 'CACHE'}).webSearchMode,
+      'cached',
+    );
+    expect(
+      CodexLocalConfig.fromMap(const {'webSearchMode': 'unknown'}).webSearchMode,
+      isNull,
+    );
+    expect(
+      CodexLocalConfig.fromMap(const {'webSearchMode': 'indexed'}).webSearchMode,
+      'indexed',
+    );
+  });
+
+  test('writeLocalConfig sends webSearchMode only when provided', () async {
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return <String, dynamic>{
+        'baseUrl': 'https://example.invalid/v1',
+        'model': 'gpt-test',
+        'apiKey': 'sk-test',
+        'webSearchMode': call.arguments is Map
+            ? (call.arguments as Map)['webSearchMode']
+            : null,
+      };
+    });
+
+    await CodexAppServerService.writeLocalConfig(
+      baseUrl: 'https://example.invalid/v1',
+      model: 'gpt-test',
+      apiKey: 'sk-test',
+    );
+    expect(captured?.method, 'writeLocalConfig');
+    final argsWithout = Map<String, dynamic>.from(captured!.arguments as Map);
+    expect(argsWithout.containsKey('webSearchMode'), isFalse);
+
+    await CodexAppServerService.writeLocalConfig(
+      baseUrl: 'https://example.invalid/v1',
+      model: 'gpt-test',
+      apiKey: 'sk-test',
+      webSearchMode: 'live',
+    );
+    final argsWith = Map<String, dynamic>.from(captured!.arguments as Map);
+    expect(argsWith['webSearchMode'], 'live');
+  });
+
   test('writeLocalConfig sends contextTokenThreshold only when provided',
       () async {
     MethodCall? captured;

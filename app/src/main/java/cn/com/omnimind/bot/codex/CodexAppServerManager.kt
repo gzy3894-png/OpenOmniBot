@@ -767,6 +767,9 @@ class CodexAppServerManager private constructor(
         // B27: expose features.auto_compaction for settings toggle.
         val autoCompaction = extractTomlBoolean(featuresBody, "auto_compaction")
             ?: extractTomlBoolean(configToml, "auto_compaction")
+        // P0/P1: expose top-level web_search (null when omitted / Codex default Cached).
+        val webSearchMode =
+            normalizeCodexWebSearchMode(extractTomlString(configToml, "web_search"))
         buildCodexLocalConfigPayload(
             model = extractTomlString(configToml, "model").orEmpty(),
             baseUrl = extractCodexInternalProviderBaseUrl(configToml).orEmpty(),
@@ -777,6 +780,7 @@ class CodexAppServerManager private constructor(
             fastMode = fastMode,
             autoCompaction = autoCompaction,
             contextTokenThreshold = contextTokenThreshold,
+            webSearchMode = webSearchMode,
             remoteConfig = remoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -817,6 +821,10 @@ class CodexAppServerManager private constructor(
             args.intValue("contextTokenThreshold")
                 ?: args.intValue("omnimind_context_token_threshold")
                 ?: args.intValue("context_token_threshold")
+        // P0/P1: only force web_search when caller provides a known mode; otherwise preserve.
+        val requestedWebSearchMode = normalizeCodexWebSearchMode(
+            args.stringValue("webSearchMode") ?: args.stringValue("web_search")
+        )
         val serviceTierArgPresent =
             args.containsKey("serviceTier") || args.containsKey("service_tier")
         val remoteConfig = CodexRemoteBridgeConfig(
@@ -831,8 +839,8 @@ class CodexAppServerManager private constructor(
         }
 
         // B36/B37: compare hard identity before write so soft feature toggles
-        // (fast_mode / auto_compaction / service_tier / threshold) can skip
-        // session kill — avoids Fast path "thread not found" + reconnect heat.
+        // (fast_mode / auto_compaction / service_tier / threshold / web_search)
+        // can skip session kill — avoids Fast path "thread not found" + reconnect heat.
         // B37: empty/failed reads are unknown, not empty identity (shell race).
         val previousRemoteConfig = remoteConfigStore.read()
         val savedRemoteConfig = remoteConfigStore.write(remoteConfig)
@@ -884,6 +892,10 @@ class CodexAppServerManager private constructor(
         val contextTokenThreshold =
             (requestedContextTokenThreshold ?: existingContextTokenThreshold)
                 ?.let(::clampContextTokenThreshold)
+        // P0/P1 S-Default-A: requested mode wins; else preserve existing; both null → omit.
+        val existingWebSearchMode =
+            normalizeCodexWebSearchMode(extractTomlString(existingToml, "web_search"))
+        val webSearchMode = requestedWebSearchMode ?: existingWebSearchMode
         // Fast off must never persist service_tier=fast; other tiers stay independent.
         val effectiveServiceTier = when {
             applyCommonDefaultsMigration && !serviceTierArgPresent ->
@@ -901,6 +913,7 @@ class CodexAppServerManager private constructor(
                 fastMode = fastMode,
                 autoCompaction = autoCompaction,
                 contextTokenThreshold = contextTokenThreshold,
+                webSearchMode = webSearchMode,
                 existingFeatures = existingFeatures,
                 existingToml = existingToml
             )
@@ -1019,7 +1032,8 @@ class CodexAppServerManager private constructor(
         }
         // B36/B37: only kill session when hard identity changes (provider/model/key/remote).
         // Soft toggles (fast_mode, auto_compaction, service_tier, threshold, effort,
-        // defaultGoal) keep the live session so Fast no longer yields thread-not-found.
+        // defaultGoal, web_search) keep the live session so Fast no longer yields
+        // thread-not-found.
         // B37 harden: blank readExisting* results are unknown — do not treat as empty
         // identity or first bootstrap while a session is live (shell race/fail).
         val existingTomlKnown = existingToml.isNotBlank()
@@ -1105,6 +1119,7 @@ class CodexAppServerManager private constructor(
             fastMode = fastMode,
             autoCompaction = autoCompaction,
             contextTokenThreshold = contextTokenThreshold,
+            webSearchMode = webSearchMode,
             remoteConfig = savedRemoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
@@ -2371,6 +2386,7 @@ private fun buildCodexLocalConfigPayload(
     fastMode: Boolean = false,
     autoCompaction: Boolean? = null,
     contextTokenThreshold: Int? = null,
+    webSearchMode: String? = null,
     remoteConfig: CodexRemoteBridgeConfig,
     runtime: String
 ): Map<String, Any?> {
@@ -2386,6 +2402,7 @@ private fun buildCodexLocalConfigPayload(
         "fastMode" to fastMode,
         "autoCompaction" to autoCompaction,
         "contextTokenThreshold" to contextTokenThreshold,
+        "webSearchMode" to webSearchMode,
         "remoteEnabled" to remoteConfig.enabled,
         "remoteBridgeUrl" to remoteConfig.bridgeUrl,
         "remoteBridgeToken" to remoteConfig.authToken,
@@ -2408,6 +2425,9 @@ internal fun migrateCodexCommonDefaultsToml(existingToml: String): String {
     if (model.isBlank() || baseUrl.isBlank()) {
         return existingToml
     }
+    // Do not force web_search; preserve existing when present (S-Default-A omit otherwise).
+    val existingWebSearch =
+        normalizeCodexWebSearchMode(extractTomlString(existingToml, "web_search"))
     return buildCodexConfigToml(
         baseUrl = baseUrl,
         model = model,
@@ -2421,6 +2441,7 @@ internal fun migrateCodexCommonDefaultsToml(existingToml: String): String {
         autoCompaction = true,
         contextTokenThreshold =
             extractTomlInt(existingToml, "omnimind_context_token_threshold"),
+        webSearchMode = existingWebSearch,
         existingFeatures =
             extractTomlTableEntries(existingToml, "features"),
         existingToml = existingToml,
@@ -2442,6 +2463,9 @@ internal fun extractCodexInternalProviderBaseUrl(source: String): String? {
  * (auto_compaction/hooks/goals/...) survive. fast_mode is always written as a
  * boolean — never "deleted to mean off". auto_compaction is written only when
  * the caller provides an explicit value (or an existing value is preserved).
+ * web_search is written only when [webSearchMode] normalizes to a known mode
+ * (S-Default-A: null omits so Codex defaults to Cached). Callers that need
+ * preserve must resolve requested ?: existing before passing.
  */
 internal fun buildCodexConfigToml(
     baseUrl: String,
@@ -2452,6 +2476,7 @@ internal fun buildCodexConfigToml(
     fastMode: Boolean = false,
     autoCompaction: Boolean? = null,
     contextTokenThreshold: Int? = null,
+    webSearchMode: String? = null,
     existingFeatures: Map<String, String> = emptyMap(),
     existingToml: String = ""
 ): String {
@@ -2482,6 +2507,11 @@ internal fun buildCodexConfigToml(
     // B30: soft OmniMind context threshold for the app top bar; stock Codex ignores it.
     if (contextTokenThreshold != null) {
         lines += "omnimind_context_token_threshold = ${clampContextTokenThreshold(contextTokenThreshold)}"
+    }
+    // P0/P1: top-level web_search; omit when null (Codex Cached default).
+    val normalizedWebSearch = normalizeCodexWebSearchMode(webSearchMode)
+    if (normalizedWebSearch != null) {
+        lines += "web_search = ${tomlString(normalizedWebSearch)}"
     }
     // Preserve unmanaged top-level scalar keys from the previous config so a
     // local write does not silently drop approvals_reviewer / sandbox_mode / etc.
@@ -2594,6 +2624,19 @@ internal fun normalizeCodexServiceTier(raw: String?): String? {
     return when (normalized) {
         "fast", "priority", "true", "1", "on" -> "fast"
         else -> normalized
+    }
+}
+
+/** Normalize product web_search mode. Returns null for blank/unknown. */
+internal fun normalizeCodexWebSearchMode(raw: String?): String? {
+    val n = raw?.trim()?.lowercase().orEmpty()
+    if (n.isEmpty() || n == "default" || n == "auto") return null
+    return when (n) {
+        "cached", "cache" -> "cached"
+        "live", "live_internet", "request" -> "live"
+        "disabled", "off", "false", "none" -> "disabled"
+        "indexed", "index" -> "indexed" // allow pass-through
+        else -> null
     }
 }
 
@@ -2723,6 +2766,7 @@ private val CODEX_MANAGED_TOP_LEVEL_KEYS = setOf(
     "service_tier",
     "omnimind_default_goal",
     "omnimind_context_token_threshold",
+    "web_search",
     "fast_mode"
 )
 

@@ -140,12 +140,15 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     required String remoteBridgeToken,
     required String remoteCwd,
     required bool remoteEnabled,
+    String? webSearchMode,
   }) {
     return [
       remoteEnabled ? 'remote' : 'local',
       remoteBridgeUrl.trim(),
       remoteBridgeToken.trim(),
       remoteCwd.trim(),
+      // Null stays empty so unset ≠ explicit "cached" until user picks.
+      webSearchMode?.trim().toLowerCase() ?? '',
     ].join('\n');
   }
 
@@ -155,7 +158,32 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       remoteBridgeToken: _bridgeTokenController.text,
       remoteCwd: _bridgeCwdController.text,
       remoteEnabled: _remoteEnabled,
+      webSearchMode: _localConfig?.webSearchMode,
     );
+  }
+
+  bool get _showWebSearchProviderHint {
+    final base = _localConfig?.baseUrl.trim().toLowerCase() ?? '';
+    if (base.isEmpty) return false;
+    return !base.contains('api.openai.com');
+  }
+
+  void _setWebSearchMode(String mode) {
+    final current = _localConfig;
+    if (current == null || _isSaving) return;
+    final normalized = mode.trim().toLowerCase();
+    if (normalized.isEmpty) return;
+    final existing = current.webSearchMode?.trim().toLowerCase();
+    // Null + pick "cached" still writes explicitly so conf is set.
+    if (existing == normalized) return;
+    setState(() {
+      _localConfig = current.copyWith(webSearchMode: normalized);
+      _error = null;
+      _status = _localeText(zh: '即将自动保存...', en: 'Autosave pending...');
+    });
+    if (_hasCompleteInput && _currentSignature() != _lastSavedSignature) {
+      _scheduleAutoSave(delay: const Duration(milliseconds: 300));
+    }
   }
 
   bool get _hasAnyRemoteInput =>
@@ -334,6 +362,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         fastMode: current.fastMode,
         autoCompaction: current.autoCompaction,
         contextTokenThreshold: current.contextTokenThreshold,
+        // Omit when null so native preserves / S-Default-A keeps key absent.
+        webSearchMode: current.webSearchMode,
         modelReasoningEffort: current.modelReasoningEffort,
         remoteEnabled: _remoteEnabled,
         remoteBridgeUrl: _bridgeUrlController.text.trim(),
@@ -346,6 +376,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         remoteBridgeToken: saved.remoteBridgeToken,
         remoteCwd: saved.remoteCwd,
         remoteEnabled: saved.remoteEnabled,
+        webSearchMode: saved.webSearchMode,
       );
       if (_currentSignature() == savingSignature) {
         _syncControllers(saved);
@@ -686,6 +717,143 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     return _buildSimpleSwitch(
       value: _remoteEnabled,
       onChanged: _setRemoteEnabled,
+    );
+  }
+
+  Widget _buildWebSearchModeChip({
+    required String mode,
+    required String label,
+    required Key key,
+  }) {
+    final selected =
+        (_localConfig?.effectiveWebSearchMode ?? 'cached') == mode;
+    final enabled = !_isSaving && _localConfig != null;
+    final palette = context.omniPalette;
+    return FilterChip(
+      key: key,
+      label: Text(
+        label,
+        style: TextStyle(
+          color: selected ? palette.accentPrimary : _primaryTextColor,
+          fontSize: 12,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+          fontFamily: 'PingFang SC',
+        ),
+      ),
+      selected: selected,
+      showCheckmark: false,
+      onSelected: enabled ? (_) => _setWebSearchMode(mode) : null,
+      selectedColor: palette.accentPrimary.withValues(alpha: 0.14),
+      backgroundColor: _mutedSurfaceColor,
+      side: BorderSide(
+        color: selected ? palette.accentPrimary : Colors.transparent,
+      ),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
+  Widget _buildWebSearchSection() {
+    final selected = _localConfig?.effectiveWebSearchMode ?? 'cached';
+    final cachedLabel = (_localConfig?.webSearchMode == null)
+        ? _localeText(zh: '缓存（默认）', en: 'Cached (default)')
+        : _localeText(zh: '缓存', en: 'Cached');
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+      decoration: BoxDecoration(
+        color: _cardColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _localeText(zh: '网络搜索', en: 'Web search'),
+            style: TextStyle(
+              color: _primaryTextColor,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'PingFang SC',
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _mutedSurfaceColor,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              _localeText(
+                zh:
+                    '说明：Codex 没有内置 fetch 工具。web_search 是服务端 hosted 能力，第三方供应商常无效；可用 shell（curl）或后续 MCP 桥。',
+                en:
+                    'Codex has no built-in fetch. web_search is hosted server-side and often unavailable on third-party providers; use shell (curl) or a future MCP bridge.',
+              ),
+              style: TextStyle(
+                color: _secondaryTextColor,
+                fontSize: 12,
+                height: 1.45,
+                fontFamily: 'PingFang SC',
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildWebSearchModeChip(
+                key: const Key('codex-config-web-search-disabled'),
+                mode: 'disabled',
+                label: _localeText(zh: '关闭', en: 'Disabled'),
+              ),
+              _buildWebSearchModeChip(
+                key: const Key('codex-config-web-search-cached'),
+                mode: 'cached',
+                label: cachedLabel,
+              ),
+              _buildWebSearchModeChip(
+                key: const Key('codex-config-web-search-live'),
+                mode: 'live',
+                label: _localeText(zh: '实时', en: 'Live'),
+              ),
+            ],
+          ),
+          if (_showWebSearchProviderHint) ...[
+            const SizedBox(height: 10),
+            Text(
+              _localeText(
+                zh: '当前 base_url 可能非 OpenAI 官方，hosted 搜索常无效。',
+                en:
+                    'This base_url may not support hosted web_search.',
+              ),
+              style: TextStyle(
+                color: _tertiaryTextColor,
+                fontSize: 11.5,
+                height: 1.4,
+                fontFamily: 'PingFang SC',
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            _localeText(
+              zh: '当前：${selected == 'disabled' ? '关闭' : (selected == 'live' ? '实时' : '缓存')}',
+              en:
+                  'Current: ${selected == 'disabled' ? 'disabled' : (selected == 'live' ? 'live' : 'cached')}',
+            ),
+            style: TextStyle(
+              color: _tertiaryTextColor,
+              fontSize: 11.5,
+              fontFamily: 'PingFang SC',
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1079,6 +1247,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                       ],
                     ),
             ),
+            if (!_isLoading) _buildWebSearchSection(),
           ],
         ),
       ),

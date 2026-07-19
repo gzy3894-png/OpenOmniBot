@@ -603,6 +603,90 @@ class CodexAppServerProtocolPayloadTest {
     }
 
     @Test
+    fun normalizeCodexWebSearchModeMapsAliasesAndRejectsUnknown() {
+        assertNull(normalizeCodexWebSearchMode(null))
+        assertNull(normalizeCodexWebSearchMode(""))
+        assertNull(normalizeCodexWebSearchMode("  "))
+        assertNull(normalizeCodexWebSearchMode("default"))
+        assertNull(normalizeCodexWebSearchMode("auto"))
+        assertNull(normalizeCodexWebSearchMode("unknown-mode"))
+        assertEquals("cached", normalizeCodexWebSearchMode("cached"))
+        assertEquals("cached", normalizeCodexWebSearchMode("Cache"))
+        assertEquals("live", normalizeCodexWebSearchMode("live"))
+        assertEquals("live", normalizeCodexWebSearchMode("live_internet"))
+        assertEquals("live", normalizeCodexWebSearchMode("request"))
+        assertEquals("disabled", normalizeCodexWebSearchMode("disabled"))
+        assertEquals("disabled", normalizeCodexWebSearchMode("off"))
+        assertEquals("disabled", normalizeCodexWebSearchMode("false"))
+        assertEquals("disabled", normalizeCodexWebSearchMode("none"))
+        assertEquals("indexed", normalizeCodexWebSearchMode("indexed"))
+        assertEquals("indexed", normalizeCodexWebSearchMode("index"))
+    }
+
+    @Test
+    fun buildCodexConfigTomlWritesWebSearchWhenProvided() {
+        for (mode in listOf("live", "cached", "disabled")) {
+            val toml = buildCodexConfigToml(
+                baseUrl = "https://example.test/v1",
+                model = "gpt-test",
+                webSearchMode = mode,
+            )
+            assertTrue(toml.contains("web_search = \"$mode\""))
+            assertTrue(Regex("""(?m)^\s*web_search\s*=\s*"$mode"\s*$""").containsMatchIn(toml))
+        }
+        val aliasLive = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            webSearchMode = "request",
+        )
+        assertTrue(aliasLive.contains("web_search = \"live\""))
+    }
+
+    @Test
+    fun buildCodexConfigTomlOmitsWebSearchWhenNull() {
+        val toml = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-test",
+            webSearchMode = null,
+        )
+        assertEquals(false, toml.contains("web_search"))
+    }
+
+    @Test
+    fun buildCodexConfigTomlPreservesWebSearchFromExistingViaResolvedParam() {
+        // Callers resolve requested ?: existing before build; managed key is not
+        // re-emitted from preserved top-level when the resolved param is null.
+        val existing = """
+            model = "old"
+            web_search = "live"
+            approval_policy = "never"
+
+            [features]
+            fast_mode = false
+        """.trimIndent()
+        // writeLocalConfig resolve: requestedWebSearchMode ?: existingWebSearchMode
+        val resolvedFromExisting = normalizeCodexWebSearchMode("live")
+        val preserved = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-new",
+            webSearchMode = resolvedFromExisting,
+            existingToml = existing,
+        )
+        assertTrue(preserved.contains("web_search = \"live\""))
+        assertTrue(preserved.contains("approval_policy = \"never\"") || preserved.contains("approval_policy = never"))
+        // Only one web_search assignment (managed, not double-preserved).
+        assertEquals(1, Regex("""(?m)^\s*web_search\s*=""").findAll(preserved).count())
+
+        val droppedWhenUnresolved = buildCodexConfigToml(
+            baseUrl = "https://example.test/v1",
+            model = "gpt-new",
+            webSearchMode = null,
+            existingToml = existing,
+        )
+        assertEquals(false, droppedWhenUnresolved.contains("web_search"))
+    }
+
+    @Test
     fun extractTomlTableBodyStopsAtNextHeader() {
         val source = """
             [features]

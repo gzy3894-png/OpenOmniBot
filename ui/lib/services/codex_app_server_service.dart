@@ -105,6 +105,9 @@ class CodexLocalConfig {
     /// Mirror of top-level `omnimind_context_token_threshold`. Null means missing
     /// (UI may default to 128000).
     this.contextTokenThreshold,
+    /// Top-level config.toml `web_search`: cached|live|disabled. Null = unset
+    /// (Codex default Cached).
+    this.webSearchMode,
     this.modelReasoningEffort = '',
     this.defaultGoal = '',
     this.remoteEnabled = false,
@@ -130,6 +133,9 @@ class CodexLocalConfig {
 
   /// Top-level `omnimind_context_token_threshold`. Null when absent from conf.
   final int? contextTokenThreshold;
+
+  /// Top-level `web_search`: cached|live|disabled|indexed. Null when unset.
+  final String? webSearchMode;
   final String modelReasoningEffort;
   final String defaultGoal;
   final bool remoteEnabled;
@@ -152,6 +158,13 @@ class CodexLocalConfig {
   /// Auto compaction UI default: on when key is missing (Codex-ish default).
   bool get isAutoCompactionEnabled => autoCompaction ?? true;
 
+  /// UI: treat null/empty as cached default (S-Default-A).
+  String get effectiveWebSearchMode {
+    final m = webSearchMode?.trim().toLowerCase();
+    if (m == null || m.isEmpty) return 'cached';
+    return m;
+  }
+
   CodexLocalConfig copyWith({
     String? baseUrl,
     String? model,
@@ -162,6 +175,7 @@ class CodexLocalConfig {
     bool? fastMode,
     bool? autoCompaction,
     int? contextTokenThreshold,
+    String? webSearchMode,
     String? modelReasoningEffort,
     String? defaultGoal,
     bool? remoteEnabled,
@@ -182,6 +196,7 @@ class CodexLocalConfig {
       autoCompaction: autoCompaction ?? this.autoCompaction,
       contextTokenThreshold:
           contextTokenThreshold ?? this.contextTokenThreshold,
+      webSearchMode: webSearchMode ?? this.webSearchMode,
       modelReasoningEffort:
           modelReasoningEffort ?? this.modelReasoningEffort,
       defaultGoal: defaultGoal ?? this.defaultGoal,
@@ -210,6 +225,9 @@ class CodexLocalConfig {
       contextTokenThreshold: _intOrNull(source['contextTokenThreshold']) ??
           _intOrNull(source['omnimind_context_token_threshold']) ??
           _intOrNull(source['context_token_threshold']),
+      webSearchMode: _normalizeWebSearchMode(
+        source['webSearchMode'] ?? source['web_search'],
+      ),
       modelReasoningEffort:
           _stringOrNull(source['modelReasoningEffort']) ?? '',
       defaultGoal: _stringOrNull(source['defaultGoal']) ?? '',
@@ -220,6 +238,31 @@ class CodexLocalConfig {
       remoteConfigured: source['remoteConfigured'] == true,
       runtime: _stringOrNull(source['runtime']),
     );
+  }
+
+  /// Empty → null; allow cached|live|disabled|indexed (lowercase + aliases).
+  static String? _normalizeWebSearchMode(dynamic value) {
+    final raw = _stringOrNull(value)?.trim().toLowerCase();
+    if (raw == null || raw.isEmpty) return null;
+    switch (raw) {
+      case 'cached':
+      case 'cache':
+        return 'cached';
+      case 'live':
+      case 'live_internet':
+      case 'request':
+        return 'live';
+      case 'disabled':
+      case 'off':
+      case 'false':
+      case 'none':
+        return 'disabled';
+      case 'indexed':
+      case 'index':
+        return 'indexed';
+      default:
+        return null;
+    }
   }
 }
 
@@ -1018,6 +1061,10 @@ class CodexAppServerService {
   /// [contextTokenThreshold] is optional. When provided, writes top-level
   /// `omnimind_context_token_threshold = <n>`. When omitted (null), native
   /// preserves the existing key.
+  ///
+  /// [webSearchMode] is optional. When provided, writes top-level
+  /// `web_search` (cached|live|disabled). When omitted (null), native
+  /// preserves the existing key.
   static Future<CodexLocalConfig> writeLocalConfig({
     required String baseUrl,
     required String model,
@@ -1027,6 +1074,7 @@ class CodexAppServerService {
     bool? fastMode,
     bool? autoCompaction,
     int? contextTokenThreshold,
+    String? webSearchMode,
     String modelReasoningEffort = '',
     String? defaultGoal,
     bool remoteEnabled = false,
@@ -1048,6 +1096,7 @@ class CodexAppServerService {
       if (autoCompaction != null) 'autoCompaction': autoCompaction,
       if (contextTokenThreshold != null)
         'contextTokenThreshold': contextTokenThreshold,
+      if (webSearchMode != null) 'webSearchMode': webSearchMode.trim(),
       'modelReasoningEffort': modelReasoningEffort.trim(),
       if (defaultGoal != null) 'defaultGoal': defaultGoal.trim(),
       'remoteEnabled': remoteEnabled,
@@ -1233,6 +1282,7 @@ class CodexAppServerService {
       fastMode: config.fastMode,
       autoCompaction: config.autoCompaction,
       contextTokenThreshold: config.contextTokenThreshold,
+      webSearchMode: config.webSearchMode,
       modelReasoningEffort: config.modelReasoningEffort,
       remoteEnabled: config.remoteEnabled,
       remoteBridgeUrl: config.remoteBridgeUrl,
