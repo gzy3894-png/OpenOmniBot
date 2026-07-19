@@ -8,6 +8,8 @@ import 'package:ui/models/chat_message_model.dart';
 import 'package:ui/services/codex_event_reducer.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late CodexEventReducer reducer;
   late ChatConversationRuntimeState runtime;
 
