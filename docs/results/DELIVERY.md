@@ -1,18 +1,37 @@
 # 当前交付单
 
-> 更新：2026-07-18 · 当前 hardening 候选 **APK_STAGED**
-> 旧 B38 APK/日志证据集：**DEVICE_PARTIAL**；不得拿旧 GHA/APK 给当前候选提级
-> **B38 真源：** `docs/results/PLAN-2026-07-18-b38-models-api-and-regressions.md`  
-> **唯一实时账本：** `docs/results/EXEC-2026-07-18-b38-approval-models.md`
-> **旧交接：** `docs/results/HANDOFF-2026-07-18-b38-approval-models.md`（**SUPERSEDED**）
-> **B37 真源：** `PLAN-2026-07-17-b37-stale-thread-settings.md` · EXEC `EXEC-2026-07-17-b37-stale-thread.md`  
-> **主线程只调度/验收** · ≥8 并发工作线 · push **仅 mine** · 最终九路远端门禁 · 禁本机编译测试
+> 更新：2026-07-19 · 当前候选 **Codex 供应商独立化 · APK_STAGED**
+> 真源：`PLAN-2026-07-19-codex-supplier-isolation.md` · 账本：`EXEC-2026-07-19-codex-supplier-isolation.md`
+> 旧 B38 hardening / 历史 APK：**不得**冒充本 HEAD 提级
+> **主线程只调度/验收** · push **仅 mine** · 九路远端门禁 · 禁本机编译测试
 > 状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
-> 当前源码整合基线：`dad70e8f2dd00238c7a85c68a3e25235d7885ba0`；本机未编译、未测试，同 HEAD 九路远端门禁 `#29656072103` **SUCCESS（9/9 + summary）**，签名 APK 已 stage，设备矩阵待测。
+> 当前 HEAD：`ef757a0aa91ffaa1f60458a0530fb58a65638537` · GHA `#29684114544` SUCCESS · APK staged · S1–S8 待真机
 
 ---
 
-## 0. 当前波 · B38 hardening（APK_STAGED）
+## 0. 当前波 · Codex 供应商独立化（APK_STAGED）
+
+| 字段 | 值 |
+|------|-----|
+| 状态 | **APK_STAGED**（REMOTE_VERIFIED 已闭合；真机未跑） |
+| final HEAD | `ef757a0aa91ffaa1f60458a0530fb58a65638537` |
+| 分支 / fork | `secondary/s1-b38-hardening` · `gzy3894-png/OpenOmniBot` · push **仅 mine** |
+| GHA | `#29684114544` · [Baseline Standard Debug](https://github.com/gzy3894-png/OpenOmniBot/actions/runs/29684114544) · **SUCCESS 9/9** |
+| APK artifact | `omnibot-standard-debug-apk` · id `8441631420` |
+| APK sha256 | `cf0d0a5ec75264bc90b50b1b4d36f8730f864ad4073403e6fd2704e6f7ad99ad` |
+| cert sha256 | `6d79d352e68fc7e1956fe14c41b6affad2a1403eb22af9e76b4e213fa10244c6` |
+| stable | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug.apk` |
+| immutable | `/storage/emulated/0/Download/OpenOmniBot-s1-standard-debug-ef757a0-cf0d0a5e.apk` |
+| 设备矩阵 S1–S8 | 待真机（见 EXEC §6） |
+| 计划 / EXEC | `PLAN-2026-07-19-codex-supplier-isolation.md` · `EXEC-2026-07-19-codex-supplier-isolation.md` |
+
+提交链：`67a9c44` → `d9dc42d` → `c540b5f` → **`ef757a0`**
+
+产品约束 C1–C7 已在源码落地；catalog 失败不回落 Agent；管理页独立路由。
+
+---
+
+## 0b. 历史 · B38 hardening `dad70e8`（已被 §0 覆盖）
 
 | 工作线 | 状态 | topic → integration | 备注 |
 |--------|------|---------------------|------|
