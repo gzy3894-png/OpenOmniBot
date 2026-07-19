@@ -50,16 +50,24 @@
 
 | 字段 | 值 |
 |------|-----|
-| 源码 HEAD | （推送后填） |
-| GHA | （待） |
-| APK | （待） |
+| 源码 HEAD | `525fb0d` feat(codex): expose web_search mode… |
+| 远端 | mine `secondary/s1-b38-hardening`（def3096..525fb0d） |
+| GHA Baseline | run `29687511510` in_progress |
+| GHA Sync CNB | run `29687511486` in_progress（历史常 failure，非九路） |
+| APK | 待 GHA SUCCESS 后 stage |
+| 真机 | **未测** · tip ≠ PASS |
 
-## 4. 下一步
+## 4. 改动摘要
 
-1. 子线程落地 N1–N4  
-2. 主线程静态审 + push mine  
-3. 等 GHA 九路 → stage APK  
-4. 真机：改设置看 conf；第三方体感不回归  
+- **Native**：`normalizeCodexWebSearchMode`；`buildCodexConfigToml(webSearchMode)`；managed key `web_search`；read/write/migrate resolve requested?:existing；soft restart 含 web_search  
+- **Flutter**：`CodexLocalConfig.webSearchMode` / `effectiveWebSearchMode`；`writeLocalConfig` 仅非 null 传参；设置页三段 Chip + P0 说明 + 非 OpenAI base_url 弱提示  
+- **测试**：Kotlin 4；Dart fromMap/write omit  
+
+## 5. 下一步
+
+1. 等 Baseline `29687511510` SUCCESS  
+2. stage APK → 真机：改设置看 conf.toml `web_search`；第三方不回归  
+3. P2 / 授权模式 PLAN 仍不纳入  
 
 ---
 
