@@ -1,39 +1,47 @@
 import 'package:flutter/material.dart';
-import 'package:ui/services/model_provider_config_service.dart';
+import 'package:ui/services/codex_supplier_store.dart';
 
 class CodexProviderSelector extends StatelessWidget {
   const CodexProviderSelector({
     super.key,
-    required this.providers,
-    required this.activeProviderId,
-    required this.models,
+    required this.suppliers,
+    required this.activeSupplierId,
+    required this.enabledModels,
     required this.activeModelId,
+    required this.activeEffort,
     required this.busy,
-    required this.onProviderChanged,
+    required this.onSupplierChanged,
     required this.onModelChanged,
-    required this.onManageProviders,
+    required this.onEffortChanged,
+    required this.onManageSuppliers,
   });
 
-  final List<ModelProviderProfileSummary> providers;
-  final String activeProviderId;
-  final List<ProviderModelOption> models;
+  final List<CodexSupplierRecord> suppliers;
+  final String activeSupplierId;
+  final List<CodexSupplierModelEntry> enabledModels;
   final String activeModelId;
+  final String activeEffort;
   final bool busy;
-  final ValueChanged<String> onProviderChanged;
+  final ValueChanged<String> onSupplierChanged;
   final ValueChanged<String> onModelChanged;
-  final VoidCallback onManageProviders;
+  final ValueChanged<String> onEffortChanged;
+  final VoidCallback onManageSuppliers;
+
+  static const List<String> _effortOptions = kCodexDefaultEfforts;
 
   @override
   Widget build(BuildContext context) {
     final english = Localizations.localeOf(context).languageCode == 'en';
-    final providerIds = providers.map((item) => item.id).toSet();
-    final modelIds = models.map((item) => item.id).toSet();
-    final providerValue = providerIds.contains(activeProviderId)
-        ? activeProviderId
-        : null;
-    final modelValue = modelIds.contains(activeModelId)
-        ? activeModelId
-        : null;
+    final supplierIds = suppliers.map((item) => item.id).toSet();
+    final modelIds = enabledModels.map((item) => item.id).toSet();
+    final supplierValue =
+        supplierIds.contains(activeSupplierId) ? activeSupplierId : null;
+    final modelValue =
+        modelIds.contains(activeModelId) ? activeModelId : null;
+    final effortNorm = activeEffort.trim().toLowerCase();
+    final effortValue =
+        _effortOptions.contains(effortNorm) ? effortNorm : null;
+    final hasEnabledModels = enabledModels.isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -52,7 +60,7 @@ class CodexProviderSelector extends StatelessWidget {
             ),
             TextButton.icon(
               key: const Key('codex-provider-manage-button'),
-              onPressed: busy ? null : onManageProviders,
+              onPressed: busy ? null : onManageSuppliers,
               icon: const Icon(Icons.settings_outlined, size: 16),
               label: Text(english ? 'Manage' : '管理供应商'),
             ),
@@ -67,67 +75,23 @@ class CodexProviderSelector extends StatelessWidget {
         const SizedBox(height: 10),
         KeyedSubtree(
           key: ValueKey<String>(
-            'codex-provider-$activeProviderId-${busy ? 'busy' : 'idle'}',
+            'codex-supplier-$activeSupplierId-${busy ? 'busy' : 'idle'}',
           ),
           child: DropdownButtonFormField<String>(
             key: const Key('codex-provider-selector'),
-            value: providerValue,
+            value: supplierValue,
             isExpanded: true,
             decoration: InputDecoration(
               labelText: english ? 'Supplier' : '供应商',
               isDense: true,
             ),
-            items: providers.map((provider) {
-              final compatibility =
-                  ModelProviderConfigService.codexCompatibility(provider);
-              return DropdownMenuItem<String>(
-                value: provider.id,
-                enabled: compatibility.isSupported && !busy,
-                child: Text(
-                  compatibility.isSupported
-                      ? provider.name
-                      : '${provider.name} — ${compatibility.reason}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              );
-            }).toList(),
-            onChanged: busy
-                ? null
-                : (value) {
-                    if (value != null && value != activeProviderId) {
-                      onProviderChanged(value);
-                    }
-                  },
-          ),
-        ),
-        const SizedBox(height: 12),
-        KeyedSubtree(
-          key: ValueKey<String>(
-            'codex-model-$activeProviderId-$activeModelId-'
-            '${busy ? 'busy' : 'idle'}',
-          ),
-          child: DropdownButtonFormField<String>(
-            key: const Key('codex-provider-model-selector'),
-            value: modelValue,
-            isExpanded: true,
-            decoration: InputDecoration(
-              labelText: english ? 'Provider model' : '供应商模型',
-              helperText: models.isEmpty
-                  ? (english
-                        ? 'Add or fetch models in provider management first.'
-                        : '请先在供应商管理中手动添加或拉取模型。')
-                  : null,
-              isDense: true,
-            ),
-            items: models
+            items: suppliers
                 .map(
-                  (model) => DropdownMenuItem<String>(
-                    value: model.id,
+                  (supplier) => DropdownMenuItem<String>(
+                    value: supplier.id,
+                    enabled: !busy,
                     child: Text(
-                      model.displayName.isEmpty
-                          ? model.id
-                          : model.displayName,
+                      supplier.displayName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -137,8 +101,79 @@ class CodexProviderSelector extends StatelessWidget {
             onChanged: busy
                 ? null
                 : (value) {
+                    if (value != null && value != activeSupplierId) {
+                      onSupplierChanged(value);
+                    }
+                  },
+          ),
+        ),
+        const SizedBox(height: 12),
+        KeyedSubtree(
+          key: ValueKey<String>(
+            'codex-model-$activeSupplierId-$activeModelId-'
+            '${busy ? 'busy' : 'idle'}',
+          ),
+          child: DropdownButtonFormField<String>(
+            key: const Key('codex-provider-model-selector'),
+            value: modelValue,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: english ? 'Enabled model' : '已启用模型',
+              helperText: hasEnabledModels
+                  ? null
+                  : (english
+                        ? 'Enable at least one model in supplier management first.'
+                        : '请先在供应商管理中启用至少一个模型。'),
+              isDense: true,
+            ),
+            items: enabledModels
+                .map(
+                  (model) => DropdownMenuItem<String>(
+                    value: model.id,
+                    child: Text(
+                      model.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: busy || !hasEnabledModels
+                ? null
+                : (value) {
                     if (value != null && value != activeModelId) {
                       onModelChanged(value);
+                    }
+                  },
+          ),
+        ),
+        const SizedBox(height: 12),
+        KeyedSubtree(
+          key: ValueKey<String>(
+            'codex-effort-$activeSupplierId-$activeEffort-'
+            '${busy ? 'busy' : 'idle'}',
+          ),
+          child: DropdownButtonFormField<String>(
+            key: const Key('codex-provider-effort-selector'),
+            value: effortValue,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: english ? 'Reasoning effort' : '思考档',
+              isDense: true,
+            ),
+            items: _effortOptions
+                .map(
+                  (effort) => DropdownMenuItem<String>(
+                    value: effort,
+                    child: Text(effort),
+                  ),
+                )
+                .toList(),
+            onChanged: busy || !hasEnabledModels
+                ? null
+                : (value) {
+                    if (value != null && value != effortNorm) {
+                      onEffortChanged(value);
                     }
                   },
           ),

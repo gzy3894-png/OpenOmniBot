@@ -37,6 +37,7 @@ import 'package:ui/services/agent_browser_session_service.dart';
 import 'package:ui/services/chat_terminal_environment_service.dart';
 import 'package:ui/services/codex_app_server_service.dart';
 import 'package:ui/services/codex_model_catalog_loader.dart';
+import 'package:ui/services/codex_supplier_store.dart';
 import 'package:ui/services/codex_diff_parser.dart';
 import 'package:ui/services/codex_tool_call_parser.dart';
 import 'package:ui/services/conversation_model_override_service.dart';

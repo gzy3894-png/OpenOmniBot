@@ -50,18 +50,22 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   bool _codexGoalRefreshInFlightForce = false;
   bool _codexPageChromeInvalidationScheduled = false;
   int _codexPageChromeInvalidationEpoch = 0;
+  /// Last Codex private supplier id applied to the chat model menu.
+  String? _lastCodexCatalogSupplierId;
+  /// Suppress full catalog wipe when chat itself upserts active model/effort.
+  bool _codexSupplierRevisionSelfWrite = false;
 
   @override
   void initState() {
     super.initState();
-    ModelProviderConfigService.codexProviderStateRevision.addListener(
+    CodexSupplierStore.revision.addListener(
       _handleCodexProviderStateRevisionChanged,
     );
   }
 
   @override
   void dispose() {
-    ModelProviderConfigService.codexProviderStateRevision.removeListener(
+    CodexSupplierStore.revision.removeListener(
       _handleCodexProviderStateRevisionChanged,
     );
     _codexPageChromeInvalidationEpoch += 1;
@@ -73,17 +77,84 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (!mounted) {
       return;
     }
+    if (_codexSupplierRevisionSelfWrite) {
+      // Chat-owned active model/effort write: keep UI; only refresh identity.
+      _codexSupplierRevisionSelfWrite = false;
+      return;
+    }
+    final library = CodexSupplierStore.read();
+    final supplier = library.activeSupplier;
+    final supplierId = library.activeSupplierId.trim();
+    final supplierChanged = supplierId != (_lastCodexCatalogSupplierId ?? '');
+    _lastCodexCatalogSupplierId =
+        supplierId.isEmpty ? null : supplierId;
     _codexModelCatalogRequestGate.invalidate();
+    final restoredModel = (supplier?.activeModelId ?? '').trim();
+    final restoredEffort = _normalizeCodexReasoningEffort(
+      supplier?.activeEffort,
+    );
+    final enabled = supplier?.enabledModels ?? const <CodexSupplierModelEntry>[];
+    final enabledIds =
+        enabled.map((item) => item.id).toList(growable: false);
+    final displayNames = <String, String>{
+      for (final item in enabled) item.id: item.label,
+    };
+    final effortCatalog = <String, List<String>>{
+      for (final item in enabled)
+        if (item.supportedEfforts.isNotEmpty)
+          item.id: List<String>.from(item.supportedEfforts),
+    };
+    final defaultCatalog = <String, String>{
+      for (final item in enabled)
+        if (item.defaultEffort.trim().isNotEmpty)
+          item.id: item.defaultEffort.trim(),
+    };
+    List<String> activeEfforts = const <String>[];
+    if (restoredModel.isNotEmpty) {
+      final fromCatalog = effortCatalog[restoredModel];
+      if (fromCatalog != null && fromCatalog.isNotEmpty) {
+        activeEfforts = fromCatalog;
+      } else {
+        for (final item in enabled) {
+          if (item.id == restoredModel && item.supportedEfforts.isNotEmpty) {
+            activeEfforts = item.supportedEfforts;
+            break;
+          }
+        }
+        if (activeEfforts.isEmpty) {
+          activeEfforts = kCodexDefaultEfforts;
+        }
+      }
+    }
     setState(() {
       _isCodexModelListLoading = false;
       _codexModelListError = null;
-      _codexModelOptions = const <String>[];
-      _codexModelDisplayNames = const <String, String>{};
-      _codexModelEffortCatalog = const <String, List<String>>{};
-      _codexModelDefaultEffortCatalog = const <String, String>{};
-      _codexReasoningEffortOptions = const <String>[];
-      _activeCodexModelId = null;
-      _activeCodexReasoningEffort = null;
+      // Show this supplier's enabled set immediately and restore its
+      // remembered model/effort before the async reload settles.
+      _codexModelOptions = enabledIds;
+      _codexModelDisplayNames = displayNames;
+      if (effortCatalog.isNotEmpty) {
+        _codexModelEffortCatalog = effortCatalog;
+      } else if (supplierChanged) {
+        _codexModelEffortCatalog = const <String, List<String>>{};
+      }
+      if (defaultCatalog.isNotEmpty) {
+        _codexModelDefaultEffortCatalog = defaultCatalog;
+      } else if (supplierChanged) {
+        _codexModelDefaultEffortCatalog = const <String, String>{};
+      }
+      if (enabledIds.isEmpty && supplierChanged) {
+        _codexReasoningEffortOptions = const <String>[];
+        _activeCodexModelId = null;
+        _activeCodexReasoningEffort = null;
+      } else {
+        _codexReasoningEffortOptions = activeEfforts.isEmpty
+            ? List<String>.from(kCodexDefaultEfforts)
+            : List<String>.from(activeEfforts);
+        _activeCodexModelId =
+            restoredModel.isEmpty ? null : restoredModel;
+        _activeCodexReasoningEffort = restoredEffort;
+      }
       _codexModelCatalogProviderIdentity = null;
     });
     if (_activeMode == ChatPageMode.codex) {
@@ -92,13 +163,43 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   }
 
   String _codexModelCatalogGateIdentity(CodexStatus status) {
-    final providerId = ModelProviderConfigService
-        .readCodexProviderState()
-        .activeProviderId;
-    final revision =
-        ModelProviderConfigService.codexProviderStateRevision.value;
+    final library = CodexSupplierStore.read();
+    final supplierId = library.activeSupplierId.trim();
+    final revision = CodexSupplierStore.revision.value;
     return '${codexModelRuntimeIdentity(status)}'
-        '|provider=$providerId|providerRevision=$revision';
+        '|supplier=$supplierId|supplierRevision=$revision';
+  }
+
+  /// Persist chat model/effort selection onto the active Codex supplier record.
+  Future<void> _persistActiveCodexSupplierSelection({
+    String? modelId,
+    String? effort,
+  }) async {
+    try {
+      await CodexSupplierStore.ensureMigrated();
+      final library = CodexSupplierStore.read();
+      final active = library.activeSupplier;
+      if (active == null) {
+        return;
+      }
+      final nextModel = (modelId ?? active.activeModelId).trim();
+      final nextEffort = (effort ?? active.activeEffort).trim();
+      if (nextModel == active.activeModelId.trim() &&
+          nextEffort.toLowerCase() ==
+              active.activeEffort.trim().toLowerCase()) {
+        return;
+      }
+      _codexSupplierRevisionSelfWrite = true;
+      await CodexSupplierStore.upsert(
+        active.copyWith(
+          activeModelId: nextModel,
+          activeEffort: nextEffort.isEmpty ? active.activeEffort : nextEffort,
+        ),
+      );
+    } catch (error) {
+      _codexSupplierRevisionSelfWrite = false;
+      debugPrint('Persist Codex supplier selection failed: $error');
+    }
   }
 
   bool _applyCodexStatusSnapshot(
@@ -487,6 +588,46 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final activeModelAtRequest = (_activeCodexModelId ?? '').trim();
     final activeEffortAtRequest =
         (_activeCodexReasoningEffort ?? '').trim();
+    // Codex-private supplier library is the menu source for local runtime.
+    List<String> supplierEnabledIds = const <String>[];
+    Map<String, String> supplierDisplayNames = const <String, String>{};
+    Map<String, List<String>> supplierEffortCatalog =
+        const <String, List<String>>{};
+    Map<String, String> supplierDefaultEffortCatalog =
+        const <String, String>{};
+    String supplierActiveModel = '';
+    String supplierActiveEffort = '';
+    try {
+      await CodexSupplierStore.ensureMigrated();
+      final library = CodexSupplierStore.read();
+      final supplier = library.activeSupplier;
+      final supplierId = library.activeSupplierId.trim();
+      if (supplierId.isNotEmpty) {
+        _lastCodexCatalogSupplierId = supplierId;
+      }
+      if (supplier != null) {
+        final enabled = supplier.enabledModels;
+        supplierEnabledIds =
+            enabled.map((item) => item.id).toList(growable: false);
+        supplierDisplayNames = <String, String>{
+          for (final item in enabled) item.id: item.label,
+        };
+        supplierEffortCatalog = <String, List<String>>{
+          for (final item in enabled)
+            if (item.supportedEfforts.isNotEmpty)
+              item.id: List<String>.from(item.supportedEfforts),
+        };
+        supplierDefaultEffortCatalog = <String, String>{
+          for (final item in enabled)
+            if (item.defaultEffort.trim().isNotEmpty)
+              item.id: item.defaultEffort.trim(),
+        };
+        supplierActiveModel = supplier.activeModelId.trim();
+        supplierActiveEffort = supplier.activeEffort.trim();
+      }
+    } catch (error) {
+      debugPrint('Read Codex supplier library for menu failed: $error');
+    }
     final request = _codexModelCatalogRequestGate.begin(
       runtimeIdentity: runtimeIdentity,
     );
@@ -494,12 +635,20 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       _isCodexModelListLoading = true;
       _codexModelListError = null;
       if (force) {
-        // The menu must not expose a previous provider/runtime snapshot while
-        // the new generation is loading.
-        _codexModelOptions = const <String>[];
-        _codexModelDisplayNames = const <String, String>{};
-        _codexReasoningEffortOptions = const <String>[];
-        _activeCodexReasoningEffort = null;
+        // Avoid flashing empty when the supplier revision handler already
+        // restored this generation's enabled models / active selection.
+        final keepSupplierMenu = _codexModelOptions.isNotEmpty &&
+            (_lastCodexCatalogSupplierId ?? '').isNotEmpty &&
+            (_lastCodexCatalogSupplierId ?? '') ==
+                CodexSupplierStore.read().activeSupplierId.trim();
+        if (!keepSupplierMenu) {
+          // The menu must not expose a previous provider/runtime snapshot while
+          // the new generation is loading.
+          _codexModelOptions = const <String>[];
+          _codexModelDisplayNames = const <String, String>{};
+          _codexReasoningEffortOptions = const <String>[];
+          _activeCodexReasoningEffort = null;
+        }
       }
     });
     try {
@@ -529,7 +678,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final listResponse = sourceResult.appServerResponse;
       final List<String> models;
       final Map<String, String> displayNames;
-      if (sourceResult.useAppServerModelIds) {
+      if (!remoteRuntime && supplierEnabledIds.isNotEmpty) {
+        // Local: menu candidates = active Codex supplier enabled models.
+        models = List<String>.from(supplierEnabledIds);
+        displayNames = Map<String, String>.from(supplierDisplayNames);
+      } else if (sourceResult.useAppServerModelIds) {
         models = _extractCodexModelOptionIds(listResponse);
         displayNames = _extractCodexModelDisplayNames(listResponse);
         if (models.isEmpty) {
@@ -558,12 +711,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       final providerChanged =
           _codexModelCatalogProviderIdentity != appliedProviderIdentity;
       final preferredModel =
+          (supplierActiveModel.isNotEmpty ? supplierActiveModel : null) ??
           configSettings.modelId ??
           _extractCodexPreferredOptionId(listResponse) ??
           _extractCodexDefaultModelId(listResponse) ??
           (models.isNotEmpty ? models.first : null);
+      // On supplier switch, prefer request-time UI (revision restore) then
+      // supplier record; only fall through to preferred when neither matches.
       final activeModel = providerChanged
-          ? ''
+          ? (activeModelAtRequest.isNotEmpty
+              ? activeModelAtRequest
+              : supplierActiveModel)
           : activeModelAtRequest;
       // Clamp selection to pure list: active ∈ models → preferred ∈ models → first/empty.
       final String? nextActiveModel;
@@ -582,21 +740,39 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           activeModel.isNotEmpty && nextActiveModel != activeModel;
       final effectiveModel = nextActiveModel;
       // B26: per-model supportedReasoningEfforts + defaults (not a global union).
+      // Supplier library defaults are the baseline; app-server metadata enriches.
       final modelIdsLower = models
           .map((modelId) => modelId.toLowerCase())
           .toSet();
-      final parsedCatalog = Map<String, List<String>>.fromEntries(
-        _extractCodexModelEffortCatalog(listResponse).entries.where(
-          (entry) => modelIdsLower.contains(entry.key.toLowerCase()),
-        ),
-      );
-      final parsedDefaults = Map<String, String>.fromEntries(
-        _extractCodexModelDefaultEffortCatalog(
-          listResponse,
-        ).entries.where(
-          (entry) => modelIdsLower.contains(entry.key.toLowerCase()),
-        ),
-      );
+      final parsedCatalog = <String, List<String>>{
+        for (final entry in supplierEffortCatalog.entries)
+          if (modelIdsLower.contains(entry.key.toLowerCase()))
+            entry.key: List<String>.from(entry.value),
+      };
+      for (final entry in _extractCodexModelEffortCatalog(listResponse).entries) {
+        if (!modelIdsLower.contains(entry.key.toLowerCase())) {
+          continue;
+        }
+        if (entry.value.isEmpty) {
+          continue;
+        }
+        parsedCatalog[entry.key] = entry.value;
+      }
+      final parsedDefaults = <String, String>{
+        for (final entry in supplierDefaultEffortCatalog.entries)
+          if (modelIdsLower.contains(entry.key.toLowerCase()))
+            entry.key: entry.value,
+      };
+      for (final entry
+          in _extractCodexModelDefaultEffortCatalog(listResponse).entries) {
+        if (!modelIdsLower.contains(entry.key.toLowerCase())) {
+          continue;
+        }
+        if (entry.value.trim().isEmpty) {
+          continue;
+        }
+        parsedDefaults[entry.key] = entry.value;
+      }
       final modelDefaultEffort =
           (effectiveModel != null
               ? parsedDefaults[effectiveModel]
@@ -605,10 +781,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
             listResponse,
             effectiveModel,
           );
-      final modelEfforts = _lookupCodexModelEfforts(
+      var modelEfforts = _lookupCodexModelEfforts(
         catalog: parsedCatalog,
         modelId: effectiveModel,
       );
+      // Local supplier menu always exposes the default four-tier efforts when
+      // neither the record nor app-server published a supported set.
+      if (!remoteRuntime &&
+          supplierEnabledIds.isNotEmpty &&
+          modelEfforts.isEmpty) {
+        modelEfforts = List<String>.from(kCodexDefaultEfforts);
+      }
       // This request is authoritative for the provider/runtime generation.
       // Missing effort metadata means the selected model does not expose an
       // effort control; never carry an effort over from a prior provider.
@@ -617,13 +800,17 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         options: modelEfforts,
       );
       final previousActiveEffort = providerChanged
-          ? ''
+          ? (activeEffortAtRequest.isNotEmpty
+              ? activeEffortAtRequest
+              : supplierActiveEffort)
           : activeEffortAtRequest;
+      final preferredEffort = previousActiveEffort.isNotEmpty
+          ? previousActiveEffort
+          : (supplierActiveEffort.isNotEmpty
+              ? supplierActiveEffort
+              : (configSettings.reasoningEffort ?? modelDefaultEffort));
       final nextActiveEffort = _clampCodexReasoningEffortToOptions(
-        preferred:
-            previousActiveEffort.isNotEmpty
-            ? _activeCodexReasoningEffort
-            : (configSettings.reasoningEffort ?? modelDefaultEffort),
+        preferred: preferredEffort,
         options: effortOptions,
         modelDefault: modelDefaultEffort,
         preservePreferredWhenOptionsEmpty: false,
@@ -903,8 +1090,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     );
     // Local preference is a cache for cold start / pre-thread UI only.
     await _writeCodexPreference(_kCodexModelPreferenceKey, normalized);
+    final nextEffort = (_activeCodexReasoningEffort ?? '').trim();
     if (effortChanged || effortCleared) {
-      final nextEffort = (_activeCodexReasoningEffort ?? '').trim();
       if (nextEffort.isEmpty) {
         unawaited(_clearCodexPreference(_kCodexReasoningEffortPreferenceKey));
       } else {
@@ -930,6 +1117,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         }
       }
     }
+    // Remember selection on the active Codex supplier so a later switch back
+    // restores this model/effort pair.
+    unawaited(
+      _persistActiveCodexSupplierSelection(
+        modelId: normalized,
+        effort: nextEffort.isEmpty ? null : nextEffort,
+      ),
+    );
     if (clearComposer) {
       _messageController.clear();
       _hideSlashCommandPanel();
@@ -1104,6 +1299,14 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     await _writeCodexPreference(
       _kCodexReasoningEffortPreferenceKey,
       normalized,
+    );
+    unawaited(
+      _persistActiveCodexSupplierSelection(
+        modelId: (_activeCodexModelId ?? '').trim().isEmpty
+            ? null
+            : (_activeCodexModelId ?? '').trim(),
+        effort: normalized,
+      ),
     );
     // Local transcript tip only — never send as a model turn.
     if (changed) {

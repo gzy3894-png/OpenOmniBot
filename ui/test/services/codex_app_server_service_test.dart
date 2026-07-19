@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ui/services/codex_app_server_service.dart';
-import 'package:ui/services/model_provider_config_service.dart';
+import 'package:ui/services/codex_supplier_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -856,38 +856,50 @@ void main() {
     },
   );
 
-  test('supplier switch rolls Native config back before UI state commit', () async {
+  test('supplier switch rolls Native config back before library commit', () async {
     const previous = CodexLocalConfig(
       baseUrl: 'https://a.example/v1',
       model: 'model-a',
       apiKey: 'key-a',
+      modelProvider: 'omnimind',
     );
-    const provider = ModelProviderProfileSummary(
-      id: 'provider-b',
-      name: 'Memo B',
+    const previousLibrary = CodexSupplierLibrary(
+      activeSupplierId: 'supplier-a',
+      suppliers: <CodexSupplierRecord>[
+        CodexSupplierRecord(
+          id: 'supplier-a',
+          memoName: 'Memo A',
+          baseUrl: 'https://a.example/v1',
+          apiKey: 'key-a',
+          models: <CodexSupplierModelEntry>[
+            CodexSupplierModelEntry(id: 'model-a'),
+          ],
+          activeModelId: 'model-a',
+          activeEffort: 'medium',
+        ),
+      ],
+    );
+    const supplier = CodexSupplierRecord(
+      id: 'supplier-b',
+      memoName: 'Memo B',
       baseUrl: 'https://b.example/v1',
       apiKey: 'key-b',
-      customHeaders: {},
-      sourceType: 'custom',
-      readOnly: false,
-      ready: true,
-      statusText: '',
-      configured: true,
-      wireApi: 'responses',
+      models: <CodexSupplierModelEntry>[
+        CodexSupplierModelEntry(id: 'model-b'),
+      ],
+      activeModelId: 'model-b',
+      activeEffort: 'high',
     );
     final appliedModels = <String>[];
     var committed = false;
 
     await expectLater(
-      CodexAppServerService.switchLocalProvider(
-        provider: provider,
+      CodexAppServerService.switchLocalSupplier(
+        supplier: supplier,
         model: 'model-b',
-        availableModelIds: const ['model-b'],
+        effort: 'high',
         previousConfig: previous,
-        previousState: const CodexProviderState(
-          activeProviderId: 'provider-a',
-          currentModels: {'provider-a': 'model-a'},
-        ),
+        previousLibrary: previousLibrary,
         applyConfig: (config, {required providerRecordId}) async {
           appliedModels.add(config.model);
           if (config.model == 'model-b') {
@@ -895,7 +907,7 @@ void main() {
           }
           return config;
         },
-        commitState: (_) async {
+        commitLibrary: (_) async {
           committed = true;
         },
       ),
@@ -914,39 +926,48 @@ void main() {
       apiKey: 'key-a',
       modelProvider: 'omnimind',
     );
-    const provider = ModelProviderProfileSummary(
-      id: 'provider-b',
-      name: 'Memo B',
+    const previousLibrary = CodexSupplierLibrary(
+      activeSupplierId: 'supplier-a',
+      suppliers: <CodexSupplierRecord>[
+        CodexSupplierRecord(
+          id: 'supplier-a',
+          memoName: 'Memo A',
+          baseUrl: 'https://a.example/v1',
+          apiKey: 'key-a',
+          models: <CodexSupplierModelEntry>[
+            CodexSupplierModelEntry(id: 'model-a'),
+          ],
+          activeModelId: 'model-a',
+        ),
+      ],
+    );
+    const supplier = CodexSupplierRecord(
+      id: 'supplier-b',
+      memoName: 'Memo B',
       baseUrl: 'https://b.example/v1',
       apiKey: 'key-b',
-      customHeaders: {},
-      sourceType: 'custom',
-      readOnly: false,
-      ready: true,
-      statusText: '',
-      configured: true,
-      wireApi: 'responses',
+      models: <CodexSupplierModelEntry>[
+        CodexSupplierModelEntry(id: 'model-b'),
+      ],
+      activeModelId: 'model-b',
     );
     final appliedModels = <String>[];
 
     await expectLater(
-      CodexAppServerService.switchLocalProvider(
-        provider: provider,
+      CodexAppServerService.switchLocalSupplier(
+        supplier: supplier,
         model: 'model-b',
-        availableModelIds: const ['model-b'],
         previousConfig: previous,
-        previousState: const CodexProviderState(
-          activeProviderId: 'provider-a',
-          currentModels: {'provider-a': 'model-a'},
-        ),
+        previousLibrary: previousLibrary,
         applyConfig: (config, {required providerRecordId}) async {
           appliedModels.add(config.model);
           if (config.model == 'model-b') {
+            // Missing fixed internal omnimind profile after apply.
             return config.copyWith(modelProvider: '');
           }
           return config;
         },
-        commitState: (_) async {},
+        commitLibrary: (_) async {},
       ),
       throwsA(isA<CodexProviderSwitchException>()),
     );
@@ -955,7 +976,7 @@ void main() {
   });
 
   test(
-    'supplier switch rolls Native config and old state back when commit fails',
+    'supplier switch rolls Native config and old library back when commit fails',
     () async {
       const previous = CodexLocalConfig(
         baseUrl: 'https://a.example/v1',
@@ -963,43 +984,53 @@ void main() {
         apiKey: 'key-a',
         modelProvider: 'omnimind',
       );
-      const oldState = CodexProviderState(
-        activeProviderId: 'provider-a',
-        currentModels: {'provider-a': 'model-a'},
+      const previousLibrary = CodexSupplierLibrary(
+        activeSupplierId: 'supplier-a',
+        suppliers: <CodexSupplierRecord>[
+          CodexSupplierRecord(
+            id: 'supplier-a',
+            memoName: 'Memo A',
+            baseUrl: 'https://a.example/v1',
+            apiKey: 'key-a',
+            models: <CodexSupplierModelEntry>[
+              CodexSupplierModelEntry(id: 'model-a'),
+            ],
+            activeModelId: 'model-a',
+            activeEffort: 'medium',
+          ),
+        ],
       );
-      const provider = ModelProviderProfileSummary(
-        id: 'provider-b',
-        name: 'Memo B',
+      const supplier = CodexSupplierRecord(
+        id: 'supplier-b',
+        memoName: 'Memo B',
         baseUrl: 'https://b.example/v1',
         apiKey: 'key-b',
-        customHeaders: {},
-        sourceType: 'custom',
-        readOnly: false,
-        ready: true,
-        statusText: '',
-        configured: true,
-        wireApi: 'responses',
+        models: <CodexSupplierModelEntry>[
+          CodexSupplierModelEntry(id: 'model-b'),
+        ],
+        activeModelId: 'model-b',
+        activeEffort: 'high',
       );
       final appliedModels = <String>[];
-      final appliedProviderIds = <String>[];
-      final committedProviderIds = <String>[];
+      final appliedSupplierIds = <String>[];
+      final committedActiveIds = <String>[];
 
       await expectLater(
-        CodexAppServerService.switchLocalProvider(
-          provider: provider,
+        CodexAppServerService.switchLocalSupplier(
+          supplier: supplier,
           model: 'model-b',
-          availableModelIds: const ['model-b'],
+          effort: 'high',
           previousConfig: previous,
-          previousState: oldState,
+          previousLibrary: previousLibrary,
           applyConfig: (config, {required providerRecordId}) async {
             appliedModels.add(config.model);
-            appliedProviderIds.add(providerRecordId);
+            appliedSupplierIds.add(providerRecordId);
             return config.copyWith(modelProvider: 'omnimind');
           },
-          commitState: (state) async {
-            committedProviderIds.add(state.activeProviderId);
-            if (committedProviderIds.length == 1) {
-              throw StateError('selection write failed after partial commit');
+          commitLibrary: (library) async {
+            committedActiveIds.add(library.activeSupplierId);
+            if (committedActiveIds.length == 1) {
+              throw StateError('library write failed after Native apply');
             }
           },
         ),
@@ -1013,8 +1044,121 @@ void main() {
       );
 
       expect(appliedModels, ['model-b', 'model-a']);
-      expect(appliedProviderIds, ['provider-b', 'provider-a']);
-      expect(committedProviderIds, ['provider-b', 'provider-a']);
+      expect(appliedSupplierIds, ['supplier-b', 'supplier-a']);
+      expect(committedActiveIds, ['supplier-b', 'supplier-a']);
     },
   );
+
+  test('supplier switch rejects invalid supplier before Native apply', () async {
+    const previous = CodexLocalConfig(
+      baseUrl: 'https://a.example/v1',
+      model: 'model-a',
+      apiKey: 'key-a',
+      modelProvider: 'omnimind',
+    );
+    const supplier = CodexSupplierRecord(
+      id: 'supplier-b',
+      memoName: 'Memo B',
+      baseUrl: 'https://b.example/v1',
+      apiKey: '',
+      models: <CodexSupplierModelEntry>[
+        CodexSupplierModelEntry(id: 'model-b'),
+      ],
+      activeModelId: 'model-b',
+    );
+    var applied = false;
+    var committed = false;
+
+    await expectLater(
+      CodexAppServerService.switchLocalSupplier(
+        supplier: supplier,
+        previousConfig: previous,
+        previousLibrary: const CodexSupplierLibrary(),
+        applyConfig: (config, {required providerRecordId}) async {
+          applied = true;
+          return config;
+        },
+        commitLibrary: (_) async {
+          committed = true;
+        },
+      ),
+      throwsA(
+        isA<CodexProviderSwitchException>().having(
+          (error) => error.message,
+          'message',
+          'API Key is missing',
+        ),
+      ),
+    );
+
+    expect(applied, isFalse);
+    expect(committed, isFalse);
+  });
+
+  test('supplier switch writes effort into modelReasoningEffort and library',
+      () async {
+    const previous = CodexLocalConfig(
+      baseUrl: 'https://a.example/v1',
+      model: 'model-a',
+      apiKey: 'key-a',
+      modelProvider: 'omnimind',
+      modelReasoningEffort: 'medium',
+    );
+    const previousLibrary = CodexSupplierLibrary(
+      activeSupplierId: 'supplier-a',
+      suppliers: <CodexSupplierRecord>[
+        CodexSupplierRecord(
+          id: 'supplier-a',
+          memoName: 'Memo A',
+          baseUrl: 'https://a.example/v1',
+          apiKey: 'key-a',
+          models: <CodexSupplierModelEntry>[
+            CodexSupplierModelEntry(id: 'model-a'),
+          ],
+          activeModelId: 'model-a',
+          activeEffort: 'medium',
+        ),
+      ],
+    );
+    const supplier = CodexSupplierRecord(
+      id: 'supplier-b',
+      memoName: 'Memo B',
+      baseUrl: 'https://b.example/v1',
+      apiKey: 'key-b',
+      models: <CodexSupplierModelEntry>[
+        CodexSupplierModelEntry(id: 'model-b'),
+      ],
+      activeModelId: 'model-b',
+      activeEffort: 'medium',
+    );
+    String? appliedEffort;
+    CodexSupplierLibrary? committedLibrary;
+
+    final applied = await CodexAppServerService.switchLocalSupplier(
+      supplier: supplier,
+      model: 'model-b',
+      effort: 'xhigh',
+      previousConfig: previous,
+      previousLibrary: previousLibrary,
+      applyConfig: (config, {required providerRecordId}) async {
+        appliedEffort = config.modelReasoningEffort;
+        return config.copyWith(modelProvider: 'omnimind');
+      },
+      commitLibrary: (library) async {
+        committedLibrary = library;
+      },
+    );
+
+    expect(appliedEffort, 'xhigh');
+    expect(applied.model, 'model-b');
+    expect(committedLibrary?.activeSupplierId, 'supplier-b');
+    expect(
+      committedLibrary?.find('supplier-b')?.activeEffort,
+      'xhigh',
+    );
+    expect(
+      committedLibrary?.find('supplier-b')?.activeModelId,
+      'model-b',
+    );
+  });
 }

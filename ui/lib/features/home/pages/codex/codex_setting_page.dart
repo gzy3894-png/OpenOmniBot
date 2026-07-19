@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_switch/flutter_switch.dart';
 import 'package:ui/core/router/go_router_manager.dart';
@@ -9,7 +8,7 @@ import 'package:ui/features/home/pages/codex/codex_remote_directory_picker.dart'
 import 'package:ui/features/home/pages/codex/widgets/codex_provider_selector.dart';
 import 'package:ui/l10n/legacy_text_localizer.dart';
 import 'package:ui/services/codex_app_server_service.dart';
-import 'package:ui/services/model_provider_config_service.dart';
+import 'package:ui/services/codex_supplier_store.dart';
 import 'package:ui/theme/app_colors.dart';
 import 'package:ui/theme/theme_context.dart';
 import 'package:ui/utils/ui.dart';
@@ -33,10 +32,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
 
   Timer? _saveDebounce;
   CodexLocalConfig? _localConfig;
-  CodexProviderState _providerState = const CodexProviderState();
-  List<ModelProviderProfileSummary> _providers = const [];
-  List<ProviderModelOption> _providerModels = const [];
-  int _providerLoadGeneration = 0;
+  CodexSupplierLibrary _supplierLibrary = const CodexSupplierLibrary();
+  int _supplierLoadGeneration = 0;
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isTestingBridge = false;
@@ -86,12 +83,14 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     ]) {
       controller.addListener(_handleEdited);
     }
+    CodexSupplierStore.revision.addListener(_onSupplierLibraryRevision);
     unawaited(_loadConfig());
   }
 
   @override
   void dispose() {
     _saveDebounce?.cancel();
+    CodexSupplierStore.revision.removeListener(_onSupplierLibraryRevision);
     for (final controller in [
       _bridgeUrlController,
       _bridgeTokenController,
@@ -102,6 +101,19 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
     super.dispose();
   }
+
+  void _onSupplierLibraryRevision() {
+    if (!mounted || _isSaving) return;
+    final library = CodexSupplierStore.read();
+    setState(() {
+      _supplierLibrary = library;
+    });
+  }
+
+  CodexSupplierRecord? get _activeSupplier => _supplierLibrary.activeSupplier;
+
+  List<CodexSupplierModelEntry> get _enabledModels =>
+      _activeSupplier?.enabledModels ?? const <CodexSupplierModelEntry>[];
 
   void _setControllerText(TextEditingController controller, String text) {
     if (controller.text == text) return;
@@ -239,150 +251,28 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
     try {
       final config = await CodexAppServerService.readLocalConfig();
-      final payload = await ModelProviderConfigService.listProfiles();
-      var state = ModelProviderConfigService.readCodexProviderState();
-      var providers = payload.profiles;
-      ModelProviderProfileSummary? active;
-      final nativeModel = config.model.trim();
-      bool matchesNativeEndpoint(ModelProviderProfileSummary provider) {
-        return config.modelProvider.trim() == 'omnimind' &&
-            ModelProviderConfigService.normalizeApiBase(provider.baseUrl) ==
-                ModelProviderConfigService.normalizeApiBase(config.baseUrl) &&
-            provider.apiKey.trim() == config.apiKey.trim() &&
-            ModelProviderConfigService.codexCompatibility(provider)
-                .isSupported;
-      }
-
-      ModelProviderProfileSummary? rememberedProvider;
-      for (final provider in providers) {
-        if (provider.id == state.activeProviderId &&
-            ModelProviderConfigService.codexCompatibility(provider)
-                .isSupported) {
-          rememberedProvider = provider;
-          break;
-        }
-      }
-      final endpointCandidates = providers
-          .where(matchesNativeEndpoint)
-          .toList(growable: false);
-      final candidateModels = <String, List<ProviderModelOption>>{};
-      await Future.wait(
-        endpointCandidates.map((provider) async {
-          candidateModels[provider.id] =
-              await ModelProviderConfigService.getStoredModelOptionsForProfile(
-            provider.id,
-            profile: provider,
-          );
-        }),
-      );
-      final exactCandidates = endpointCandidates.where((provider) {
-        final models =
-            candidateModels[provider.id] ?? const <ProviderModelOption>[];
-        final rememberedModel = state.currentModels[provider.id] ?? '';
-        return models.any((item) => item.id == nativeModel) ||
-            (provider.id == state.activeProviderId &&
-                rememberedModel == nativeModel);
-      }).toList(growable: false);
-      if (rememberedProvider != null &&
-          exactCandidates.any(
-            (provider) => provider.id == rememberedProvider!.id,
-          )) {
-        active = rememberedProvider;
-      } else if (exactCandidates.length == 1) {
-        active = exactCandidates.single;
-      } else if (exactCandidates.isEmpty &&
-          endpointCandidates.length == 1) {
-        // A unique endpoint/key identity is safe to attach to its existing
-        // stable record; ambiguity must never fall back to list order.
-        active = endpointCandidates.single;
-      }
-      if (active == null &&
-          state.activeProviderId.isEmpty &&
-          endpointCandidates.isEmpty &&
-          config.baseUrl.trim().isNotEmpty &&
-          config.apiKey.trim().isNotEmpty &&
-          nativeModel.isNotEmpty) {
-        active = await ModelProviderConfigService.saveProfile(
-          name: 'Codex supplier',
-          baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
-          wireApi: 'responses',
-        );
-        providers = <ModelProviderProfileSummary>[...providers, active];
-      }
-      var models = const <ProviderModelOption>[];
-      if (active != null) {
-        models =
-            candidateModels[active.id] ??
-            await ModelProviderConfigService.getStoredModelOptionsForProfile(
-              active.id,
-              profile: active,
-            );
-        final sameLegacyProvider =
-            matchesNativeEndpoint(active);
-        if (sameLegacyProvider &&
-            nativeModel.isNotEmpty &&
-            !models.any((item) => item.id == nativeModel)) {
-          final manual = await ModelProviderConfigService.getManualModelIds(
-            profileId: active.id,
-          );
-          await ModelProviderConfigService.saveManualModelIds(
-            profileId: active.id,
-            ids: <String>[...manual, nativeModel],
-          );
-          models = <ProviderModelOption>[
-            ...models,
-            ProviderModelOption(
-              id: nativeModel,
-              displayName: nativeModel,
-              ownedBy: 'manual',
-            ),
-          ];
-        }
-        final remembered = state.currentModels[active.id] ?? '';
-        final selectedModel = models.any((item) => item.id == nativeModel)
-            ? nativeModel
-            : models.any((item) => item.id == remembered)
-                ? remembered
-                : (models.isEmpty ? '' : models.first.id);
-        final nextState = selectedModel.isEmpty
-            ? state
-            : state.selecting(
-                providerId: active.id,
-                modelId: selectedModel,
-              );
-        final nativeSelectionMatches =
-            matchesNativeEndpoint(active) && nativeModel == selectedModel;
-        if (selectedModel.isNotEmpty &&
-            nativeSelectionMatches &&
-            (nextState.activeProviderId != state.activeProviderId ||
-                !mapEquals(nextState.currentModels, state.currentModels))) {
-          await ModelProviderConfigService.commitCodexProviderState(nextState);
-          state = nextState;
-        }
-      } else if (state.activeProviderId.isNotEmpty) {
-        // Keep per-provider remembered models, but do not render a stale
-        // supplier id as active when Native identity cannot select it exactly.
-        state = CodexProviderState(currentModels: state.currentModels);
-      }
+      await CodexSupplierStore.ensureMigrated();
+      final library = CodexSupplierStore.read();
+      final active = library.activeSupplier;
       if (!mounted) return;
       _syncControllers(config);
       setState(() {
         _localConfig = config;
-        _providers = providers;
-        _providerState = state;
-        _providerModels = models;
+        _supplierLibrary = library;
         _codexHome = config.codexHome ?? _defaultCodexHome;
         _runtime = config.runtime ?? 'local';
         _isLoading = false;
-        _error = active == null &&
-                config.baseUrl.trim().isNotEmpty &&
-                nativeModel.isNotEmpty
+        _error = active == null && library.suppliers.isEmpty
             ? _localeText(
-                zh: '本地 Codex 配置无法唯一匹配供应商记录，请重新选择供应商。',
-                en: 'Local Codex config does not uniquely match a supplier record. Select a supplier again.',
+                zh: '尚未配置 Codex 供应商，请点击「管理供应商」添加。',
+                en: 'No Codex supplier yet. Tap Manage to add one.',
               )
-            : null;
+            : (active != null && !active.hasEnabledModel
+                ? _localeText(
+                    zh: '当前供应商未启用任何模型，请先在管理页启用至少一个模型。',
+                    en: 'The active supplier has no enabled models. Enable at least one in Manage.',
+                  )
+                : null);
         _status = null;
         _lastSavedSignature = _currentSignature();
       });
@@ -496,61 +386,70 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
   }
 
-  Future<void> _switchProvider(String providerId, {String? modelId}) async {
+  Future<void> _switchSupplier(
+    String supplierId, {
+    String? modelId,
+    String? effort,
+  }) async {
     if (_isSaving) return;
     _saveDebounce?.cancel();
     final previousConfig = _localConfig;
     if (previousConfig == null) return;
-    ModelProviderProfileSummary? provider;
-    for (final item in _providers) {
-      if (item.id == providerId) {
-        provider = item;
-        break;
-      }
+
+    await CodexSupplierStore.ensureMigrated();
+    final library = CodexSupplierStore.read();
+    final supplier = library.find(supplierId);
+    if (supplier == null) {
+      if (!mounted) return;
+      setState(() {
+        _supplierLibrary = library;
+        _error = _localeText(
+          zh: '找不到该供应商，请刷新后重试。',
+          en: 'Supplier not found. Reload and try again.',
+        );
+        _status = null;
+      });
+      return;
     }
-    if (provider == null) return;
-    final generation = ++_providerLoadGeneration;
+    if (!supplier.hasEnabledModel) {
+      if (!mounted) return;
+      setState(() {
+        _supplierLibrary = library;
+        _error = _localeText(
+          zh: '当前供应商未启用任何模型，禁止切换。请先在管理页启用至少一个模型。',
+          en: 'Switch blocked: enable at least one model for this supplier first.',
+        );
+        _status = null;
+      });
+      return;
+    }
+
+    final generation = ++_supplierLoadGeneration;
     setState(() {
       _isSaving = true;
       _error = null;
       _status = _localeText(zh: '正在切换供应商...', en: 'Switching supplier...');
     });
     try {
-      final models =
-          providerId == _providerState.activeProviderId && modelId != null
-              ? _providerModels
-              : await ModelProviderConfigService.getStoredModelOptionsForProfile(
-                  providerId,
-                  profile: provider,
-                );
-      if (!mounted || generation != _providerLoadGeneration) return;
-      final remembered = _providerState.currentModels[providerId] ?? '';
-      final targetModel = modelId?.trim().isNotEmpty == true
-          ? modelId!.trim()
-          : models.any((item) => item.id == remembered)
-              ? remembered
-              : (models.isEmpty ? '' : models.first.id);
-      final saved = await CodexAppServerService.switchLocalProvider(
-        provider: provider,
-        model: targetModel,
-        availableModelIds: models.map((item) => item.id).toList(),
+      final saved = await CodexAppServerService.switchLocalSupplier(
+        supplier: supplier,
         previousConfig: previousConfig,
-        previousState: _providerState,
+        previousLibrary: library,
+        model: modelId,
+        effort: effort,
       );
-      if (!mounted || generation != _providerLoadGeneration) return;
+      if (!mounted || generation != _supplierLoadGeneration) return;
+      final nextLibrary = CodexSupplierStore.read();
       setState(() {
         _localConfig = saved;
-        _providerModels = models;
-        _providerState = _providerState.selecting(
-          providerId: providerId,
-          modelId: targetModel,
-        );
+        _supplierLibrary = nextLibrary;
         _error = null;
         _status = _localeText(zh: '供应商已切换。', en: 'Supplier switched.');
       });
     } catch (error) {
-      if (!mounted || generation != _providerLoadGeneration) return;
+      if (!mounted || generation != _supplierLoadGeneration) return;
       setState(() {
+        _supplierLibrary = CodexSupplierStore.read();
         _error = _localeText(
           zh: '供应商切换失败：$error',
           en: 'Failed to switch supplier: $error',
@@ -558,7 +457,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
         _status = null;
       });
     } finally {
-      if (mounted && generation == _providerLoadGeneration) {
+      if (mounted && generation == _supplierLoadGeneration) {
         setState(() => _isSaving = false);
         if (_hasCompleteInput &&
             _currentSignature() != _lastSavedSignature) {
@@ -570,35 +469,53 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
 
   Future<void> _manageProviders() async {
     final previousConfig = _localConfig;
-    final previousState = _providerState;
-    await GoRouterManager.pushForResult<Object?>('/home/model_provider_setting');
+    final previousActiveId = _supplierLibrary.activeSupplierId;
+    await GoRouterManager.pushForResult<Object?>(
+      '/home/codex/supplier_setting',
+    );
     if (!mounted || previousConfig == null) {
       return;
     }
     try {
-      final payload = await ModelProviderConfigService.listProfiles();
+      await CodexSupplierStore.ensureMigrated();
+      final library = CodexSupplierStore.read();
       if (!mounted) return;
-      final providerId = previousState.activeProviderId;
-      final stillExists = payload.profiles.any(
-        (provider) => provider.id == providerId,
-      );
+      final active = library.activeSupplier;
+      final stillExists = previousActiveId.trim().isNotEmpty &&
+          library.find(previousActiveId) != null;
       setState(() {
-        _providers = payload.profiles;
+        _supplierLibrary = library;
         _localConfig = previousConfig;
-        _providerState = previousState;
-        if (!stillExists) {
-          _providerModels = const [];
+        if (library.suppliers.isEmpty) {
+          _error = _localeText(
+            zh: '尚未配置 Codex 供应商，请点击「管理供应商」添加。',
+            en: 'No Codex supplier yet. Tap Manage to add one.',
+          );
+          _status = null;
+        } else if (active != null && !active.hasEnabledModel) {
+          _error = _localeText(
+            zh: '当前供应商未启用任何模型，请先启用至少一个模型后再切换。',
+            en: 'The active supplier has no enabled models. Enable at least one before switching.',
+          );
+          _status = null;
+        } else if (!stillExists && previousActiveId.trim().isNotEmpty) {
           _error = _localeText(
             zh: '当前供应商已被删除，请选择新的供应商。',
             en: 'The active supplier was deleted. Select another supplier.',
           );
           _status = null;
+        } else {
+          _error = null;
         }
       });
-      if (stillExists) {
-        // Reload the edited supplier's library, then commit selection only
-        // through the Native-first switch transaction.
-        await _switchProvider(providerId);
+      if (stillExists && active != null && active.hasEnabledModel) {
+        // Re-apply Native config from the (possibly edited) Codex library.
+        await _switchSupplier(previousActiveId);
+      } else if (!stillExists &&
+          active != null &&
+          active.hasEnabledModel &&
+          active.id != previousActiveId) {
+        await _switchSupplier(active.id);
       }
     } catch (error) {
       if (!mounted) return;
@@ -1039,23 +956,39 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                         Divider(height: 1, color: borderColor),
                         const SizedBox(height: 12),
                         CodexProviderSelector(
-                          providers: _providers,
-                          activeProviderId: _providerState.activeProviderId,
-                          models: _providerModels,
+                          suppliers: _supplierLibrary.suppliers,
+                          activeSupplierId:
+                              _supplierLibrary.activeSupplierId,
+                          enabledModels: _enabledModels,
                           activeModelId:
-                              _providerState.currentModels[
-                                  _providerState.activeProviderId] ??
-                              '',
+                              _activeSupplier?.activeModelId ?? '',
+                          activeEffort: _activeSupplier?.activeEffort ??
+                              (_localConfig?.modelReasoningEffort
+                                      .trim()
+                                      .isNotEmpty ==
+                                  true
+                                  ? _localConfig!.modelReasoningEffort.trim()
+                                  : 'medium'),
                           busy: _isSaving,
-                          onProviderChanged: (id) =>
-                              unawaited(_switchProvider(id)),
-                          onModelChanged: (id) => unawaited(
-                            _switchProvider(
-                              _providerState.activeProviderId,
-                              modelId: id,
-                            ),
-                          ),
-                          onManageProviders: () =>
+                          onSupplierChanged: (id) =>
+                              unawaited(_switchSupplier(id)),
+                          onModelChanged: (id) {
+                            final activeId =
+                                _supplierLibrary.activeSupplierId;
+                            if (activeId.isEmpty) return;
+                            unawaited(
+                              _switchSupplier(activeId, modelId: id),
+                            );
+                          },
+                          onEffortChanged: (effort) {
+                            final activeId =
+                                _supplierLibrary.activeSupplierId;
+                            if (activeId.isEmpty) return;
+                            unawaited(
+                              _switchSupplier(activeId, effort: effort),
+                            );
+                          },
+                          onManageSuppliers: () =>
                               unawaited(_manageProviders()),
                         ),
                         const SizedBox(height: 12),

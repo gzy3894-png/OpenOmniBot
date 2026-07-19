@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:ui/services/codex_supplier_store.dart';
 import 'package:ui/services/model_provider_config_service.dart';
 
 class CodexChannelUnavailableException implements Exception {
@@ -227,8 +228,8 @@ typedef CodexLocalProviderConfigApplier =
       CodexLocalConfig config, {
       required String providerRecordId,
     });
-typedef CodexProviderStateCommitter =
-    Future<void> Function(CodexProviderState state);
+typedef CodexSupplierLibraryCommitter =
+    Future<void> Function(CodexSupplierLibrary library);
 
 class CodexProviderSwitchException implements Exception {
   const CodexProviderSwitchException(
@@ -1057,79 +1058,79 @@ class CodexAppServerService {
     return CodexLocalConfig.fromMap(result);
   }
 
-  /// Switches the application supplier while the Native Codex profile remains
-  /// the fixed `omnimind` profile.
+  /// Switches the Codex-private supplier while Native always keeps the fixed
+  /// internal `omnimind` profile and `wire_api = responses`.
   ///
-  /// Native config/auth is applied first. The application selection is
-  /// committed as one JSON value only after Native reports the target values.
-  /// If that commit fails, the previous Native config is restored and the UI
-  /// caller can keep rendering its previous selection.
-  static Future<CodexLocalConfig> switchLocalProvider({
-    required ModelProviderProfileSummary provider,
-    required String model,
-    required List<String> availableModelIds,
+  /// Native config/auth is applied first. The Codex supplier library is
+  /// committed only after Native reports the target values. On commit failure
+  /// Native is restored and the previous library snapshot is written back.
+  static Future<CodexLocalConfig> switchLocalSupplier({
+    required CodexSupplierRecord supplier,
     required CodexLocalConfig previousConfig,
-    CodexProviderState? previousState,
+    CodexSupplierLibrary? previousLibrary,
+    String? model,
+    String? effort,
     CodexLocalProviderConfigApplier? applyConfig,
-    CodexProviderStateCommitter? commitState,
+    CodexSupplierLibraryCommitter? commitLibrary,
   }) async {
-    final compatibility =
-        ModelProviderConfigService.codexCompatibility(provider);
-    if (!compatibility.isSupported) {
-      throw CodexProviderSwitchException(compatibility.reason);
-    }
-    final targetModel = model.trim();
-    final allowedModels = availableModelIds
-        .map((item) => item.trim())
-        .where((item) => item.isNotEmpty)
-        .toSet();
-    if (targetModel.isEmpty || !allowedModels.contains(targetModel)) {
-      throw const CodexProviderSwitchException(
-        'The selected model is not in this provider model library',
-      );
-    }
-
-    final oldState =
-        previousState ?? ModelProviderConfigService.readCodexProviderState();
-    final targetState = oldState.selecting(
-      providerId: provider.id,
-      modelId: targetModel,
+    final normalized = supplier.normalized();
+    final validation = CodexSupplierStore.validateForSwitch(
+      normalized.copyWith(
+        activeModelId: (model ?? normalized.activeModelId).trim(),
+        activeEffort: (effort ?? normalized.activeEffort).trim(),
+      ),
     );
+    if (!validation.isOk) {
+      throw CodexProviderSwitchException(validation.reason);
+    }
+    final targetModel = (model ?? normalized.activeModelId).trim();
+    final targetEffort = (effort ?? normalized.activeEffort).trim();
+    final targetSupplier = normalized.copyWith(
+      activeModelId: targetModel,
+      activeEffort: targetEffort.isEmpty ? 'medium' : targetEffort,
+    );
+    final oldLibrary = previousLibrary ?? CodexSupplierStore.read();
+    final targetLibrary = _librarySelecting(
+      oldLibrary,
+      targetSupplier,
+    );
+    final targetBase =
+        ModelProviderConfigService.normalizeApiBase(targetSupplier.baseUrl) ??
+            targetSupplier.baseUrl.trim();
     final targetConfig = previousConfig.copyWith(
-      baseUrl: ModelProviderConfigService.normalizeApiBase(provider.baseUrl) ??
-          provider.baseUrl.trim(),
+      baseUrl: targetBase,
       model: targetModel,
-      apiKey: provider.apiKey.trim(),
+      apiKey: targetSupplier.apiKey.trim(),
+      modelReasoningEffort: targetSupplier.activeEffort,
     );
     final configApplier = applyConfig ?? _applyLocalProviderConfig;
-    final stateCommitter =
-        commitState ?? ModelProviderConfigService.commitCodexProviderState;
+    final libraryCommitter = commitLibrary ?? CodexSupplierStore.write;
 
     late final CodexLocalConfig applied;
     try {
       applied = await configApplier(
         targetConfig,
-        providerRecordId: provider.id,
+        providerRecordId: targetSupplier.id,
       );
     } catch (_) {
       try {
         await configApplier(
           previousConfig,
-          providerRecordId: oldState.activeProviderId,
+          providerRecordId: oldLibrary.activeSupplierId,
         );
       } catch (_) {
         throw const CodexProviderSwitchException(
-          'Provider switch failed and Native rollback failed',
+          'Supplier switch failed and Native rollback failed',
           rollbackFailed: true,
         );
       }
       throw const CodexProviderSwitchException(
-        'Provider switch failed; previous config restored',
+        'Supplier switch failed; previous config restored',
       );
     }
     final appliedBase =
         ModelProviderConfigService.normalizeApiBase(applied.baseUrl) ??
-        applied.baseUrl.trim();
+            applied.baseUrl.trim();
     if (appliedBase != targetConfig.baseUrl ||
         applied.modelProvider.trim() != 'omnimind' ||
         applied.model.trim() != targetModel ||
@@ -1137,48 +1138,86 @@ class CodexAppServerService {
       try {
         await configApplier(
           previousConfig,
-          providerRecordId: oldState.activeProviderId,
+          providerRecordId: oldLibrary.activeSupplierId,
         );
       } catch (_) {
         throw const CodexProviderSwitchException(
-          'Provider switch verification failed and Native rollback failed',
+          'Supplier switch verification failed and Native rollback failed',
           rollbackFailed: true,
         );
       }
       throw const CodexProviderSwitchException(
-        'Provider switch verification failed',
+        'Supplier switch verification failed',
       );
     }
 
     try {
-      await stateCommitter(targetState);
+      await libraryCommitter(targetLibrary);
     } catch (_) {
       var nativeRollbackFailed = false;
-      var stateRollbackFailed = false;
+      var libraryRollbackFailed = false;
       try {
         await configApplier(
           previousConfig,
-          providerRecordId: oldState.activeProviderId,
+          providerRecordId: oldLibrary.activeSupplierId,
         );
       } catch (_) {
         nativeRollbackFailed = true;
       }
       try {
-        await stateCommitter(oldState);
+        await libraryCommitter(oldLibrary);
       } catch (_) {
-        stateRollbackFailed = true;
+        libraryRollbackFailed = true;
       }
-      if (nativeRollbackFailed || stateRollbackFailed) {
+      if (nativeRollbackFailed || libraryRollbackFailed) {
         throw const CodexProviderSwitchException(
-          'Provider selection could not be saved and rollback failed',
+          'Supplier selection could not be saved and rollback failed',
           rollbackFailed: true,
         );
       }
       throw const CodexProviderSwitchException(
-        'Provider selection could not be saved; previous config restored',
+        'Supplier selection could not be saved; previous config restored',
       );
     }
     return applied;
+  }
+
+  /// Backward-compatible name used by older call sites/tests.
+  static Future<CodexLocalConfig> switchLocalProvider({
+    required CodexSupplierRecord supplier,
+    required CodexLocalConfig previousConfig,
+    CodexSupplierLibrary? previousLibrary,
+    String? model,
+    String? effort,
+    CodexLocalProviderConfigApplier? applyConfig,
+    CodexSupplierLibraryCommitter? commitLibrary,
+  }) {
+    return switchLocalSupplier(
+      supplier: supplier,
+      previousConfig: previousConfig,
+      previousLibrary: previousLibrary,
+      model: model,
+      effort: effort,
+      applyConfig: applyConfig,
+      commitLibrary: commitLibrary,
+    );
+  }
+
+  static CodexSupplierLibrary _librarySelecting(
+    CodexSupplierLibrary library,
+    CodexSupplierRecord supplier,
+  ) {
+    final suppliers = [...library.suppliers];
+    final index = suppliers.indexWhere((item) => item.id == supplier.id);
+    if (index >= 0) {
+      suppliers[index] = supplier;
+    } else {
+      suppliers.add(supplier);
+    }
+    return CodexSupplierLibrary(
+      activeSupplierId: supplier.id,
+      suppliers: suppliers,
+    );
   }
 
   static Future<CodexLocalConfig> _applyLocalProviderConfig(

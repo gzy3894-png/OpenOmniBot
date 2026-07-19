@@ -8,6 +8,7 @@ import 'package:ui/features/home/pages/authorize_setting/authorize_setting_page.
 import 'package:ui/features/home/pages/companion_setting/companion_setting_page.dart';
 import 'package:ui/features/home/pages/codex/codex_setting_page.dart';
 import 'package:ui/features/home/pages/codex/codex_sessions_page.dart';
+import 'package:ui/features/home/pages/codex/codex_supplier_setting_page.dart';
 import 'package:ui/features/home/pages/chat_history/chat_history_page.dart';
 import 'package:ui/features/home/pages/permission_guide/permission_guide_detail_page.dart';
 import 'package:ui/features/home/pages/permission_guide/permission_guide_page.dart';
@@ -171,6 +172,16 @@ List<GoRoute> homeRoutes = [
       key: state.pageKey,
       name: 'home/codex_setting',
       child: const CodexSettingPage(),
+    ),
+  ),
+  // Codex-private supplier manager (isolated from Agent model_provider_setting).
+  GoRoute(
+    path: '/home/codex/supplier_setting',
+    name: 'home/codex/supplier_setting',
+    pageBuilder: (context, state) => GoRouterManager.buildActivitySlidePage(
+      key: state.pageKey,
+      name: 'home/codex/supplier_setting',
+      child: const CodexSupplierSettingPage(),
     ),
   ),
   GoRoute(
