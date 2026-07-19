@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 class CodexAppServerChannel {
@@ -19,6 +20,12 @@ class CodexAppServerChannel {
         private const val EVENT_CHANNEL = "cn.com.omnimind.bot/CodexAppServerEvents"
         private val NEXT_CHANNEL_TOKEN = AtomicLong(0L)
         private val NEXT_STREAM_OWNER_TOKEN = AtomicLong(0L)
+        /**
+         * A rebuilt Activity can configure the same cached FlutterEngine before
+         * the old ChannelManager finishes clearing. Only the latest channel
+         * instance may detach handlers from that engine's messenger.
+         */
+        private val ACTIVE_ENGINE_OWNERS = ConcurrentHashMap<Int, Long>()
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -32,6 +39,7 @@ class CodexAppServerChannel {
     private var eventStreamOwnerToken: Long? = null
     private var activeStreamHandlerOwnerToken: Long? = null
     private var engineToken: String = "flutter-engine-unbound-$channelToken"
+    private var boundEngineKey: Int? = null
 
     fun onCreate(context: Context) {
         this.context = context.applicationContext
@@ -47,14 +55,16 @@ class CodexAppServerChannel {
         // B38 T5: tear down prior handlers first so re-configure on the same
         // engine (or messenger reuse) never leaves a null handler race that
         // surfaces as Flutter MissingPluginException(connect).
-        unregisterEventSink(reason = "channel_reconfigured")
-        eventSink = null
-        eventStreamOwnerToken = null
-        activeStreamHandlerOwnerToken = null
-        methodChannel?.setMethodCallHandler(null)
-        eventChannel?.setStreamHandler(null)
+        detachChannels(reason = "channel_reconfigured")
         engineToken = "flutter-engine-${Integer.toHexString(System.identityHashCode(flutterEngine))}-$channelToken"
 
+        val engineKey = System.identityHashCode(
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+        // Claim before installing handlers. A delayed clear from the previous
+        // Activity will then observe the new owner and leave these handlers intact.
+        ACTIVE_ENGINE_OWNERS[engineKey] = channelToken
+        boundEngineKey = engineKey
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
         methodChannel?.setMethodCallHandler(::handleMethodCall)
 
@@ -147,15 +157,34 @@ class CodexAppServerChannel {
     }
 
     fun clear() {
-        unregisterEventSink(reason = "channel_cleared")
+        detachChannels(reason = "channel_cleared")
+        manager = null
+        context = null
+    }
+
+    private fun detachChannels(reason: String) {
+        unregisterEventSink(reason = reason)
         eventSink = null
         eventStreamOwnerToken = null
         activeStreamHandlerOwnerToken = null
-        methodChannel?.setMethodCallHandler(null)
+        val engineKey = boundEngineKey
+        val stillOwnsEngine = engineKey != null &&
+            ACTIVE_ENGINE_OWNERS.remove(engineKey, channelToken)
+        if (stillOwnsEngine) {
+            // Keep a structured failure handler during engine teardown instead
+            // of exposing a transient MissingPluginException to Dart. A new
+            // ChannelManager overwrites this after claiming ownership.
+            methodChannel?.setMethodCallHandler { call, result ->
+                result.error(
+                    "CODEX_CHANNEL_DETACHED",
+                    "Codex channel is detached while FlutterEngine is reconfiguring.",
+                    mapOf("method" to call.method),
+                )
+            }
+            eventChannel?.setStreamHandler(null)
+        }
         methodChannel = null
-        eventChannel?.setStreamHandler(null)
         eventChannel = null
-        manager = null
-        context = null
+        boundEngineKey = null
     }
 }

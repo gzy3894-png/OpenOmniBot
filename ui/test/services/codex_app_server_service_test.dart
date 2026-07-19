@@ -165,6 +165,87 @@ void main() {
     expect(calls.first.arguments, {'limit': 100});
   });
 
+  test('goal RPCs require a live threadId before invoking native', () {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return <String, dynamic>{'ok': true};
+    });
+
+    expect(
+      () => CodexAppServerService.getThreadGoal(conversationId: 7),
+      throwsStateError,
+    );
+    expect(
+      () => CodexAppServerService.setThreadGoal(
+        conversationId: 7,
+        objective: 'ship safely',
+      ),
+      throwsStateError,
+    );
+    expect(
+      () => CodexAppServerService.clearThreadGoal(conversationId: 7),
+      throwsStateError,
+    );
+    expect(calls, isEmpty);
+  });
+
+  test('goal RPC trims and forwards its live threadId', () async {
+    MethodCall? capturedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      capturedCall = call;
+      return <String, dynamic>{'ok': true};
+    });
+
+    await CodexAppServerService.getThreadGoal(
+      threadId: ' thread-goal ',
+      conversationId: 7,
+    );
+
+    expect(capturedCall?.method, 'thread/goal/get');
+    expect(capturedCall?.arguments, {
+      'threadId': 'thread-goal',
+      'conversationId': 7,
+    });
+  });
+
+  test('connect reports bounded channel-unavailable failure', () async {
+    var attempts = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      attempts += 1;
+      throw MissingPluginException('engine is reconfiguring');
+    });
+
+    await expectLater(
+      CodexAppServerService.connect(),
+      throwsA(
+        isA<CodexChannelUnavailableException>()
+            .having((error) => error.method, 'method', 'connect')
+            .having((error) => error.attempts, 'attempts', 6),
+      ),
+    );
+    expect(attempts, 6);
+  });
+
+  test('connect retries a detached native channel and recovers', () async {
+    var attempts = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      attempts += 1;
+      if (attempts < 3) {
+        throw PlatformException(
+          code: 'CODEX_CHANNEL_DETACHED',
+          message: 'engine is reconfiguring',
+        );
+      }
+      return <String, dynamic>{'connected': true, 'ready': true};
+    });
+
+    final status = await CodexAppServerService.connect();
+
+    expect(attempts, 3);
+    expect(status.connected, isTrue);
+  });
+
   test('model switch sends clamped effort atomically, never old effort',
       () async {
     final calls = <MethodCall>[];

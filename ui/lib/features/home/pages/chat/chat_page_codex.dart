@@ -40,6 +40,8 @@ Keep the file practical and avoid generic advice. If AGENTS.md already exists, p
 ''';
 
 mixin _ChatPageCodexMixin on _ChatPageStateBase {
+  Future<String>? _codexThreadRecoveryFuture;
+
   bool _applyCodexStatusSnapshot(
     CodexStatus status, {
     bool resetModelCatalog = false,
@@ -758,6 +760,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         previousEffort.isNotEmpty &&
         clampedEffort == null;
     final threadId = (_activeCodexThreadId ?? '').trim();
+    var settingsThreadId = threadId;
     // Resolve the target model/effort pair before touching a live thread.
     // Sending the model first could make app-server validate the previous
     // model's now-illegal effort, while a follow-up RPC also exposes an
@@ -770,9 +773,34 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           effort: clampedEffort,
         );
       } catch (error) {
-        // B37: stale thread id → clear and still apply model locally.
         if (_isCodexThreadMissingError(error)) {
-          _clearStaleCodexThreadId(threadId);
+          try {
+            settingsThreadId = await _recoverCodexThreadAfterMissing(
+              staleThreadId: threadId,
+              source: 'model',
+            );
+            await CodexAppServerService.updateThreadSettings(
+              threadId: settingsThreadId,
+              model: normalized,
+              effort: clampedEffort,
+            );
+          } catch (reError) {
+            if (!mounted) return;
+            unawaited(
+              DebugFileLog.logModel(
+                'select_failed',
+                model: normalized,
+                previous: previous.isEmpty ? null : previous,
+              ),
+            );
+            showToast(
+              LegacyTextLocalizer.isEnglish
+                  ? 'Failed to update Codex model: $reError'
+                  : '更新 Codex 模型失败：$reError',
+              type: ToastType.error,
+            );
+            return;
+          }
         } else {
           if (!mounted) return;
           unawaited(
@@ -822,12 +850,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       // A same-model refresh can still discover a newly clamped effort. Model
       // switches already sent the resolved pair atomically above.
       if (!changed &&
-          threadId.isNotEmpty &&
+          settingsThreadId.isNotEmpty &&
           nextEffort.isNotEmpty &&
           effortChanged) {
         try {
           await CodexAppServerService.updateThreadSettings(
-            threadId: threadId,
+            threadId: settingsThreadId,
             effort: nextEffort,
           );
         } catch (error) {
@@ -923,6 +951,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final previous = (_activeCodexReasoningEffort ?? '').trim();
     final changed = previous != normalized;
     final threadId = (_activeCodexThreadId ?? '').trim();
+    var settingsThreadId = threadId;
     Object? settingsRpc = 'skipped';
     if (threadId.isNotEmpty && changed) {
       try {
@@ -932,33 +961,51 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         );
         settingsRpc = 'ok';
       } catch (error) {
-        if (!mounted) return;
-        unawaited(
-          DebugFileLog.logEffortSet(
-            value: normalized,
-            allowedFromModel: _codexReasoningEffortOptions,
-            settingsRpc: 'fail',
-            previous: previous.isEmpty ? null : previous,
-            model: (_activeCodexModelId ?? '').trim().isEmpty
-                ? null
-                : (_activeCodexModelId ?? '').trim(),
-            error: error,
-          ),
-        );
-        unawaited(
-          DebugFileLog.logModel(
-            'effort_failed',
-            effort: normalized,
-            previous: previous.isEmpty ? null : previous,
-          ),
-        );
-        showToast(
-          LegacyTextLocalizer.isEnglish
-              ? 'Failed to update Codex effort: $error'
-              : '更新 Codex 思考等级失败：$error',
-          type: ToastType.error,
-        );
-        return;
+        Object finalError = error;
+        if (_isCodexThreadMissingError(error)) {
+          try {
+            settingsThreadId = await _recoverCodexThreadAfterMissing(
+              staleThreadId: threadId,
+              source: 'effort',
+            );
+            await CodexAppServerService.updateThreadSettings(
+              threadId: settingsThreadId,
+              effort: normalized,
+            );
+            settingsRpc = 'reapply_ok';
+          } catch (reError) {
+            finalError = reError;
+          }
+        }
+        if (settingsRpc != 'reapply_ok') {
+          if (!mounted) return;
+          unawaited(
+            DebugFileLog.logEffortSet(
+              value: normalized,
+              allowedFromModel: _codexReasoningEffortOptions,
+              settingsRpc: 'fail',
+              previous: previous.isEmpty ? null : previous,
+              model: (_activeCodexModelId ?? '').trim().isEmpty
+                  ? null
+                  : (_activeCodexModelId ?? '').trim(),
+              error: finalError,
+            ),
+          );
+          unawaited(
+            DebugFileLog.logModel(
+              'effort_failed',
+              effort: normalized,
+              previous: previous.isEmpty ? null : previous,
+            ),
+          );
+          showToast(
+            LegacyTextLocalizer.isEnglish
+                ? 'Failed to update Codex effort: $finalError'
+                : '更新 Codex 思考等级失败：$finalError',
+            type: ToastType.error,
+          );
+          return;
+        }
       }
     }
     if (!mounted) return;
@@ -1180,19 +1227,12 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
       } catch (error) {
         rpcError = error;
         if (_isCodexThreadMissingError(error)) {
-          // B38: stale → clear → ensure/rebind live thread → re-apply triad.
-          _clearStaleCodexThreadId(threadId);
           settingsRpc = 'stale_cleared';
           try {
-            final liveId =
-                ((await _ensureActiveCodexThreadId()) ?? '').trim();
-            if (liveId.isEmpty) {
-              throw StateError(
-                LegacyTextLocalizer.isEnglish
-                    ? 'Could not rebind Codex thread for permission settings'
-                    : '无法为权限设置重建 Codex 线程',
-              );
-            }
+            final liveId = await _recoverCodexThreadAfterMissing(
+              staleThreadId: threadId,
+              source: 'permission',
+            );
             settingsThreadId = liveId;
             // A2 triad-on-startThread may not have landed; always re-apply settings.
             await applyTriad(liveId);
@@ -1255,6 +1295,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     final turningOn = enabled && !previous;
     final turningOff = !enabled && previous;
     final threadId = (_activeCodexThreadId ?? '').trim();
+    var settingsThreadId = threadId;
     final prefValue =
         enabled ? _kCodexFastServiceTier : _kCodexOffServiceTier;
 
@@ -1296,7 +1337,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           pref: prefValue,
           settingsRpc: settingsRpc,
           configFastMode: configFastMode,
-          activeThreadId: threadId.isEmpty ? null : threadId,
+          activeThreadId:
+              settingsThreadId.isEmpty ? null : settingsThreadId,
           error: '$stage: $error',
         ),
       );
@@ -1326,10 +1368,33 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         settingsRpc = 'ok';
       } catch (error) {
         rpcError = error;
-        // B37: dead thread → clear id and continue conf/pref (keep optimistic).
         if (_isCodexThreadMissingError(error)) {
-          _clearStaleCodexThreadId(threadId);
           settingsRpc = 'stale_cleared';
+          try {
+            final liveId = await _recoverCodexThreadAfterMissing(
+              staleThreadId: threadId,
+              source: 'fast',
+            );
+            settingsThreadId = liveId;
+            if (enabled) {
+              await CodexAppServerService.updateThreadSettings(
+                threadId: liveId,
+                serviceTier: _kCodexFastServiceTier,
+              );
+            } else {
+              await CodexAppServerService.updateThreadSettings(
+                threadId: liveId,
+                clearServiceTier: true,
+              );
+            }
+            settingsRpc = 'reapply_ok';
+            rpcError = null;
+          } catch (reError) {
+            settingsRpc = 'fail';
+            rpcError = reError;
+            await rollbackAndTip(reError, stage: 'settingsReapply');
+            return;
+          }
         } else {
           settingsRpc = 'fail';
           await rollbackAndTip(error, stage: 'settingsRpc');
@@ -1383,7 +1448,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         pref: prefValue,
         settingsRpc: settingsRpc,
         configFastMode: configFastMode,
-        activeThreadId: threadId.isEmpty ? null : threadId,
+        activeThreadId:
+            settingsThreadId.isEmpty ? null : settingsThreadId,
         error: rpcError,
       ),
     );
@@ -1669,19 +1735,41 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
 
   Future<void> _refreshCodexActiveGoalText() async {
     final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
-    final threadId = (_activeCodexThreadId ?? '').trim();
+    var requestedThreadId = (_activeCodexThreadId ?? '').trim();
     if ((conversationId == null || _isRemoteCodexConfigured()) &&
-        threadId.isEmpty) {
+        requestedThreadId.isEmpty) {
       return;
     }
     // Snapshot before server get so we can detect "had goal → cleared".
     final hadLocalGoal = (_codexActiveGoalText ?? '').trim().isNotEmpty;
     try {
       await _ensureCodexConnectedForSlashCommand();
-      final response = await CodexAppServerService.getThreadGoal(
-        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
-        threadId: threadId.isEmpty ? null : threadId,
-      );
+      if (requestedThreadId.isEmpty) {
+        requestedThreadId =
+            ((await _ensureActiveCodexThreadId()) ?? '').trim();
+      }
+      if (requestedThreadId.isEmpty) {
+        throw StateError('Codex goal refresh requires a live threadId');
+      }
+      Map<String, dynamic> response;
+      try {
+        response = await CodexAppServerService.getThreadGoal(
+          conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+          threadId: requestedThreadId,
+        );
+      } catch (error) {
+        if (!_isCodexThreadMissingError(error)) {
+          rethrow;
+        }
+        requestedThreadId = await _recoverCodexThreadAfterMissing(
+          staleThreadId: requestedThreadId,
+          source: 'goal.get',
+        );
+        response = await CodexAppServerService.getThreadGoal(
+          conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+          threadId: requestedThreadId,
+        );
+      }
       if (!mounted) {
         return;
       }
@@ -1696,7 +1784,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         DebugFileLog.logGoal(
           'get',
           objective: hasActiveGoal ? trimmedObjective : '',
-          threadId: threadId.isEmpty ? null : threadId,
+          threadId: requestedThreadId,
           conversationId: conversationId,
         ),
       );
@@ -1724,7 +1812,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           'goal.get',
           error,
           fields: <String, Object?>{
-            if (threadId.isNotEmpty) 'threadId': threadId,
+            if (requestedThreadId.isNotEmpty)
+              'threadId': requestedThreadId,
             if (conversationId != null) 'conversationId': conversationId,
           },
         ),
@@ -1732,13 +1821,79 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
   }
 
+  Future<String> _recoverCodexThreadAfterMissing({
+    required String staleThreadId,
+    required String source,
+  }) {
+    final staleId = staleThreadId.trim();
+    final pending = _codexThreadRecoveryFuture;
+    if (pending != null) {
+      return pending.then((liveId) {
+        if (liveId == staleId) {
+          throw StateError(
+            'Codex thread recovery reused stale threadId $staleId',
+          );
+        }
+        return liveId;
+      });
+    }
+
+    late final Future<String> tracked;
+    tracked = (() async {
+      await _clearStaleCodexThreadId(staleId);
+      final liveId =
+          ((await _ensureActiveCodexThreadId(
+                    excludedThreadId: staleId,
+                  )) ??
+                  '')
+              .trim();
+      if (liveId.isEmpty || liveId == staleId) {
+        throw StateError(
+          liveId.isEmpty
+              ? 'Codex thread recovery did not return a live threadId'
+              : 'Codex thread recovery reused stale threadId $staleId',
+        );
+      }
+      unawaited(
+        DebugFileLog.log(
+          'thread',
+          'stale_recovered',
+          fields: <String, Object?>{
+            'source': source,
+            'staleThreadId': staleId,
+            'liveThreadId': liveId,
+          },
+        ),
+      );
+      return liveId;
+    })().whenComplete(() {
+      if (identical(_codexThreadRecoveryFuture, tracked)) {
+        _codexThreadRecoveryFuture = null;
+      }
+    });
+    _codexThreadRecoveryFuture = tracked;
+    return tracked;
+  }
+
   /// B13: Goal RPC 需要 threadId。空会话先 startThread 再回填。
   /// B38 T5: prefer rebinding via conversationId→native binding before
   /// forking a new thread (reduces goal/composer/turn threadId divergence).
-  Future<String?> _ensureActiveCodexThreadId() async {
+  /// A rejected id came from a definitive thread-not-found response and must
+  /// never be restored from the conversation binding cache.
+  Future<String?> _ensureActiveCodexThreadId({
+    String? excludedThreadId,
+  }) async {
+    final excludedId = (excludedThreadId ?? '').trim();
+    final pendingRecovery = _codexThreadRecoveryFuture;
+    if (excludedId.isEmpty && pendingRecovery != null) {
+      return pendingRecovery;
+    }
     final existing = (_activeCodexThreadId ?? '').trim();
-    if (existing.isNotEmpty) {
+    if (existing.isNotEmpty && existing != excludedId) {
       return existing;
+    }
+    if (existing.isNotEmpty) {
+      await _clearStaleCodexThreadId(existing);
     }
 
     await _ensureCodexConnectedForSlashCommand();
@@ -1769,7 +1924,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
                     _asCodexString(_asCodexMap(rebound['thread'])?['id']) ??
                     '')
                 .trim();
-        if (reboundId.isNotEmpty) {
+        if (reboundId.isNotEmpty && reboundId != excludedId) {
           _bindActiveCodexThreadId(
             reboundId,
             source: 'ensure.rebind',
@@ -1777,6 +1932,18 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
           );
           await _persistVisibleThreadTargetIfNeeded();
           return reboundId;
+        }
+        if (reboundId == excludedId) {
+          unawaited(
+            DebugFileLog.log(
+              'thread',
+              'stale_rebind_rejected',
+              fields: <String, Object?>{
+                'threadId': reboundId,
+                'conversationId': conversationId,
+              },
+            ),
+          );
         }
       } catch (error) {
         debugPrint(
@@ -1826,6 +1993,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         LegacyTextLocalizer.isEnglish
             ? 'Codex did not return a thread id for Goal mode'
             : 'Codex 未返回目标模式可用的线程 id',
+      );
+    }
+    if (threadId == excludedId) {
+      throw StateError(
+        'Codex startThread reused stale threadId $excludedId',
       );
     }
 
@@ -3004,8 +3176,7 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         threadId = (ensured ?? '').trim();
       }
       conversationId = _currentConversationIdByMode[ChatPageMode.codex];
-      if (threadId.isEmpty &&
-          (conversationId == null || _isRemoteCodexConfigured())) {
+      if (threadId.isEmpty) {
         _showSnackBar(
           LegacyTextLocalizer.isEnglish
               ? 'Could not start a thread for Goal mode. Check Codex connection and retry.'
@@ -3014,17 +3185,32 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         return;
       }
       // 1) Real Codex goal RPC first — only start a turn after success.
-      await CodexAppServerService.setThreadGoal(
-        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
-        threadId: threadId.isEmpty ? null : threadId,
-        objective: normalized,
-      );
+      try {
+        await CodexAppServerService.setThreadGoal(
+          conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+          threadId: threadId,
+          objective: normalized,
+        );
+      } catch (error) {
+        if (!_isCodexThreadMissingError(error)) {
+          rethrow;
+        }
+        threadId = await _recoverCodexThreadAfterMissing(
+          staleThreadId: threadId,
+          source: 'goal.set',
+        );
+        await CodexAppServerService.setThreadGoal(
+          conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+          threadId: threadId,
+          objective: normalized,
+        );
+      }
       if (!mounted) return;
       unawaited(
         DebugFileLog.logGoal(
           'set',
           objective: normalized,
-          threadId: threadId.isEmpty ? null : threadId,
+          threadId: threadId,
           conversationId: conversationId,
         ),
       );
@@ -3072,8 +3258,8 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   }
 
   Future<void> _executeCodexClearGoalCommand() async {
-    final conversationId = _currentConversationIdByMode[ChatPageMode.codex];
-    final threadId = (_activeCodexThreadId ?? '').trim();
+    var conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+    var threadId = (_activeCodexThreadId ?? '').trim();
     if ((conversationId == null || _isRemoteCodexConfigured()) &&
         threadId.isEmpty) {
       if (mounted) {
@@ -3091,15 +3277,36 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     }
     try {
       await _ensureCodexConnectedForSlashCommand();
-      await CodexAppServerService.clearThreadGoal(
-        conversationId: _isRemoteCodexConfigured() ? null : conversationId,
-        threadId: threadId.isEmpty ? null : threadId,
-      );
+      if (threadId.isEmpty) {
+        threadId = ((await _ensureActiveCodexThreadId()) ?? '').trim();
+        conversationId = _currentConversationIdByMode[ChatPageMode.codex];
+      }
+      if (threadId.isEmpty) {
+        throw StateError('Codex goal clear requires a live threadId');
+      }
+      try {
+        await CodexAppServerService.clearThreadGoal(
+          conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+          threadId: threadId,
+        );
+      } catch (error) {
+        if (!_isCodexThreadMissingError(error)) {
+          rethrow;
+        }
+        threadId = await _recoverCodexThreadAfterMissing(
+          staleThreadId: threadId,
+          source: 'goal.clear',
+        );
+        await CodexAppServerService.clearThreadGoal(
+          conversationId: _isRemoteCodexConfigured() ? null : conversationId,
+          threadId: threadId,
+        );
+      }
       if (!mounted) return;
       unawaited(
         DebugFileLog.logGoal(
           'clear',
-          threadId: threadId.isEmpty ? null : threadId,
+          threadId: threadId,
           conversationId: conversationId,
         ),
       );
@@ -4760,16 +4967,21 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
   /// B37: thread/settings/update failed because UI holds a dead thread id.
   bool _isCodexThreadMissingError(Object error) {
     final s = error.toString().toLowerCase();
-    return s.contains('thread not found') ||
+    return (s.contains('thread') && s.contains('not found')) ||
         (s.contains('-32600') && s.contains('thread'));
   }
 
-  /// B37: drop stale `_activeCodexThreadId` so later RPCs do not target ghosts.
-  /// B38 T5: also re-persist visible target so goal/composer/turn share one source.
-  void _clearStaleCodexThreadId(String expectedThreadId) {
+  /// Drop the stale in-memory thread/turn pair and synchronously persist the
+  /// cleared visible target before recovery starts. The subsequent startThread
+  /// replaces the native conversation binding; awaiting this write prevents an
+  /// older target write from racing and restoring the dead id afterward.
+  Future<void> _clearStaleCodexThreadId(String expectedThreadId) async {
     final cur = (_activeCodexThreadId ?? '').trim();
-    if (cur.isEmpty) return;
     if (expectedThreadId.isNotEmpty && cur != expectedThreadId) {
+      if (cur.isEmpty) {
+        await _persistVisibleThreadTargetIfNeeded();
+        return;
+      }
       // Another path already rebound; log the fork rather than clobbering live id.
       unawaited(
         DebugFileLog.log(
@@ -4786,9 +4998,11 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
     if (mounted) {
       setState(() {
         _activeCodexThreadId = null;
+        _activeCodexTurnId = null;
       });
     } else {
       _activeCodexThreadId = null;
+      _activeCodexTurnId = null;
     }
     unawaited(
       DebugFileLog.log(
@@ -4797,8 +5011,9 @@ mixin _ChatPageCodexMixin on _ChatPageStateBase {
         fields: <String, Object?>{'threadId': expectedThreadId},
       ),
     );
-    // Sync persisted last-visible target without the dead codexThreadId.
-    unawaited(_persistVisibleThreadTargetIfNeeded());
+    // Sync persisted last-visible target without the dead codexThreadId before
+    // ensure/rebind is allowed to observe conversation state.
+    await _persistVisibleThreadTargetIfNeeded();
   }
 }
 

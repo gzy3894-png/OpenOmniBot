@@ -4,6 +4,22 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+class CodexChannelUnavailableException implements Exception {
+  const CodexChannelUnavailableException({
+    required this.method,
+    required this.attempts,
+    required this.cause,
+  });
+
+  final String method;
+  final int attempts;
+  final Object cause;
+
+  @override
+  String toString() =>
+      'Codex native channel unavailable for $method after $attempts attempts';
+}
+
 class CodexStatus {
   const CodexStatus({
     required this.connected,
@@ -738,8 +754,12 @@ class CodexAppServerService {
     String? threadId,
     int? conversationId,
   }) {
+    final resolvedThreadId = _requireCodexGoalThreadId(
+      threadId,
+      operation: 'thread/goal/get',
+    );
     return _invokeMap('thread/goal/get', {
-      if (threadId != null) 'threadId': threadId,
+      'threadId': resolvedThreadId,
       if (conversationId != null) 'conversationId': conversationId,
     });
   }
@@ -750,8 +770,12 @@ class CodexAppServerService {
     required String objective,
     String status = 'active',
   }) {
+    final resolvedThreadId = _requireCodexGoalThreadId(
+      threadId,
+      operation: 'thread/goal/set',
+    );
     return _invokeMap('thread/goal/set', {
-      if (threadId != null) 'threadId': threadId,
+      'threadId': resolvedThreadId,
       if (conversationId != null) 'conversationId': conversationId,
       'objective': objective.trim(),
       if (status.trim().isNotEmpty) 'status': status.trim(),
@@ -762,8 +786,12 @@ class CodexAppServerService {
     String? threadId,
     int? conversationId,
   }) {
+    final resolvedThreadId = _requireCodexGoalThreadId(
+      threadId,
+      operation: 'thread/goal/clear',
+    );
     return _invokeMap('thread/goal/clear', {
-      if (threadId != null) 'threadId': threadId,
+      'threadId': resolvedThreadId,
       if (conversationId != null) 'conversationId': conversationId,
     });
   }
@@ -1257,28 +1285,59 @@ class CodexAppServerService {
     String method, [
     Map<String, dynamic> args = const <String, dynamic>{},
   ]) async {
-    // B38 T5: MissingPlugin on connect/status is often a brief engine/channel
-    // rebind window (half-screen clear, activity reattach). Retry short-lived.
-    const maxAttempts = 3;
+    // MissingPlugin/CODEX_CHANNEL_DETACHED means the native handler was not
+    // entered, so retrying is safe for every RPC during an engine rebind.
+    // Six attempts cover a ~1s observed rebuild window (1.55s total backoff).
+    const maxAttempts = 6;
     Object? lastError;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        final result =
-            await _methodChannel.invokeMethod<dynamic>(method, args);
+        final result = await _methodChannel.invokeMethod<dynamic>(method, args);
         return _normalizeMap(result) ?? <String, dynamic>{};
-      } on MissingPluginException catch (error) {
-        lastError = error;
-        if (attempt >= maxAttempts) {
+      } catch (error) {
+        final transientChannelError =
+            error is MissingPluginException ||
+            (error is PlatformException &&
+                error.code == 'CODEX_CHANNEL_DETACHED');
+        if (!transientChannelError) {
           rethrow;
         }
-        // 50/100ms: enough for MainActivity reconfigure without stalling UI.
-        await Future<void>.delayed(Duration(milliseconds: 50 * attempt));
+        lastError = error;
+        if (attempt >= maxAttempts) {
+          throw CodexChannelUnavailableException(
+            method: method,
+            attempts: maxAttempts,
+            cause: error,
+          );
+        }
+        // 50/100/200/400/800ms; bounded at 1.55 seconds total.
+        await Future<void>.delayed(
+          Duration(milliseconds: 50 * (1 << (attempt - 1))),
+        );
       }
     }
     // Unreachable; keep analyzer happy.
-    throw lastError ??
-        MissingPluginException('No implementation found for method $method');
+    throw CodexChannelUnavailableException(
+      method: method,
+      attempts: maxAttempts,
+      cause:
+          lastError ??
+          MissingPluginException('No implementation found for method $method'),
+    );
   }
+}
+
+String _requireCodexGoalThreadId(
+  String? threadId, {
+  required String operation,
+}) {
+  final resolved = (threadId ?? '').trim();
+  if (resolved.isEmpty) {
+    throw StateError(
+      '$operation requires a live Codex threadId; native call was not sent.',
+    );
+  }
+  return resolved;
 }
 
 /// Put `serviceTier` on [args] with three-way semantics:
