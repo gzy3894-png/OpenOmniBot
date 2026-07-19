@@ -301,4 +301,178 @@ void main() {
       ['gpt-4o'],
     );
   });
+
+  test('Codex supplier state keys models by stable id, not memo name', () {
+    final state = const CodexProviderState().selecting(
+      providerId: 'provider-a',
+      modelId: 'model-a',
+    ).selecting(providerId: 'provider-b', modelId: 'model-b');
+    final restored = CodexProviderState.fromMap(state.toMap());
+
+    expect(restored.activeProviderId, 'provider-b');
+    expect(restored.currentModels, {
+      'provider-a': 'model-a',
+      'provider-b': 'model-b',
+    });
+    expect(restored.toMap().toString(), isNot(contains('Provider memo')));
+  });
+
+  test('Codex compatibility rejects non-Responses suppliers with a reason', () {
+    const supported = ModelProviderProfileSummary(
+      id: 'provider-a',
+      name: 'Memo A',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'secret',
+      customHeaders: {},
+      sourceType: 'custom',
+      readOnly: false,
+      ready: true,
+      statusText: '',
+      configured: true,
+      wireApi: 'responses',
+    );
+    const unsupported = ModelProviderProfileSummary(
+      id: 'provider-b',
+      name: 'Memo B',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'secret',
+      customHeaders: {},
+      sourceType: 'custom',
+      readOnly: false,
+      ready: true,
+      statusText: '',
+      configured: true,
+      wireApi: 'chat_completions',
+    );
+
+    expect(
+      ModelProviderConfigService.codexCompatibility(supported).isSupported,
+      isTrue,
+    );
+    expect(
+      ModelProviderConfigService.codexCompatibility(unsupported).reason,
+      contains('Responses'),
+    );
+  });
+
+  test('Codex compatibility rejects direct or query endpoint URLs', () {
+    ModelProviderProfileSummary profile(String baseUrl) {
+      return ModelProviderProfileSummary(
+        id: 'provider-a',
+        name: 'Memo A',
+        baseUrl: baseUrl,
+        apiKey: 'secret',
+        customHeaders: const {},
+        sourceType: 'custom',
+        readOnly: false,
+        ready: true,
+        statusText: '',
+        configured: true,
+        wireApi: 'responses',
+      );
+    }
+
+    expect(
+      ModelProviderConfigService.codexCompatibility(
+        profile('https://api.example.com/v1/responses#'),
+      ).isSupported,
+      isFalse,
+    );
+    expect(
+      ModelProviderConfigService.codexCompatibility(
+        profile('https://api.example.com/v1?token=hidden'),
+      ).isSupported,
+      isFalse,
+    );
+  });
+
+  test('manual Codex model libraries remain isolated per supplier id', () async {
+    SharedPreferences.setMockInitialValues({});
+    await StorageService.init();
+    await ModelProviderConfigService.saveManualModelIds(
+      profileId: 'provider-a',
+      ids: const ['model-a'],
+    );
+    await ModelProviderConfigService.saveManualModelIds(
+      profileId: 'provider-b',
+      ids: const ['model-b'],
+    );
+
+    expect(
+      await ModelProviderConfigService.getManualModelIds(
+        profileId: 'provider-a',
+      ),
+      ['model-a'],
+    );
+    expect(
+      await ModelProviderConfigService.getManualModelIds(
+        profileId: 'provider-b',
+      ),
+      ['model-b'],
+    );
+  });
+
+  test('supplier cache is invalidated when the same id changes API base', () async {
+    SharedPreferences.setMockInitialValues({});
+    await StorageService.init();
+    await ModelProviderConfigService.saveCachedFetchedModels(
+      profileId: 'provider-a',
+      apiBase: 'https://old.example/v1',
+      models: const <ProviderModelOption>[
+        ProviderModelOption(id: 'old-model', displayName: 'old-model'),
+      ],
+    );
+
+    expect(
+      (await ModelProviderConfigService.getCachedFetchedModels(
+        profileId: 'provider-a',
+        apiBase: 'https://old.example/v1',
+      )).map((item) => item.id),
+      ['old-model'],
+    );
+    expect(
+      await ModelProviderConfigService.getCachedFetchedModels(
+        profileId: 'provider-a',
+        apiBase: 'https://new.example/v1',
+      ),
+      isEmpty,
+    );
+  });
+
+  test('committing a Codex supplier selection publishes a revision', () async {
+    SharedPreferences.setMockInitialValues({});
+    await StorageService.init();
+    final revisionBefore =
+        ModelProviderConfigService.codexProviderStateRevision.value;
+    var notifications = 0;
+    void onRevision() {
+      notifications += 1;
+    }
+
+    ModelProviderConfigService.codexProviderStateRevision.addListener(
+      onRevision,
+    );
+    try {
+      await ModelProviderConfigService.commitCodexProviderState(
+        const CodexProviderState(
+          activeProviderId: 'provider-b',
+          currentModels: {'provider-b': 'model-b'},
+        ),
+      );
+    } finally {
+      ModelProviderConfigService.codexProviderStateRevision.removeListener(
+        onRevision,
+      );
+    }
+
+    expect(notifications, 1);
+    expect(
+      ModelProviderConfigService.codexProviderStateRevision.value,
+      revisionBefore + 1,
+    );
+    expect(
+      ModelProviderConfigService.readCodexProviderState().activeProviderId,
+      'provider-b',
+    );
+  });
 }

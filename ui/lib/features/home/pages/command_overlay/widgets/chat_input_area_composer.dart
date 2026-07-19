@@ -1423,67 +1423,6 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     }
   }
 
-  String _codexGoalPrefixLabelText() {
-    final custom = (widget.codexGoalPrefixLabel ?? '').trim();
-    if (custom.isNotEmpty) {
-      return custom;
-    }
-    return Localizations.localeOf(context).languageCode == 'en'
-        ? 'Goal:'
-        : '目标:';
-  }
-
-  String _codexGoalFieldHintText({required bool multiline}) {
-    if (!widget.codexGoalModeEnabled) {
-      return Localizations.localeOf(context).languageCode == 'en'
-          ? 'Type your message'
-          : '请输入内容';
-    }
-    final english = Localizations.localeOf(context).languageCode == 'en';
-    final activeGoal = (widget.codexGoalText ?? '').trim();
-    if (activeGoal.isNotEmpty) {
-      return english ? 'Update goal…' : '更新目标…';
-    }
-    return english ? 'Describe the goal…' : '描述目标…';
-  }
-
-  Widget _buildCodexGoalPrefixChip({required bool multiline}) {
-    final palette = context.omniPalette;
-    final label = _codexGoalPrefixLabelText();
-    final accent = palette.accentPrimary;
-    final bg = context.isDarkTheme
-        ? accent.withValues(alpha: 0.18)
-        : const Color(0xFFEAF1FF);
-    final border = accent.withValues(alpha: context.isDarkTheme ? 0.42 : 0.35);
-    return Container(
-      key: const ValueKey('chat-input-codex-goal-prefix'),
-      margin: EdgeInsets.only(
-        right: 6,
-        top: multiline ? 2 : 0,
-        bottom: multiline ? 0 : 0,
-      ),
-      padding: EdgeInsets.symmetric(
-        horizontal: multiline ? 8 : 7,
-        vertical: multiline ? 3 : 2,
-      ),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: border, width: 1),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: multiline ? 12 : 11.5,
-          height: 1.1,
-          fontWeight: FontWeight.w700,
-          color: accent,
-          letterSpacing: 0.1,
-        ),
-      ),
-    );
-  }
-
   /// 统一的输入框组件
   Widget _buildTextField({bool multiline = false, bool expanded = false}) {
     final palette = context.omniPalette;
@@ -1509,7 +1448,6 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
     );
     final minLines = multiline ? (expanded ? 2 : 1) : 1;
     final maxLines = multiline ? 3 : 1;
-    final goalMode = widget.codexGoalModeEnabled;
     final field = TextField(
       controller: widget.controller,
       focusNode: widget.focusNode,
@@ -1538,7 +1476,9 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       contextMenuBuilder: (context, editableTextState) =>
           TextInputContextMenu(editableTextState: editableTextState),
       decoration: InputDecoration(
-        hintText: _codexGoalFieldHintText(multiline: multiline),
+        hintText: Localizations.localeOf(context).languageCode == 'en'
+            ? 'Type your message'
+            : '请输入内容',
         hintStyle: TextStyle(
           fontSize: multiline ? 15.0 : 14.0,
           color: hintColor,
@@ -1558,29 +1498,6 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       ),
     );
 
-    final content = goalMode
-        ? (multiline
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: _buildCodexGoalPrefixChip(multiline: true),
-                    ),
-                    const SizedBox(height: 4),
-                    field,
-                  ],
-                )
-              : Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    _buildCodexGoalPrefixChip(multiline: false),
-                    Expanded(child: field),
-                  ],
-                ))
-        : field;
-
     return GestureDetector(
       onTap: () {
         widget.onRequestFocus?.call();
@@ -1588,7 +1505,7 @@ mixin _ChatInputAreaComposerMixin on _ChatInputAreaStateBase {
       },
       child: AbsorbPointer(
         absorbing: !widget.focusNode.hasFocus,
-        child: content,
+      child: field,
       ),
     );
   }

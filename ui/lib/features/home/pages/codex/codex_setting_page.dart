@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_switch/flutter_switch.dart';
+import 'package:ui/core/router/go_router_manager.dart';
 import 'package:ui/features/home/pages/codex/codex_bridge_qr_scanner_page.dart';
 import 'package:ui/features/home/pages/codex/codex_remote_directory_picker.dart';
+import 'package:ui/features/home/pages/codex/widgets/codex_provider_selector.dart';
 import 'package:ui/l10n/legacy_text_localizer.dart';
 import 'package:ui/services/codex_app_server_service.dart';
+import 'package:ui/services/model_provider_config_service.dart';
 import 'package:ui/theme/app_colors.dart';
 import 'package:ui/theme/theme_context.dart';
 import 'package:ui/utils/ui.dart';
@@ -20,29 +23,25 @@ class CodexSettingPage extends StatefulWidget {
 }
 
 class _CodexSettingPageState extends State<CodexSettingPage> {
-  // Placeholder only — never force a product default model id.
-  static const String _modelHint = 'model-id';
   static const String _defaultCodexHome = '/root/.codex';
   static const Duration _autoSaveDelay = Duration(milliseconds: 700);
 
-  late final TextEditingController _baseUrlController;
-  late final TextEditingController _modelController;
-  late final TextEditingController _apiKeyController;
   late final TextEditingController _bridgeUrlController;
   late final TextEditingController _bridgeTokenController;
   late final TextEditingController _bridgeCwdController;
-  late final TextEditingController _defaultGoalController;
 
   Timer? _saveDebounce;
+  CodexLocalConfig? _localConfig;
+  CodexProviderState _providerState = const CodexProviderState();
+  List<ModelProviderProfileSummary> _providers = const [];
+  List<ProviderModelOption> _providerModels = const [];
+  int _providerLoadGeneration = 0;
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isTestingBridge = false;
   bool _isSyncing = false;
-  bool _obscureApiKey = true;
   bool _obscureBridgeToken = true;
   bool _remoteEnabled = false;
-  bool _fastEnabled = false;
-  bool _autoCompactionEnabled = true;
   String _codexHome = _defaultCodexHome;
   String _runtime = 'local';
   String? _error;
@@ -76,21 +75,13 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   @override
   void initState() {
     super.initState();
-    _baseUrlController = TextEditingController();
-    _modelController = TextEditingController();
-    _apiKeyController = TextEditingController();
     _bridgeUrlController = TextEditingController();
     _bridgeTokenController = TextEditingController();
     _bridgeCwdController = TextEditingController();
-    _defaultGoalController = TextEditingController();
     for (final controller in [
-      _baseUrlController,
-      _modelController,
-      _apiKeyController,
       _bridgeUrlController,
       _bridgeTokenController,
       _bridgeCwdController,
-      _defaultGoalController,
     ]) {
       controller.addListener(_handleEdited);
     }
@@ -101,13 +92,9 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   void dispose() {
     _saveDebounce?.cancel();
     for (final controller in [
-      _baseUrlController,
-      _modelController,
-      _apiKeyController,
       _bridgeUrlController,
       _bridgeTokenController,
       _bridgeCwdController,
-      _defaultGoalController,
     ]) {
       controller.removeListener(_handleEdited);
       controller.dispose();
@@ -126,79 +113,50 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   void _syncControllers(CodexLocalConfig config) {
     _isSyncing = true;
     try {
-      _setControllerText(_baseUrlController, config.baseUrl);
-      _setControllerText(_modelController, config.model);
-      _setControllerText(_apiKeyController, config.apiKey);
       _setControllerText(_bridgeUrlController, config.remoteBridgeUrl);
       _setControllerText(_bridgeTokenController, config.remoteBridgeToken);
       _setControllerText(_bridgeCwdController, config.remoteCwd);
-      _setControllerText(_defaultGoalController, config.defaultGoal);
       _remoteEnabled = config.remoteEnabled;
-      // Default Fast UI off unless config explicitly has fast_mode or
-      // service_tier=fast (see CodexLocalConfig.isFastEnabled).
-      _fastEnabled = config.isFastEnabled;
-      // B27: auto_compaction defaults on when key missing.
-      _autoCompactionEnabled = config.isAutoCompactionEnabled;
     } finally {
       _isSyncing = false;
     }
   }
 
   String _signature({
-    required String baseUrl,
-    required String model,
-    required String apiKey,
     required String remoteBridgeUrl,
     required String remoteBridgeToken,
     required String remoteCwd,
     required bool remoteEnabled,
-    required bool fastEnabled,
-    required bool autoCompactionEnabled,
-    required String defaultGoal,
   }) {
     return [
-      baseUrl.trim(),
-      model.trim(),
-      apiKey.trim(),
       remoteEnabled ? 'remote' : 'local',
       remoteBridgeUrl.trim(),
       remoteBridgeToken.trim(),
       remoteCwd.trim(),
-      fastEnabled ? 'fast' : 'off',
-      autoCompactionEnabled ? 'auto_compaction' : 'auto_compaction_off',
-      defaultGoal.trim(),
     ].join('\n');
   }
 
   String _currentSignature() {
     return _signature(
-      baseUrl: _baseUrlController.text,
-      model: _modelController.text,
-      apiKey: _apiKeyController.text,
       remoteBridgeUrl: _bridgeUrlController.text,
       remoteBridgeToken: _bridgeTokenController.text,
       remoteCwd: _bridgeCwdController.text,
       remoteEnabled: _remoteEnabled,
-      fastEnabled: _fastEnabled,
-      autoCompactionEnabled: _autoCompactionEnabled,
-      defaultGoal: _defaultGoalController.text,
     );
   }
-
-  bool get _hasAnyLocalInput =>
-      _baseUrlController.text.trim().isNotEmpty ||
-      _modelController.text.trim().isNotEmpty ||
-      _apiKeyController.text.trim().isNotEmpty;
 
   bool get _hasAnyRemoteInput =>
       _bridgeUrlController.text.trim().isNotEmpty ||
       _bridgeTokenController.text.trim().isNotEmpty ||
       _bridgeCwdController.text.trim().isNotEmpty;
 
-  bool get _hasCompleteLocalInput =>
-      _baseUrlController.text.trim().isNotEmpty &&
-      _modelController.text.trim().isNotEmpty &&
-      _apiKeyController.text.trim().isNotEmpty;
+  bool get _hasCompleteLocalInput {
+    final config = _localConfig;
+    return config != null &&
+        config.baseUrl.trim().isNotEmpty &&
+        config.model.trim().isNotEmpty &&
+        config.apiKey.trim().isNotEmpty;
+  }
 
   bool get _hasCompleteRemoteInput =>
       _bridgeUrlController.text.trim().isNotEmpty &&
@@ -209,8 +167,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
   bool get _hasCompleteInput {
     if (_remoteEnabled) return _hasCompleteRemoteInput;
     if (_isChangingRemoteEnabled) return true;
-    if (_hasAnyLocalInput) return _hasCompleteLocalInput;
-    return true;
+    return _hasCompleteLocalInput;
   }
 
   bool get _isRemoteIncomplete => _remoteEnabled && !_hasCompleteRemoteInput;
@@ -219,7 +176,7 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     if (_isSyncing || !mounted) return;
     _saveDebounce?.cancel();
     final signature = _currentSignature();
-    final anyInput = _hasAnyLocalInput || _hasAnyRemoteInput || _remoteEnabled;
+    final anyInput = _hasAnyRemoteInput || _remoteEnabled;
     setState(() {
       _error = null;
       if (_isRemoteIncomplete) {
@@ -267,46 +224,6 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
   }
 
-  void _setFastEnabled(bool value) {
-    if (_fastEnabled == value) return;
-    setState(() {
-      _fastEnabled = value;
-      _error = null;
-      _status = value
-          ? _localeText(
-              zh: 'Fast 已开启（降延迟），即将自动保存。',
-              en: 'Fast enabled (lower latency). Autosave pending.',
-            )
-          : _localeText(
-              zh: 'Fast 已关闭，即将自动保存。',
-              en: 'Fast disabled. Autosave pending.',
-            );
-    });
-    if (_hasCompleteInput && _currentSignature() != _lastSavedSignature) {
-      _scheduleAutoSave(delay: const Duration(milliseconds: 300));
-    }
-  }
-
-  void _setAutoCompactionEnabled(bool value) {
-    if (_autoCompactionEnabled == value) return;
-    setState(() {
-      _autoCompactionEnabled = value;
-      _error = null;
-      _status = value
-          ? _localeText(
-              zh: '自动压缩已开启，即将自动保存。',
-              en: 'Auto compaction enabled. Autosave pending.',
-            )
-          : _localeText(
-              zh: '自动压缩已关闭，即将自动保存。',
-              en: 'Auto compaction disabled. Autosave pending.',
-            );
-    });
-    if (_hasCompleteInput && _currentSignature() != _lastSavedSignature) {
-      _scheduleAutoSave(delay: const Duration(milliseconds: 300));
-    }
-  }
-
   void _scheduleAutoSave({Duration delay = _autoSaveDelay}) {
     _saveDebounce?.cancel();
     _saveDebounce = Timer(delay, () => unawaited(_saveConfig()));
@@ -321,13 +238,150 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     }
     try {
       final config = await CodexAppServerService.readLocalConfig();
+      final payload = await ModelProviderConfigService.listProfiles();
+      var state = ModelProviderConfigService.readCodexProviderState();
+      var providers = payload.profiles;
+      ModelProviderProfileSummary? active;
+      final nativeModel = config.model.trim();
+      bool matchesNativeEndpoint(ModelProviderProfileSummary provider) {
+        return config.modelProvider.trim() == 'omnimind' &&
+            ModelProviderConfigService.normalizeApiBase(provider.baseUrl) ==
+                ModelProviderConfigService.normalizeApiBase(config.baseUrl) &&
+            provider.apiKey.trim() == config.apiKey.trim() &&
+            ModelProviderConfigService.codexCompatibility(provider)
+                .isSupported;
+      }
+
+      ModelProviderProfileSummary? rememberedProvider;
+      for (final provider in providers) {
+        if (provider.id == state.activeProviderId &&
+            ModelProviderConfigService.codexCompatibility(provider)
+                .isSupported) {
+          rememberedProvider = provider;
+          break;
+        }
+      }
+      final endpointCandidates = providers
+          .where(matchesNativeEndpoint)
+          .toList(growable: false);
+      final candidateModels = <String, List<ProviderModelOption>>{};
+      await Future.wait(
+        endpointCandidates.map((provider) async {
+          candidateModels[provider.id] =
+              await ModelProviderConfigService.getStoredModelOptionsForProfile(
+            provider.id,
+            profile: provider,
+          );
+        }),
+      );
+      final exactCandidates = endpointCandidates.where((provider) {
+        final models =
+            candidateModels[provider.id] ?? const <ProviderModelOption>[];
+        final rememberedModel = state.currentModels[provider.id] ?? '';
+        return models.any((item) => item.id == nativeModel) ||
+            (provider.id == state.activeProviderId &&
+                rememberedModel == nativeModel);
+      }).toList(growable: false);
+      if (rememberedProvider != null &&
+          exactCandidates.any(
+            (provider) => provider.id == rememberedProvider!.id,
+          )) {
+        active = rememberedProvider;
+      } else if (exactCandidates.length == 1) {
+        active = exactCandidates.single;
+      } else if (exactCandidates.isEmpty &&
+          endpointCandidates.length == 1) {
+        // A unique endpoint/key identity is safe to attach to its existing
+        // stable record; ambiguity must never fall back to list order.
+        active = endpointCandidates.single;
+      }
+      if (active == null &&
+          state.activeProviderId.isEmpty &&
+          endpointCandidates.isEmpty &&
+          config.baseUrl.trim().isNotEmpty &&
+          config.apiKey.trim().isNotEmpty &&
+          nativeModel.isNotEmpty) {
+        active = await ModelProviderConfigService.saveProfile(
+          name: 'Codex supplier',
+          baseUrl: config.baseUrl,
+          apiKey: config.apiKey,
+          wireApi: 'responses',
+        );
+        providers = <ModelProviderProfileSummary>[...providers, active];
+      }
+      var models = const <ProviderModelOption>[];
+      if (active != null) {
+        models =
+            candidateModels[active.id] ??
+            await ModelProviderConfigService.getStoredModelOptionsForProfile(
+              active.id,
+              profile: active,
+            );
+        final sameLegacyProvider =
+            matchesNativeEndpoint(active);
+        if (sameLegacyProvider &&
+            nativeModel.isNotEmpty &&
+            !models.any((item) => item.id == nativeModel)) {
+          final manual = await ModelProviderConfigService.getManualModelIds(
+            profileId: active.id,
+          );
+          await ModelProviderConfigService.saveManualModelIds(
+            profileId: active.id,
+            ids: <String>[...manual, nativeModel],
+          );
+          models = <ProviderModelOption>[
+            ...models,
+            ProviderModelOption(
+              id: nativeModel,
+              displayName: nativeModel,
+              ownedBy: 'manual',
+            ),
+          ];
+        }
+        final remembered = state.currentModels[active.id] ?? '';
+        final selectedModel = models.any((item) => item.id == nativeModel)
+            ? nativeModel
+            : models.any((item) => item.id == remembered)
+                ? remembered
+                : (models.isEmpty ? '' : models.first.id);
+        final nextState = selectedModel.isEmpty
+            ? state
+            : state.selecting(
+                providerId: active.id,
+                modelId: selectedModel,
+              );
+        final nativeSelectionMatches =
+            matchesNativeEndpoint(active) && nativeModel == selectedModel;
+        if (selectedModel.isNotEmpty &&
+            nativeSelectionMatches &&
+            (nextState.activeProviderId != state.activeProviderId ||
+                !mapEquals(nextState.currentModels, state.currentModels))) {
+          await ModelProviderConfigService.commitCodexProviderState(nextState);
+          state = nextState;
+        }
+      } else if (state.activeProviderId.isNotEmpty) {
+        // Keep per-provider remembered models, but do not render a stale
+        // supplier id as active when Native identity cannot select it exactly.
+        state = CodexProviderState(currentModels: state.currentModels);
+      }
       if (!mounted) return;
       _syncControllers(config);
       setState(() {
+        _localConfig = config;
+        _providers = providers;
+        _providerState = state;
+        _providerModels = models;
         _codexHome = config.codexHome ?? _defaultCodexHome;
         _runtime = config.runtime ?? 'local';
         _isLoading = false;
-        _error = null;
+        _error = active == null &&
+                config.baseUrl.trim().isNotEmpty &&
+                nativeModel.isNotEmpty
+            ? _localeText(
+                zh: '本地 Codex 配置无法唯一匹配供应商记录，请重新选择供应商。',
+                en: 'Local Codex config does not uniquely match a supplier record. Select a supplier again.',
+              )
+            : null;
         _status = null;
         _lastSavedSignature = _currentSignature();
       });
@@ -377,16 +431,19 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       _status = _localeText(zh: '正在自动保存...', en: 'Autosaving...');
     });
     try {
-      // Fast off must write fastMode=false + clear serviceTier; never omit
-      // fastMode and pretend that means off (billing-sensitive).
+      final current = _localConfig;
+      if (current == null) {
+        throw StateError('Codex local config is unavailable');
+      }
       final saved = await CodexAppServerService.writeLocalConfig(
-        baseUrl: _baseUrlController.text.trim(),
-        model: _modelController.text.trim(),
-        apiKey: _apiKeyController.text.trim(),
-        fastMode: _fastEnabled,
-        serviceTier: _fastEnabled ? 'fast' : '',
-        autoCompaction: _autoCompactionEnabled,
-        defaultGoal: _defaultGoalController.text.trim(),
+        baseUrl: current.baseUrl,
+        model: current.model,
+        apiKey: current.apiKey,
+        serviceTier: current.serviceTier,
+        fastMode: current.fastMode,
+        autoCompaction: current.autoCompaction,
+        contextTokenThreshold: current.contextTokenThreshold,
+        modelReasoningEffort: current.modelReasoningEffort,
         remoteEnabled: _remoteEnabled,
         remoteBridgeUrl: _bridgeUrlController.text.trim(),
         remoteBridgeToken: _bridgeTokenController.text.trim(),
@@ -394,21 +451,16 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
       );
       if (!mounted) return;
       final savedSignature = _signature(
-        baseUrl: saved.baseUrl,
-        model: saved.model,
-        apiKey: saved.apiKey,
         remoteBridgeUrl: saved.remoteBridgeUrl,
         remoteBridgeToken: saved.remoteBridgeToken,
         remoteCwd: saved.remoteCwd,
         remoteEnabled: saved.remoteEnabled,
-        fastEnabled: saved.isFastEnabled,
-        autoCompactionEnabled: saved.isAutoCompactionEnabled,
-        defaultGoal: saved.defaultGoal,
       );
       if (_currentSignature() == savingSignature) {
         _syncControllers(saved);
       }
       setState(() {
+        _localConfig = saved;
         _codexHome = saved.codexHome ?? _defaultCodexHome;
         _runtime = saved.runtime ?? 'local';
         _lastSavedSignature = savedSignature;
@@ -440,6 +492,122 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
           _scheduleAutoSave(delay: const Duration(milliseconds: 300));
         }
       }
+    }
+  }
+
+  Future<void> _switchProvider(String providerId, {String? modelId}) async {
+    if (_isSaving) return;
+    _saveDebounce?.cancel();
+    final previousConfig = _localConfig;
+    if (previousConfig == null) return;
+    ModelProviderProfileSummary? provider;
+    for (final item in _providers) {
+      if (item.id == providerId) {
+        provider = item;
+        break;
+      }
+    }
+    if (provider == null) return;
+    final generation = ++_providerLoadGeneration;
+    setState(() {
+      _isSaving = true;
+      _error = null;
+      _status = _localeText(zh: '正在切换供应商...', en: 'Switching supplier...');
+    });
+    try {
+      final models =
+          providerId == _providerState.activeProviderId && modelId != null
+              ? _providerModels
+              : await ModelProviderConfigService.getStoredModelOptionsForProfile(
+                  providerId,
+                  profile: provider,
+                );
+      if (!mounted || generation != _providerLoadGeneration) return;
+      final remembered = _providerState.currentModels[providerId] ?? '';
+      final targetModel = modelId?.trim().isNotEmpty == true
+          ? modelId!.trim()
+          : models.any((item) => item.id == remembered)
+              ? remembered
+              : (models.isEmpty ? '' : models.first.id);
+      final saved = await CodexAppServerService.switchLocalProvider(
+        provider: provider,
+        model: targetModel,
+        availableModelIds: models.map((item) => item.id).toList(),
+        previousConfig: previousConfig,
+        previousState: _providerState,
+      );
+      if (!mounted || generation != _providerLoadGeneration) return;
+      setState(() {
+        _localConfig = saved;
+        _providerModels = models;
+        _providerState = _providerState.selecting(
+          providerId: providerId,
+          modelId: targetModel,
+        );
+        _error = null;
+        _status = _localeText(zh: '供应商已切换。', en: 'Supplier switched.');
+      });
+    } catch (error) {
+      if (!mounted || generation != _providerLoadGeneration) return;
+      setState(() {
+        _error = _localeText(
+          zh: '供应商切换失败：$error',
+          en: 'Failed to switch supplier: $error',
+        );
+        _status = null;
+      });
+    } finally {
+      if (mounted && generation == _providerLoadGeneration) {
+        setState(() => _isSaving = false);
+        if (_hasCompleteInput &&
+            _currentSignature() != _lastSavedSignature) {
+          _scheduleAutoSave(delay: const Duration(milliseconds: 300));
+        }
+      }
+    }
+  }
+
+  Future<void> _manageProviders() async {
+    final previousConfig = _localConfig;
+    final previousState = _providerState;
+    await GoRouterManager.pushForResult<Object?>('/home/model_provider_setting');
+    if (!mounted || previousConfig == null) {
+      return;
+    }
+    try {
+      final payload = await ModelProviderConfigService.listProfiles();
+      if (!mounted) return;
+      final providerId = previousState.activeProviderId;
+      final stillExists = payload.profiles.any(
+        (provider) => provider.id == providerId,
+      );
+      setState(() {
+        _providers = payload.profiles;
+        _localConfig = previousConfig;
+        _providerState = previousState;
+        if (!stillExists) {
+          _providerModels = const [];
+          _error = _localeText(
+            zh: '当前供应商已被删除，请选择新的供应商。',
+            en: 'The active supplier was deleted. Select another supplier.',
+          );
+          _status = null;
+        }
+      });
+      if (stillExists) {
+        // Reload the edited supplier's library, then commit selection only
+        // through the Native-first switch transaction.
+        await _switchProvider(providerId);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = _localeText(
+          zh: '供应商列表刷新失败：$error',
+          en: 'Failed to refresh suppliers: $error',
+        );
+        _status = null;
+      });
     }
   }
 
@@ -600,20 +768,6 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
     return _buildSimpleSwitch(
       value: _remoteEnabled,
       onChanged: _setRemoteEnabled,
-    );
-  }
-
-  Widget _buildFastSwitch() {
-    return _buildSimpleSwitch(
-      value: _fastEnabled,
-      onChanged: _setFastEnabled,
-    );
-  }
-
-  Widget _buildAutoCompactionSwitch() {
-    return _buildSimpleSwitch(
-      value: _autoCompactionEnabled,
-      onChanged: _setAutoCompactionEnabled,
     );
   }
 
@@ -883,161 +1037,25 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                         const SizedBox(height: 14),
                         Divider(height: 1, color: borderColor),
                         const SizedBox(height: 12),
-                        Text(
-                          _localeText(
-                            zh: '本地 Alpine Codex',
-                            en: 'Local Alpine Codex',
-                          ),
-                          style: TextStyle(
-                            color: _primaryTextColor,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'PingFang SC',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        _buildTextField(
-                          key: const Key('codex-config-base-url-field'),
-                          controller: _baseUrlController,
-                          label: 'Base URL',
-                          hint: 'https://bring_your_own_key.endpoint/v1',
-                          keyboardType: TextInputType.url,
-                        ),
-                        const SizedBox(height: 12),
-                        _buildTextField(
-                          key: const Key('codex-config-model-field'),
-                          controller: _modelController,
-                          label: 'Model',
-                          hint: _modelHint,
-                        ),
-                        const SizedBox(height: 12),
-                        _buildTextField(
-                          key: const Key('codex-config-api-key-field'),
-                          controller: _apiKeyController,
-                          label: 'OPENAI_API_KEY',
-                          hint: 'your_own_key',
-                          obscureText: _obscureApiKey,
-                          suffixIcon: IconButton(
-                            tooltip: _obscureApiKey
-                                ? _localeText(zh: '显示密钥', en: 'Show key')
-                                : _localeText(zh: '隐藏密钥', en: 'Hide key'),
-                            onPressed: () {
-                              setState(() {
-                                _obscureApiKey = !_obscureApiKey;
-                              });
-                            },
-                            icon: Icon(
-                              _obscureApiKey
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                              size: 18,
+                        CodexProviderSelector(
+                          providers: _providers,
+                          activeProviderId: _providerState.activeProviderId,
+                          models: _providerModels,
+                          activeModelId:
+                              _providerState.currentModels[
+                                  _providerState.activeProviderId] ??
+                              '',
+                          busy: _isSaving,
+                          onProviderChanged: (id) =>
+                              unawaited(_switchProvider(id)),
+                          onModelChanged: (id) => unawaited(
+                            _switchProvider(
+                              _providerState.activeProviderId,
+                              modelId: id,
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 14),
-                        Divider(height: 1, color: borderColor),
-                        const SizedBox(height: 12),
-                        Text(
-                          _localeText(
-                            zh: '通用运行偏好',
-                            en: 'General run preferences',
-                          ),
-                          style: TextStyle(
-                            color: _primaryTextColor,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'PingFang SC',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _localeText(zh: 'Fast', en: 'Fast'),
-                                    style: TextStyle(
-                                      color: _primaryTextColor,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      fontFamily: 'PingFang SC',
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    _localeText(
-                                      zh:
-                                          '降延迟：开=fast_mode=true 且 service_tier=fast；关=显式 fast_mode=false 并清除 service_tier=fast。默认关。',
-                                      en:
-                                          'Lower latency: on writes fast_mode=true and service_tier=fast; off writes fast_mode=false and clears service_tier=fast. Default off.',
-                                    ),
-                                    style: TextStyle(
-                                      color: _secondaryTextColor,
-                                      fontSize: 12,
-                                      height: 1.35,
-                                      fontFamily: 'PingFang SC',
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            _buildFastSwitch(),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _localeText(
-                                      zh: '自动压缩',
-                                      en: 'Auto compaction',
-                                    ),
-                                    style: TextStyle(
-                                      color: _primaryTextColor,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      fontFamily: 'PingFang SC',
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    _localeText(
-                                      zh:
-                                          '上下文自动压缩：开=features.auto_compaction=true；关=显式 false。缺省开。',
-                                      en:
-                                          'Context auto-compaction: on writes features.auto_compaction=true; off writes false. Default on.',
-                                    ),
-                                    style: TextStyle(
-                                      color: _secondaryTextColor,
-                                      fontSize: 12,
-                                      height: 1.35,
-                                      fontFamily: 'PingFang SC',
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            _buildAutoCompactionSwitch(),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        _buildTextField(
-                          key: const Key('codex-config-default-goal-field'),
-                          controller: _defaultGoalController,
-                          label: _localeText(
-                            zh: '默认 Goal 文本（可选，不自动开目标模式）',
-                            en: 'Default goal text (optional; does not enable goal mode)',
-                          ),
-                          hint: _localeText(
-                            zh: '例如：优先修编译错误',
-                            en: 'e.g. Prefer fixing build errors first',
-                          ),
+                          onManageProviders: () =>
+                              unawaited(_manageProviders()),
                         ),
                         const SizedBox(height: 12),
                         Container(
@@ -1059,8 +1077,8 @@ class _CodexSettingPageState extends State<CodexSettingPage> {
                               Expanded(
                                 child: Text(
                                   _localeText(
-                                    zh: '远程开关关闭时使用本地 Codex；配置修改会自动保存并断开当前 Codex 会话。会话内 Fast 按钮可覆盖全局默认。',
-                                    en: 'When the remote switch is off, local Codex is used. Changes autosave and disconnect the current Codex session. The in-chat Fast button can override this default.',
+                                    zh: '远程开关关闭时使用所选供应商；供应商名称仅作备注，Codex 内部 profile 固定为 omnimind。',
+                                    en: 'When remote mode is off, Codex uses the selected supplier. Its name is only a memo; the internal profile stays omnimind.',
                                   ),
                                   style: TextStyle(
                                     color: _secondaryTextColor,

@@ -137,41 +137,37 @@ void main() {
   });
 
   group('planCodexComposerSubmit', () {
-    test('goal mode maps plain text to setGoal', () {
-      final plan = planCodexComposerSubmit(
-        'ship slash UX',
-        goalModeEnabled: true,
-      );
+    test('active Goal cannot turn plain composer text into a Goal update', () {
+      final plan = planCodexComposerSubmit('ship slash UX');
+      expect(plan.intent.kind, CodexSlashSubmitKind.none);
+      expect(plan.normalizedText, 'ship slash UX');
+      expect(plan.plainText, 'ship slash UX');
+      expect(plan.handled, isFalse);
+    });
+
+    test('bare slash remains a slash input and never becomes Goal', () {
+      final plan = planCodexComposerSubmit('/');
+      expect(plan.intent.kind, CodexSlashSubmitKind.unsupported);
+      expect(plan.normalizedText, '/');
+      expect(plan.handled, isTrue);
+    });
+
+    test('explicit /goal objective remains the advanced Goal entry', () {
+      final plan = planCodexComposerSubmit('/goal ship slash UX');
       expect(plan.intent.kind, CodexSlashSubmitKind.setGoal);
       expect(plan.intent.value, 'ship slash UX');
       expect(plan.normalizedText, '/goal ship slash UX');
       expect(plan.handled, isTrue);
     });
 
-    test('B1 goal mode bare slash is not slash dirty path', () {
-      final plan = planCodexComposerSubmit(
-        '/',
-        goalModeEnabled: true,
-      );
-      expect(plan.intent.kind, CodexSlashSubmitKind.showGoal);
-      expect(plan.normalizedText, '/goal');
+    test('explicit /goal clear remains the advanced clear entry', () {
+      final plan = planCodexComposerSubmit('/goal clear');
+      expect(plan.intent.kind, CodexSlashSubmitKind.clearGoal);
       expect(plan.handled, isTrue);
     });
 
-    test('B1 goal mode bare slash with spaces is not slash', () {
-      final plan = planCodexComposerSubmit(
-        '/  ',
-        goalModeEnabled: true,
-      );
-      expect(plan.intent.kind, CodexSlashSubmitKind.showGoal);
-      expect(plan.handled, isTrue);
-    });
-
-    test('goal mode does not rewrite leading slash', () {
-      final plan = planCodexComposerSubmit(
-        '/status',
-        goalModeEnabled: true,
-      );
+    test('leading slash resolves normally', () {
+      final plan = planCodexComposerSubmit('/status');
       expect(plan.intent.kind, CodexSlashSubmitKind.showStatus);
       expect(plan.normalizedText, '/status');
     });
@@ -179,7 +175,6 @@ void main() {
     test('skill mentions map to /skill', () {
       final plan = planCodexComposerSubmit(
         '@review-pr fix the flaky test',
-        goalModeEnabled: false,
         skillNames: const ['review-pr'],
       );
       expect(plan.intent.kind, CodexSlashSubmitKind.startSkill);
@@ -192,7 +187,6 @@ void main() {
     test('S1 plan keeps skillNames plainText and normalized with prompt', () {
       final plan = planCodexComposerSubmit(
         '@find-install-skills 帮我安装 xxx',
-        goalModeEnabled: false,
         skillNames: const ['find-install-skills'],
       );
       expect(plan.intent.kind, CodexSlashSubmitKind.startSkill);
@@ -206,7 +200,6 @@ void main() {
     test('S1 multi @a @b prompt still planned as /skill', () {
       final plan = planCodexComposerSubmit(
         '@a @b 附言内容',
-        goalModeEnabled: false,
         skillNames: const ['a', 'b'],
       );
       expect(plan.intent.kind, CodexSlashSubmitKind.startSkill);
@@ -218,7 +211,6 @@ void main() {
     test('S1 plain sentence without @ does not start skill', () {
       final plan = planCodexComposerSubmit(
         '帮我安装 xxx',
-        goalModeEnabled: false,
         skillNames: const ['find-install-skills'],
       );
       expect(plan.intent.kind, CodexSlashSubmitKind.none);
@@ -227,10 +219,9 @@ void main() {
       expect(plan.normalizedText, '帮我安装 xxx');
     });
 
-    test('skill mentions win over goal mode', () {
+    test('skill mentions remain explicit skill starts', () {
       final plan = planCodexComposerSubmit(
         '@ship tomorrow',
-        goalModeEnabled: true,
         skillNames: const ['ship'],
       );
       expect(plan.intent.kind, CodexSlashSubmitKind.startSkill);
@@ -238,10 +229,7 @@ void main() {
     });
 
     test('plain message when no mode', () {
-      final plan = planCodexComposerSubmit(
-        'hello',
-        goalModeEnabled: false,
-      );
+      final plan = planCodexComposerSubmit('hello');
       expect(plan.intent.kind, CodexSlashSubmitKind.none);
       expect(plan.handled, isFalse);
       expect(plan.normalizedText, 'hello');
@@ -249,10 +237,7 @@ void main() {
 
     // R1 (plan-layer): bare vs prompted review.
     test('R1 bare /review is startReview without value', () {
-      final plan = planCodexComposerSubmit(
-        '/review',
-        goalModeEnabled: false,
-      );
+      final plan = planCodexComposerSubmit('/review');
       expect(plan.intent.kind, CodexSlashSubmitKind.startReview);
       expect(plan.intent.value, isNull);
       expect(plan.normalizedText, '/review');
@@ -262,7 +247,6 @@ void main() {
     test('R1 /review <prompt> keeps startReview and prompt value', () {
       final plan = planCodexComposerSubmit(
         '/review 帮我审查 app/src/...',
-        goalModeEnabled: false,
       );
       expect(plan.intent.kind, CodexSlashSubmitKind.startReview);
       expect(plan.intent.value, '帮我审查 app/src/...');

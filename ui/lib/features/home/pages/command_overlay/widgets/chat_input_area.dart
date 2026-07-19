@@ -157,15 +157,6 @@ class ChatInputArea extends StatefulWidget {
   final ValueChanged<CodexPermissionMode>? onCodexPermissionModeChanged;
   final bool useIndependentSendButton;
 
-  /// Codex 目标模式：为 true 时在文本框前/上显示目标前缀态（纯 UI，不发 RPC）。
-  final bool codexGoalModeEnabled;
-
-  /// 目标前缀标签；null 时按语言默认「目标:」/ `Goal:`。
-  final String? codexGoalPrefixLabel;
-
-  /// 当前目标正文（可选）；仅用于 composer 内联提示，常显条由 [CodexGoalModeBar] 承担。
-  final String? codexGoalText;
-
   const ChatInputArea({
     super.key,
     required this.controller,
@@ -203,9 +194,6 @@ class ChatInputArea extends StatefulWidget {
     this.codexPermissionMode,
     this.onCodexPermissionModeChanged,
     this.useIndependentSendButton = true,
-    this.codexGoalModeEnabled = false,
-    this.codexGoalPrefixLabel,
-    this.codexGoalText,
   });
 
   @override
@@ -771,10 +759,8 @@ abstract class _ChatInputAreaStateBase extends State<ChatInputArea>
         oldWidget.useFrostedGlass != widget.useFrostedGlass ||
         oldWidget.selectedModelOverrideId != widget.selectedModelOverrideId ||
         oldWidget.modelPickerSettings != widget.modelPickerSettings ||
-        // Goal 前缀 chip 显隐会改变 composer 高度，需重新上报并入 transcript inset。
-        oldWidget.codexGoalModeEnabled != widget.codexGoalModeEnabled ||
-        oldWidget.codexGoalText != widget.codexGoalText ||
-        oldWidget.codexGoalPrefixLabel != widget.codexGoalPrefixLabel) {
+        oldWidget.useIndependentSendButton !=
+            widget.useIndependentSendButton) {
       _reportInputHeightAfterBuild();
     }
   }

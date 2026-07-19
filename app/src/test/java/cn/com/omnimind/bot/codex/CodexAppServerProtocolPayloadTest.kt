@@ -483,6 +483,75 @@ class CodexAppServerProtocolPayloadTest {
     }
 
     @Test
+    fun commonDefaultsMigrationIsIdempotentAndKeepsFixedProviderIdentity() {
+        val existing = """
+            model_provider = "omnimind"
+            model = "gpt-old"
+            service_tier = "fast"
+            omnimind_default_goal = "legacy goal"
+            approval_policy = "on-request"
+
+            [features]
+            fast_mode = true
+            auto_compaction = false
+            hooks = true
+
+            [model_providers.omnimind]
+            name = "omnimind"
+            base_url = "https://provider.example/v1"
+            wire_api = "responses"
+            requires_openai_auth = true
+
+            [projects."/workspace"]
+            trust_level = "trusted"
+        """.trimIndent()
+
+        val migrated = migrateCodexCommonDefaultsToml(existing)
+
+        assertTrue(migrated.contains("""model_provider = "omnimind""""))
+        assertTrue(migrated.contains("[model_providers.omnimind]"))
+        assertTrue(migrated.contains("""name = "omnimind""""))
+        assertTrue(migrated.contains("""base_url = "https://provider.example/v1""""))
+        assertTrue(migrated.contains("""model = "gpt-old""""))
+        assertTrue(migrated.contains("fast_mode = false"))
+        assertTrue(migrated.contains("auto_compaction = true"))
+        assertTrue(migrated.contains("hooks = true"))
+        assertTrue(migrated.contains("""approval_policy = "on-request""""))
+        assertTrue(migrated.contains("[projects.\"/workspace\"]"))
+        assertEquals(false, migrated.contains("service_tier = \"fast\""))
+        assertEquals(false, migrated.contains("omnimind_default_goal"))
+        assertEquals(migrated, migrateCodexCommonDefaultsToml(migrated))
+    }
+
+    @Test
+    fun commonDefaultsMigrationKeepsNonFastTierAndReadsOnlyOmnimindBaseUrl() {
+        val existing = """
+            model_provider = "omnimind"
+            model = "gpt-old"
+            service_tier = "flex"
+
+            [model_providers.other]
+            name = "other"
+            base_url = "https://wrong.example/v1"
+
+            [model_providers.omnimind]
+            name = "omnimind"
+            base_url = "https://right.example/v1"
+            wire_api = "responses"
+            requires_openai_auth = true
+        """.trimIndent()
+
+        val migrated = migrateCodexCommonDefaultsToml(existing)
+
+        assertTrue(migrated.contains("""service_tier = "flex""""))
+        assertTrue(migrated.contains("""base_url = "https://right.example/v1""""))
+        assertEquals(
+            "https://right.example/v1",
+            extractCodexInternalProviderBaseUrl(migrated),
+        )
+    }
+
+    @Test
     fun extractTomlBooleanSupportsBareAndQuotedValues() {
         val body = """
             fast_mode = true

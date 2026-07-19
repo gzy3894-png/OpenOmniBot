@@ -93,7 +93,7 @@ const String kCodexGoalClearCommand = '/goal clear';
 /// Alias for [kCodexGoalClearCommand] (handler-friendly name).
 String get goalClearCommand => kCodexGoalClearCommand;
 
-/// Planned composer submit after goal-mode / skill-mention normalization.
+/// Planned composer submit after slash / skill-mention normalization.
 class CodexComposerSubmit {
   const CodexComposerSubmit({
     required this.intent,
@@ -120,20 +120,22 @@ class CodexComposerSubmit {
   final bool handled;
 }
 
-/// Plans Codex composer submit from raw input + session mode flags.
+/// Plans a Codex composer submit from raw input.
 ///
 /// Priority:
 /// 1. Leading `/` slash → [resolveCodexSlashSubmitIntent]
-///    (goal mode: bare `/` is NOT slash — treated as empty goal show)
 /// 2. `@skill` mentions → [CodexSlashSubmitKind.startSkill] / `/skill ...`
-/// 3. [goalModeEnabled] + non-empty non-slash body → setGoal / `/goal <text>`
-/// 4. Otherwise plain message ([handled] = false, kind none)
+/// 3. Otherwise plain message ([handled] = false, kind none)
+///
+/// An active thread Goal is deliberately not an input to this planner.
+/// Updating a Goal requires the independent editor or an explicit
+/// `/goal <objective>` command, so ordinary composer text always remains a
+/// normal user turn.
 ///
 /// [skillNames] is the known catalog used to recognize `@` tokens. When empty,
 /// any `@token` is treated as a skill mention.
 CodexComposerSubmit planCodexComposerSubmit(
   String rawText, {
-  required bool goalModeEnabled,
   List<String> skillNames = const <String>[],
 }) {
   final trimmed = rawText.trim();
@@ -146,17 +148,6 @@ CodexComposerSubmit planCodexComposerSubmit(
   }
 
   if (trimmed.startsWith('/')) {
-    // B1: 目标模式下裸 `/`（slash 面板残留）不当 slash，走 setGoal/showGoal。
-    // 真正的 `/command` 仍优先 slash。
-    if (goalModeEnabled && RegExp(r'^/\s*$').hasMatch(trimmed)) {
-      return const CodexComposerSubmit(
-        intent: CodexSlashSubmitIntent(CodexSlashSubmitKind.showGoal),
-        normalizedText: '/goal',
-        plainText: '',
-        handled: true,
-      );
-    }
-
     // B5 (plan layer): `/review <prompt>` keeps startReview + prompt value
     // (handler maps to custom.instructions; bare → uncommitted).
     // Bare `/review` still comes from [resolveCodexSlashSubmitIntent].
@@ -206,25 +197,6 @@ CodexComposerSubmit planCodexComposerSubmit(
       normalizedText: command,
       skillNames: parsed.skillNames,
       plainText: parsed.plainText,
-    );
-  }
-
-  if (goalModeEnabled) {
-    final objective = trimmed;
-    if (objective.isEmpty) {
-      return const CodexComposerSubmit(
-        intent: CodexSlashSubmitIntent(CodexSlashSubmitKind.showGoal),
-        normalizedText: '/goal',
-      );
-    }
-    final command = '/goal $objective';
-    return CodexComposerSubmit(
-      intent: CodexSlashSubmitIntent(
-        CodexSlashSubmitKind.setGoal,
-        value: objective,
-      ),
-      normalizedText: command,
-      plainText: objective,
     );
   }
 

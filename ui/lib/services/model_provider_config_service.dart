@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:ui/services/assists_core_service.dart';
 import 'package:ui/services/models_dev_catalog_service.dart';
@@ -160,6 +161,73 @@ class ModelProviderProfilesPayload {
       editingProfileId: editingProfileId,
     );
   }
+}
+
+/// Application-owned Codex supplier selection.
+///
+/// This deliberately stores only stable provider record ids and model ids.
+/// Provider display names are user memos and must never become storage keys or
+/// Codex profile names.
+class CodexProviderState {
+  const CodexProviderState({
+    this.activeProviderId = '',
+    this.currentModels = const <String, String>{},
+  });
+
+  final String activeProviderId;
+  final Map<String, String> currentModels;
+
+  factory CodexProviderState.fromMap(Map<dynamic, dynamic>? map) {
+    final currentModels = <String, String>{};
+    final rawModels = map?['currentModels'];
+    if (rawModels is Map) {
+      rawModels.forEach((key, value) {
+        final providerId = key.toString().trim();
+        final modelId = value?.toString().trim() ?? '';
+        if (providerId.isNotEmpty && modelId.isNotEmpty) {
+          currentModels[providerId] = modelId;
+        }
+      });
+    }
+    return CodexProviderState(
+      activeProviderId: (map?['activeProviderId'] ?? '').toString().trim(),
+      currentModels: Map<String, String>.unmodifiable(currentModels),
+    );
+  }
+
+  CodexProviderState selecting({
+    required String providerId,
+    required String modelId,
+  }) {
+    final normalizedProviderId = providerId.trim();
+    final normalizedModelId = modelId.trim();
+    return CodexProviderState(
+      activeProviderId: normalizedProviderId,
+      currentModels: Map<String, String>.unmodifiable(
+        <String, String>{
+          ...currentModels,
+          normalizedProviderId: normalizedModelId,
+        },
+      ),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return <String, dynamic>{
+      'activeProviderId': activeProviderId,
+      'currentModels': currentModels,
+    };
+  }
+}
+
+class CodexProviderCompatibility {
+  const CodexProviderCompatibility._({required this.reason});
+
+  const CodexProviderCompatibility.supported() : reason = '';
+
+  final String reason;
+
+  bool get isSupported => reason.isEmpty;
 }
 
 class ProviderModelOption {
@@ -349,7 +417,10 @@ class ModelProviderConfigService {
       'manual_provider_model_ids_v1';
   static const String _kLegacyCachedFetchedModelsKey =
       'cached_provider_models_with_base_v1';
+  static const String _kCodexProviderStateKey = 'codex_provider_state_v1';
   static const String _kDirectRequestUrlMarker = '#';
+  static final ValueNotifier<int> codexProviderStateRevision =
+      ValueNotifier<int>(0);
   static const Set<String> _kForbiddenCustomHeaderNames = <String>{
     'host',
     'content-length',
@@ -420,6 +491,85 @@ class ModelProviderConfigService {
         editingProfileId: profile.id,
       );
     }
+  }
+
+  static CodexProviderState readCodexProviderState() {
+    final raw = StorageService.getString(
+      _kCodexProviderStateKey,
+      defaultValue: '',
+    );
+    if (raw == null || raw.trim().isEmpty) {
+      return const CodexProviderState();
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return CodexProviderState.fromMap(decoded);
+      }
+    } catch (_) {
+      // A broken selection record is treated as unselected. Provider records
+      // and their independently keyed model libraries remain untouched.
+    }
+    return const CodexProviderState();
+  }
+
+  static Future<void> commitCodexProviderState(
+    CodexProviderState state,
+  ) async {
+    final stored = await StorageService.setString(
+      _kCodexProviderStateKey,
+      jsonEncode(state.toMap()),
+    );
+    if (!stored) {
+      throw StateError('Unable to persist Codex provider selection');
+    }
+    codexProviderStateRevision.value += 1;
+  }
+
+  static CodexProviderCompatibility codexCompatibility(
+    ModelProviderProfileSummary profile,
+  ) {
+    if (profile.id.trim().isEmpty) {
+      return const CodexProviderCompatibility._(
+        reason: 'Provider record has no stable id',
+      );
+    }
+    if (profile.protocolType.trim().toLowerCase() != 'openai_compatible') {
+      return const CodexProviderCompatibility._(
+        reason: 'Codex requires an OpenAI-compatible provider',
+      );
+    }
+    if (profile.wireApi.trim().toLowerCase() != 'responses') {
+      return const CodexProviderCompatibility._(
+        reason: 'Codex requires the Responses API',
+      );
+    }
+    final normalizedBase = normalizeApiBase(profile.baseUrl);
+    if (normalizedBase == null) {
+      return const CodexProviderCompatibility._(
+        reason: 'Provider API base URL is invalid',
+      );
+    }
+    final normalizedUri = Uri.tryParse(normalizedBase);
+    if (_hasDirectRequestUrlMarker(profile.baseUrl) ||
+        normalizedUri == null ||
+        normalizedUri.hasQuery ||
+        normalizedUri.hasFragment) {
+      return const CodexProviderCompatibility._(
+        reason: 'Codex requires a base URL without query or direct-endpoint marker',
+      );
+    }
+    if (profile.apiKey.trim().isEmpty) {
+      return const CodexProviderCompatibility._(
+        reason: 'Provider API key is missing',
+      );
+    }
+    if (profile.customHeaders.isNotEmpty) {
+      return const CodexProviderCompatibility._(
+        reason: 'Codex does not support custom provider auth headers',
+      );
+    }
+    return const CodexProviderCompatibility.supported();
   }
 
   static Future<ModelProviderProfileSummary> saveProfile({
@@ -710,10 +860,13 @@ class ModelProviderConfigService {
       'apiBase': normalizedBase,
       'models': models.map((item) => item.toMap()).toList(),
     };
-    await StorageService.setString(
+    final stored = await StorageService.setString(
       _kCachedFetchedModelsKey,
       jsonEncode(current),
     );
+    if (!stored) {
+      throw StateError('Unable to persist provider model cache');
+    }
   }
 
   static Future<List<String>> getManualModelIds({
@@ -736,7 +889,13 @@ class ModelProviderConfigService {
     await _migrateLegacyStorageIfNeeded(normalizedProfileId);
     final current = _readJsonMap(_kManualModelIdsKey);
     current[normalizedProfileId] = _normalizeModelIds(ids);
-    await StorageService.setString(_kManualModelIdsKey, jsonEncode(current));
+    final stored = await StorageService.setString(
+      _kManualModelIdsKey,
+      jsonEncode(current),
+    );
+    if (!stored) {
+      throw StateError('Unable to persist manual provider models');
+    }
   }
 
   static Future<List<String>> getHiddenChatModelIds({
@@ -759,10 +918,13 @@ class ModelProviderConfigService {
     await _migrateLegacyStorageIfNeeded(normalizedProfileId);
     final current = _readJsonMap(_kHiddenChatModelIdsKey);
     current[normalizedProfileId] = _normalizeModelIds(ids);
-    await StorageService.setString(
+    final stored = await StorageService.setString(
       _kHiddenChatModelIdsKey,
       jsonEncode(current),
     );
+    if (!stored) {
+      throw StateError('Unable to persist hidden provider models');
+    }
   }
 
   static Future<List<ProviderModelOption>> getStoredModelOptionsForProfile(
@@ -786,6 +948,7 @@ class ModelProviderConfigService {
     } else {
       remoteModels = await getCachedFetchedModels(
         profileId: normalizedProfileId,
+        apiBase: resolvedProfile?.baseUrl ?? '',
       );
     }
     final merged = mergeModelOptions(

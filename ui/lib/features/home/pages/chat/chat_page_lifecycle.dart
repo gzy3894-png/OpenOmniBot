@@ -19,6 +19,9 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     super.initState();
 
     WidgetsBinding.instance.addObserver(this);
+    SchedulerBinding.instance.addTimingsCallback(
+      _codexFrameTimingsCallback,
+    );
     _loadHdPadPanePreferences();
     _checkCompanionTaskState();
     AssistsMessageService.setOnTaskFinishCallback(() {
@@ -604,6 +607,9 @@ mixin _ChatPageLifecycleMixin on _ChatPageStateBase {
     unawaited(_conversationModelSelectorHandle?.dismiss());
     _conversationModelSelectorHandle = null;
     WidgetsBinding.instance.removeObserver(this);
+    SchedulerBinding.instance.removeTimingsCallback(
+      _codexFrameTimingsCallback,
+    );
     unawaited(_runtimeCoordinator.flushAllPendingPersistence());
     _conversationListChangedSubscription?.cancel();
     _conversationMessagesChangedSubscription?.cancel();

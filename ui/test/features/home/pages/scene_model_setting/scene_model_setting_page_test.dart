@@ -157,6 +157,7 @@ void main() {
                     'apiKey': 'secret',
                     'configured': true,
                     'protocolType': 'openai_compatible',
+                    'wireApi': 'responses',
                   },
                 ],
                 'editingProfileId': 'provider-1',
@@ -311,7 +312,7 @@ void main() {
     expect(savedOperationConfig['useOfficialService'], isTrue);
   });
 
-  testWidgets('codex setting page autosaves after fields are complete', (
+  testWidgets('codex setting page uses supplier records without run preferences', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1080, 2200);
@@ -324,34 +325,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.byKey(const Key('codex-config-save-button')), findsNothing);
-
-    final baseUrlField = find.byKey(const Key('codex-config-base-url-field'));
-    final modelField = find.byKey(const Key('codex-config-model-field'));
-    final apiKeyField = find.byKey(const Key('codex-config-api-key-field'));
-    await tester.ensureVisible(baseUrlField);
-    await tester.enterText(baseUrlField, 'https://new.example/v1');
-    await tester.enterText(modelField, 'gpt-5.6');
-    await tester.enterText(apiKeyField, 'new-key');
-
+    expect(find.byKey(const Key('codex-provider-selector')), findsOneWidget);
+    expect(
+      find.byKey(const Key('codex-provider-model-selector')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('codex-config-base-url-field')), findsNothing);
+    expect(find.byKey(const Key('codex-config-model-field')), findsNothing);
+    expect(find.byKey(const Key('codex-config-api-key-field')), findsNothing);
+    expect(find.byKey(const Key('codex-config-default-goal-field')), findsNothing);
+    expect(find.text('通用运行偏好'), findsNothing);
+    expect(find.text('Fast'), findsNothing);
+    expect(find.text('自动压缩'), findsNothing);
     expect(codexWriteCount, 0);
-    await tester.pump(const Duration(milliseconds: 750));
-    await tester.pump();
-
-    expect(codexWriteCount, 1);
-    expect(savedCodexConfig, <String, dynamic>{
-      'baseUrl': 'https://new.example/v1',
-      'model': 'gpt-5.6',
-      'apiKey': 'new-key',
-      'serviceTier': '',
-      'fastMode': false,
-      'autoCompaction': true,
-      'modelReasoningEffort': '',
-      'defaultGoal': '',
-      'remoteEnabled': false,
-      'remoteBridgeUrl': '',
-      'remoteBridgeToken': '',
-      'remoteCwd': '',
-    });
-    expect(find.text('已自动保存，将使用本地 Alpine Codex。'), findsOneWidget);
   });
 }

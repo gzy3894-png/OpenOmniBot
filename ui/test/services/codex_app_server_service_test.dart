@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ui/services/codex_app_server_service.dart';
+import 'package:ui/services/model_provider_config_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -651,7 +652,6 @@ void main() {
       'model': 'gpt-5.5',
       'apiKey': 'key',
       'modelReasoningEffort': '',
-      'defaultGoal': '',
       'remoteEnabled': false,
       'remoteBridgeUrl': '',
       'remoteBridgeToken': '',
@@ -853,6 +853,168 @@ void main() {
       expect((calls[1].arguments as Map)['content'], '  keep whitespace\n');
       expect((calls[2].arguments as Map)['recursive'], true);
       expect((calls[3].arguments as Map)['destinationPath'], '/repo/b.dart');
+    },
+  );
+
+  test('supplier switch rolls Native config back before UI state commit', () async {
+    const previous = CodexLocalConfig(
+      baseUrl: 'https://a.example/v1',
+      model: 'model-a',
+      apiKey: 'key-a',
+    );
+    const provider = ModelProviderProfileSummary(
+      id: 'provider-b',
+      name: 'Memo B',
+      baseUrl: 'https://b.example/v1',
+      apiKey: 'key-b',
+      customHeaders: {},
+      sourceType: 'custom',
+      readOnly: false,
+      ready: true,
+      statusText: '',
+      configured: true,
+      wireApi: 'responses',
+    );
+    final appliedModels = <String>[];
+    var committed = false;
+
+    await expectLater(
+      CodexAppServerService.switchLocalProvider(
+        provider: provider,
+        model: 'model-b',
+        availableModelIds: const ['model-b'],
+        previousConfig: previous,
+        previousState: const CodexProviderState(
+          activeProviderId: 'provider-a',
+          currentModels: {'provider-a': 'model-a'},
+        ),
+        applyConfig: (config, {required providerRecordId}) async {
+          appliedModels.add(config.model);
+          if (config.model == 'model-b') {
+            throw StateError('partial Native write');
+          }
+          return config;
+        },
+        commitState: (_) async {
+          committed = true;
+        },
+      ),
+      throwsA(isA<CodexProviderSwitchException>()),
+    );
+
+    expect(appliedModels, ['model-b', 'model-a']);
+    expect(committed, isFalse);
+  });
+
+  test('supplier switch rejects a missing fixed Native profile and rolls back',
+      () async {
+    const previous = CodexLocalConfig(
+      baseUrl: 'https://a.example/v1',
+      model: 'model-a',
+      apiKey: 'key-a',
+      modelProvider: 'omnimind',
+    );
+    const provider = ModelProviderProfileSummary(
+      id: 'provider-b',
+      name: 'Memo B',
+      baseUrl: 'https://b.example/v1',
+      apiKey: 'key-b',
+      customHeaders: {},
+      sourceType: 'custom',
+      readOnly: false,
+      ready: true,
+      statusText: '',
+      configured: true,
+      wireApi: 'responses',
+    );
+    final appliedModels = <String>[];
+
+    await expectLater(
+      CodexAppServerService.switchLocalProvider(
+        provider: provider,
+        model: 'model-b',
+        availableModelIds: const ['model-b'],
+        previousConfig: previous,
+        previousState: const CodexProviderState(
+          activeProviderId: 'provider-a',
+          currentModels: {'provider-a': 'model-a'},
+        ),
+        applyConfig: (config, {required providerRecordId}) async {
+          appliedModels.add(config.model);
+          if (config.model == 'model-b') {
+            return config.copyWith(modelProvider: '');
+          }
+          return config;
+        },
+        commitState: (_) async {},
+      ),
+      throwsA(isA<CodexProviderSwitchException>()),
+    );
+
+    expect(appliedModels, ['model-b', 'model-a']);
+  });
+
+  test(
+    'supplier switch rolls Native config and old state back when commit fails',
+    () async {
+      const previous = CodexLocalConfig(
+        baseUrl: 'https://a.example/v1',
+        model: 'model-a',
+        apiKey: 'key-a',
+        modelProvider: 'omnimind',
+      );
+      const oldState = CodexProviderState(
+        activeProviderId: 'provider-a',
+        currentModels: {'provider-a': 'model-a'},
+      );
+      const provider = ModelProviderProfileSummary(
+        id: 'provider-b',
+        name: 'Memo B',
+        baseUrl: 'https://b.example/v1',
+        apiKey: 'key-b',
+        customHeaders: {},
+        sourceType: 'custom',
+        readOnly: false,
+        ready: true,
+        statusText: '',
+        configured: true,
+        wireApi: 'responses',
+      );
+      final appliedModels = <String>[];
+      final appliedProviderIds = <String>[];
+      final committedProviderIds = <String>[];
+
+      await expectLater(
+        CodexAppServerService.switchLocalProvider(
+          provider: provider,
+          model: 'model-b',
+          availableModelIds: const ['model-b'],
+          previousConfig: previous,
+          previousState: oldState,
+          applyConfig: (config, {required providerRecordId}) async {
+            appliedModels.add(config.model);
+            appliedProviderIds.add(providerRecordId);
+            return config.copyWith(modelProvider: 'omnimind');
+          },
+          commitState: (state) async {
+            committedProviderIds.add(state.activeProviderId);
+            if (committedProviderIds.length == 1) {
+              throw StateError('selection write failed after partial commit');
+            }
+          },
+        ),
+        throwsA(
+          isA<CodexProviderSwitchException>().having(
+            (error) => error.rollbackFailed,
+            'rollbackFailed',
+            isFalse,
+          ),
+        ),
+      );
+
+      expect(appliedModels, ['model-b', 'model-a']);
+      expect(appliedProviderIds, ['provider-b', 'provider-a']);
+      expect(committedProviderIds, ['provider-b', 'provider-a']);
     },
   );
 }

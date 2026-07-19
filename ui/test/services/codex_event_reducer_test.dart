@@ -2216,7 +2216,13 @@ diff --git a/lib/main.dart b/lib/main.dart
     );
 
     expect(started.handled, isTrue);
+    expect(started.reviewId, 'review-1');
+    expect(started.approvalStatus, 'inProgress');
+    expect(started.decisionSource, isNull);
     expect(completed.handled, isTrue);
+    expect(completed.reviewId, 'review-1');
+    expect(completed.approvalStatus, 'approved');
+    expect(completed.decisionSource, 'agent');
     expect(runtime.messages, isEmpty);
   });
 

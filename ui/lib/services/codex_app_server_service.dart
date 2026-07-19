@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:ui/services/model_provider_config_service.dart';
 
 class CodexChannelUnavailableException implements Exception {
   const CodexChannelUnavailableException({
@@ -91,6 +92,7 @@ class CodexLocalConfig {
     required this.baseUrl,
     required this.model,
     required this.apiKey,
+    this.modelProvider = '',
     this.codexHome,
     this.serviceTier = '',
     /// Mirror of config.toml `[features].fast_mode`. Null means unknown /
@@ -115,6 +117,7 @@ class CodexLocalConfig {
   final String baseUrl;
   final String model;
   final String apiKey;
+  final String modelProvider;
   final String? codexHome;
   final String serviceTier;
 
@@ -148,12 +151,55 @@ class CodexLocalConfig {
   /// Auto compaction UI default: on when key is missing (Codex-ish default).
   bool get isAutoCompactionEnabled => autoCompaction ?? true;
 
+  CodexLocalConfig copyWith({
+    String? baseUrl,
+    String? model,
+    String? apiKey,
+    String? modelProvider,
+    String? codexHome,
+    String? serviceTier,
+    bool? fastMode,
+    bool? autoCompaction,
+    int? contextTokenThreshold,
+    String? modelReasoningEffort,
+    String? defaultGoal,
+    bool? remoteEnabled,
+    String? remoteBridgeUrl,
+    String? remoteBridgeToken,
+    String? remoteCwd,
+    bool? remoteConfigured,
+    String? runtime,
+  }) {
+    return CodexLocalConfig(
+      baseUrl: baseUrl ?? this.baseUrl,
+      model: model ?? this.model,
+      apiKey: apiKey ?? this.apiKey,
+      modelProvider: modelProvider ?? this.modelProvider,
+      codexHome: codexHome ?? this.codexHome,
+      serviceTier: serviceTier ?? this.serviceTier,
+      fastMode: fastMode ?? this.fastMode,
+      autoCompaction: autoCompaction ?? this.autoCompaction,
+      contextTokenThreshold:
+          contextTokenThreshold ?? this.contextTokenThreshold,
+      modelReasoningEffort:
+          modelReasoningEffort ?? this.modelReasoningEffort,
+      defaultGoal: defaultGoal ?? this.defaultGoal,
+      remoteEnabled: remoteEnabled ?? this.remoteEnabled,
+      remoteBridgeUrl: remoteBridgeUrl ?? this.remoteBridgeUrl,
+      remoteBridgeToken: remoteBridgeToken ?? this.remoteBridgeToken,
+      remoteCwd: remoteCwd ?? this.remoteCwd,
+      remoteConfigured: remoteConfigured ?? this.remoteConfigured,
+      runtime: runtime ?? this.runtime,
+    );
+  }
+
   factory CodexLocalConfig.fromMap(Map<dynamic, dynamic>? map) {
     final source = map ?? const <dynamic, dynamic>{};
     return CodexLocalConfig(
       baseUrl: _stringOrNull(source['baseUrl']) ?? '',
       model: _stringOrNull(source['model']) ?? '',
       apiKey: _stringOrNull(source['apiKey']) ?? '',
+      modelProvider: _stringOrNull(source['modelProvider']) ?? '',
       codexHome: _stringOrNull(source['codexHome']),
       serviceTier: _stringOrNull(source['serviceTier']) ?? '',
       fastMode: _boolOrNull(source['fastMode']) ??
@@ -174,6 +220,27 @@ class CodexLocalConfig {
       runtime: _stringOrNull(source['runtime']),
     );
   }
+}
+
+typedef CodexLocalProviderConfigApplier =
+    Future<CodexLocalConfig> Function(
+      CodexLocalConfig config, {
+      required String providerRecordId,
+    });
+typedef CodexProviderStateCommitter =
+    Future<void> Function(CodexProviderState state);
+
+class CodexProviderSwitchException implements Exception {
+  const CodexProviderSwitchException(
+    this.message, {
+    this.rollbackFailed = false,
+  });
+
+  final String message;
+  final bool rollbackFailed;
+
+  @override
+  String toString() => message;
 }
 
 class CodexRemoteDirectoryEntry {
@@ -954,12 +1021,13 @@ class CodexAppServerService {
     required String baseUrl,
     required String model,
     required String apiKey,
+    String? providerRecordId,
     String? serviceTier,
     bool? fastMode,
     bool? autoCompaction,
     int? contextTokenThreshold,
     String modelReasoningEffort = '',
-    String defaultGoal = '',
+    String? defaultGoal,
     bool remoteEnabled = false,
     String remoteBridgeUrl = '',
     String remoteBridgeToken = '',
@@ -969,19 +1037,169 @@ class CodexAppServerService {
       'baseUrl': baseUrl.trim(),
       'model': model.trim(),
       'apiKey': apiKey.trim(),
+      if (providerRecordId != null && providerRecordId.trim().isNotEmpty)
+        'providerRecordId': providerRecordId.trim(),
+      if (providerRecordId != null && providerRecordId.trim().isNotEmpty)
+        // A guard for the Native writer, not a user-selectable profile.
+        'expectedModelProvider': 'omnimind',
       if (serviceTier != null) 'serviceTier': serviceTier.trim(),
       if (fastMode != null) 'fastMode': fastMode,
       if (autoCompaction != null) 'autoCompaction': autoCompaction,
       if (contextTokenThreshold != null)
         'contextTokenThreshold': contextTokenThreshold,
       'modelReasoningEffort': modelReasoningEffort.trim(),
-      'defaultGoal': defaultGoal.trim(),
+      if (defaultGoal != null) 'defaultGoal': defaultGoal.trim(),
       'remoteEnabled': remoteEnabled,
       'remoteBridgeUrl': remoteBridgeUrl.trim(),
       'remoteBridgeToken': remoteBridgeToken.trim(),
       'remoteCwd': remoteCwd.trim(),
     });
     return CodexLocalConfig.fromMap(result);
+  }
+
+  /// Switches the application supplier while the Native Codex profile remains
+  /// the fixed `omnimind` profile.
+  ///
+  /// Native config/auth is applied first. The application selection is
+  /// committed as one JSON value only after Native reports the target values.
+  /// If that commit fails, the previous Native config is restored and the UI
+  /// caller can keep rendering its previous selection.
+  static Future<CodexLocalConfig> switchLocalProvider({
+    required ModelProviderProfileSummary provider,
+    required String model,
+    required List<String> availableModelIds,
+    required CodexLocalConfig previousConfig,
+    CodexProviderState? previousState,
+    CodexLocalProviderConfigApplier? applyConfig,
+    CodexProviderStateCommitter? commitState,
+  }) async {
+    final compatibility =
+        ModelProviderConfigService.codexCompatibility(provider);
+    if (!compatibility.isSupported) {
+      throw CodexProviderSwitchException(compatibility.reason);
+    }
+    final targetModel = model.trim();
+    final allowedModels = availableModelIds
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toSet();
+    if (targetModel.isEmpty || !allowedModels.contains(targetModel)) {
+      throw const CodexProviderSwitchException(
+        'The selected model is not in this provider model library',
+      );
+    }
+
+    final oldState =
+        previousState ?? ModelProviderConfigService.readCodexProviderState();
+    final targetState = oldState.selecting(
+      providerId: provider.id,
+      modelId: targetModel,
+    );
+    final targetConfig = previousConfig.copyWith(
+      baseUrl: ModelProviderConfigService.normalizeApiBase(provider.baseUrl) ??
+          provider.baseUrl.trim(),
+      model: targetModel,
+      apiKey: provider.apiKey.trim(),
+    );
+    final configApplier = applyConfig ?? _applyLocalProviderConfig;
+    final stateCommitter =
+        commitState ?? ModelProviderConfigService.commitCodexProviderState;
+
+    late final CodexLocalConfig applied;
+    try {
+      applied = await configApplier(
+        targetConfig,
+        providerRecordId: provider.id,
+      );
+    } catch (_) {
+      try {
+        await configApplier(
+          previousConfig,
+          providerRecordId: oldState.activeProviderId,
+        );
+      } catch (_) {
+        throw const CodexProviderSwitchException(
+          'Provider switch failed and Native rollback failed',
+          rollbackFailed: true,
+        );
+      }
+      throw const CodexProviderSwitchException(
+        'Provider switch failed; previous config restored',
+      );
+    }
+    final appliedBase =
+        ModelProviderConfigService.normalizeApiBase(applied.baseUrl) ??
+        applied.baseUrl.trim();
+    if (appliedBase != targetConfig.baseUrl ||
+        applied.modelProvider.trim() != 'omnimind' ||
+        applied.model.trim() != targetModel ||
+        applied.apiKey.trim() != targetConfig.apiKey) {
+      try {
+        await configApplier(
+          previousConfig,
+          providerRecordId: oldState.activeProviderId,
+        );
+      } catch (_) {
+        throw const CodexProviderSwitchException(
+          'Provider switch verification failed and Native rollback failed',
+          rollbackFailed: true,
+        );
+      }
+      throw const CodexProviderSwitchException(
+        'Provider switch verification failed',
+      );
+    }
+
+    try {
+      await stateCommitter(targetState);
+    } catch (_) {
+      var nativeRollbackFailed = false;
+      var stateRollbackFailed = false;
+      try {
+        await configApplier(
+          previousConfig,
+          providerRecordId: oldState.activeProviderId,
+        );
+      } catch (_) {
+        nativeRollbackFailed = true;
+      }
+      try {
+        await stateCommitter(oldState);
+      } catch (_) {
+        stateRollbackFailed = true;
+      }
+      if (nativeRollbackFailed || stateRollbackFailed) {
+        throw const CodexProviderSwitchException(
+          'Provider selection could not be saved and rollback failed',
+          rollbackFailed: true,
+        );
+      }
+      throw const CodexProviderSwitchException(
+        'Provider selection could not be saved; previous config restored',
+      );
+    }
+    return applied;
+  }
+
+  static Future<CodexLocalConfig> _applyLocalProviderConfig(
+    CodexLocalConfig config, {
+    required String providerRecordId,
+  }) {
+    return writeLocalConfig(
+      baseUrl: config.baseUrl,
+      model: config.model,
+      apiKey: config.apiKey,
+      providerRecordId: providerRecordId,
+      serviceTier: config.serviceTier,
+      fastMode: config.fastMode,
+      autoCompaction: config.autoCompaction,
+      contextTokenThreshold: config.contextTokenThreshold,
+      modelReasoningEffort: config.modelReasoningEffort,
+      remoteEnabled: config.remoteEnabled,
+      remoteBridgeUrl: config.remoteBridgeUrl,
+      remoteBridgeToken: config.remoteBridgeToken,
+      remoteCwd: config.remoteCwd,
+    );
   }
 
   static Future<Map<String, dynamic>> testRemoteConfig({

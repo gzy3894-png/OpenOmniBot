@@ -20,17 +20,24 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+private const val CODEX_INTERNAL_MODEL_PROVIDER = "omnimind"
+
 class CodexAppServerManager private constructor(
     private val context: Context
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionMutex = Mutex()
+    private val configWriteMutex = Mutex()
     private val sessionStateLock = Any()
     private val serverMessageBarrier = CodexServerMessageBarrier()
     private val sessionGenerationLock = Any()
     private val sessionGenerationPreferences = appContext.getSharedPreferences(
         SESSION_GENERATION_PREFERENCES,
+        Context.MODE_PRIVATE,
+    )
+    private val configMigrationPreferences = appContext.getSharedPreferences(
+        CONFIG_MIGRATION_PREFERENCES,
         Context.MODE_PRIVATE,
     )
     private val threadStartMutex = Mutex()
@@ -685,7 +692,8 @@ class CodexAppServerManager private constructor(
         )
     }
 
-    private suspend fun readLocalConfig(): Map<String, Any?> {
+    private suspend fun readLocalConfig(): Map<String, Any?> =
+        configWriteMutex.withLock {
         val remoteConfig = remoteConfigStore.read()
         val command = """
             mkdir -p ${shellQuote(CodexAppServerDefaults.CODEX_HOME)}
@@ -718,7 +726,7 @@ class CodexAppServerManager private constructor(
                 ?: IllegalStateException("Failed to read Codex config.")
         }
         val localOutput = localRead.getOrDefault("")
-        val configToml = extractMarkedBlock(
+        var configToml = extractMarkedBlock(
             localOutput,
             "__OMNI_CODEX_CONFIG_START__",
             "__OMNI_CODEX_CONFIG_END__"
@@ -728,6 +736,22 @@ class CodexAppServerManager private constructor(
             "__OMNI_CODEX_AUTH_START__",
             "__OMNI_CODEX_AUTH_END__"
         )
+        val commonDefaultsMigrationEligible =
+            extractTomlString(configToml, "model").orEmpty().isNotBlank() &&
+                extractCodexInternalProviderBaseUrl(configToml).orEmpty().isNotBlank()
+        if (commonDefaultsMigrationEligible &&
+            !configMigrationPreferences.getBoolean(COMMON_DEFAULTS_MIGRATION_KEY, false)
+        ) {
+            val migratedToml = migrateCodexCommonDefaultsToml(configToml)
+            if (migratedToml != configToml) {
+                writeCodexConfigTomlAtomically(migratedToml)
+                configToml = migratedToml
+            }
+            configMigrationPreferences
+                .edit()
+                .putBoolean(COMMON_DEFAULTS_MIGRATION_KEY, true)
+                .apply()
+        }
         val serviceTier = extractTomlString(configToml, "service_tier").orEmpty()
         val modelReasoningEffort =
             extractTomlString(configToml, "model_reasoning_effort").orEmpty()
@@ -743,9 +767,9 @@ class CodexAppServerManager private constructor(
         // B27: expose features.auto_compaction for settings toggle.
         val autoCompaction = extractTomlBoolean(featuresBody, "auto_compaction")
             ?: extractTomlBoolean(configToml, "auto_compaction")
-        return buildCodexLocalConfigPayload(
+        buildCodexLocalConfigPayload(
             model = extractTomlString(configToml, "model").orEmpty(),
-            baseUrl = extractTomlString(configToml, "base_url").orEmpty(),
+            baseUrl = extractCodexInternalProviderBaseUrl(configToml).orEmpty(),
             apiKey = extractOpenAiApiKey(authJson).orEmpty(),
             serviceTier = serviceTier,
             modelReasoningEffort = modelReasoningEffort,
@@ -758,7 +782,22 @@ class CodexAppServerManager private constructor(
         )
     }
 
-    private suspend fun writeLocalConfig(args: Map<String, Any?>): Map<String, Any?> {
+    private suspend fun writeLocalConfig(
+        args: Map<String, Any?>,
+    ): Map<String, Any?> = configWriteMutex.withLock {
+        // Keep connect/disconnect/server responses outside the two-file
+        // replacement window so no new local process can observe mixed
+        // config.toml/auth.json identities.
+        sessionMutex.withLock {
+        val expectedModelProvider = args.stringValue("expectedModelProvider")
+        val explicitProviderSwitch =
+            args.stringValue("providerRecordId").orEmpty().isNotBlank()
+        require(
+            expectedModelProvider == null ||
+                expectedModelProvider == CODEX_INTERNAL_MODEL_PROVIDER
+        ) {
+            "Codex model provider is fixed to $CODEX_INTERNAL_MODEL_PROVIDER"
+        }
         val baseUrl = args.stringValue("baseUrl").orEmpty()
         val model = args.stringValue("model").orEmpty()
         val apiKey = args.stringValue("apiKey").orEmpty()
@@ -770,7 +809,7 @@ class CodexAppServerManager private constructor(
         val modelReasoningEffort =
             normalizeCodexReasoningEffort(args.stringValue("modelReasoningEffort"))
                 .orEmpty()
-        val defaultGoal = args.stringValue("defaultGoal").orEmpty().trim()
+        val requestedDefaultGoal = args.stringValue("defaultGoal").orEmpty().trim()
         val requestedFastMode = args.booleanValue("fastMode") ?: args.booleanValue("fast_mode")
         val requestedAutoCompaction =
             args.booleanValue("autoCompaction") ?: args.booleanValue("auto_compaction")
@@ -813,21 +852,45 @@ class CodexAppServerManager private constructor(
         val existingAutoCompaction = extractTomlBoolean(featuresBodyForWrite, "auto_compaction")
         val existingContextTokenThreshold =
             extractTomlInt(existingToml, "omnimind_context_token_threshold")
+        val existingServiceTier =
+            normalizeCodexServiceTier(extractTomlString(existingToml, "service_tier"))
+        val applyCommonDefaultsMigration =
+            localComplete &&
+                !configMigrationPreferences.getBoolean(
+                    COMMON_DEFAULTS_MIGRATION_KEY,
+                    false,
+                )
         val fastMode = resolveCodexFastMode(
             requestedFastMode = requestedFastMode,
             serviceTier = serviceTier,
             serviceTierArgPresent = serviceTierArgPresent,
-            existingFastMode = existingFastMode
+            existingFastMode =
+                if (applyCommonDefaultsMigration &&
+                    requestedFastMode == null &&
+                    !serviceTierArgPresent
+                ) {
+                    false
+                } else {
+                    existingFastMode
+                }
         )
         // B27: only force auto_compaction when caller provides it; otherwise preserve.
-        val autoCompaction = requestedAutoCompaction ?: existingAutoCompaction
+        val autoCompaction =
+            requestedAutoCompaction
+                ?: if (applyCommonDefaultsMigration) true else existingAutoCompaction
+        val defaultGoal =
+            if (applyCommonDefaultsMigration) "" else requestedDefaultGoal
         // B30: only rewrite threshold when caller provides it; otherwise preserve.
         val contextTokenThreshold =
             (requestedContextTokenThreshold ?: existingContextTokenThreshold)
                 ?.let(::clampContextTokenThreshold)
         // Fast off must never persist service_tier=fast; other tiers stay independent.
-        val effectiveServiceTier =
-            if (!fastMode && serviceTier == "fast") null else serviceTier
+        val effectiveServiceTier = when {
+            applyCommonDefaultsMigration && !serviceTierArgPresent ->
+                existingServiceTier?.takeUnless { it == "fast" }
+            !fastMode && serviceTier == "fast" -> null
+            else -> serviceTier
+        }
         if (localComplete) {
             val configToml = buildCodexConfigToml(
                 baseUrl = baseUrl,
@@ -850,9 +913,91 @@ class CodexAppServerManager private constructor(
                 set -eu
                 mkdir -p ${shellQuote(CodexAppServerDefaults.CODEX_HOME)}
                 umask 077
-                printf %s ${shellQuote(configToml)} > ${shellQuote(configPath)}
-                printf %s ${shellQuote(authJson)} > ${shellQuote(authPath)}
-                chmod 600 ${shellQuote(configPath)} ${shellQuote(authPath)}
+                config_path=${shellQuote(configPath)}
+                auth_path=${shellQuote(authPath)}
+                config_tmp="${'$'}config_path.omni-tmp-${'$'}${'$'}"
+                auth_tmp="${'$'}auth_path.omni-tmp-${'$'}${'$'}"
+                config_backup="${'$'}config_path.omni-backup-${'$'}${'$'}"
+                auth_backup="${'$'}auth_path.omni-backup-${'$'}${'$'}"
+                config_existed=0
+                auth_existed=0
+                config_backup_ready=0
+                auth_backup_ready=0
+                config_replaced=0
+                auth_replaced=0
+                committed=0
+                rollback() {
+                  status="${'$'}?"
+                  trap - EXIT HUP INT TERM
+                  restore_failed=0
+                  if [ "${'$'}committed" -eq 0 ]; then
+                    if [ "${'$'}config_replaced" -eq 1 ]; then
+                      if [ "${'$'}config_existed" -eq 1 ] && \
+                         [ "${'$'}config_backup_ready" -eq 1 ]; then
+                        if mv -f "${'$'}config_backup" "${'$'}config_path"; then
+                          config_backup_ready=0
+                        else
+                          restore_failed=1
+                        fi
+                      elif [ "${'$'}config_existed" -eq 0 ]; then
+                        rm -f "${'$'}config_path" || restore_failed=1
+                      fi
+                    fi
+                    if [ "${'$'}auth_replaced" -eq 1 ]; then
+                      if [ "${'$'}auth_existed" -eq 1 ] && \
+                         [ "${'$'}auth_backup_ready" -eq 1 ]; then
+                        if mv -f "${'$'}auth_backup" "${'$'}auth_path"; then
+                          auth_backup_ready=0
+                        else
+                          restore_failed=1
+                        fi
+                      elif [ "${'$'}auth_existed" -eq 0 ]; then
+                        rm -f "${'$'}auth_path" || restore_failed=1
+                      fi
+                    fi
+                  fi
+                  rm -f "${'$'}config_tmp" "${'$'}auth_tmp" || true
+                  if [ "${'$'}config_backup_ready" -eq 0 ] || \
+                     [ "${'$'}config_replaced" -eq 0 ]; then
+                    rm -f "${'$'}config_backup" || true
+                  fi
+                  if [ "${'$'}auth_backup_ready" -eq 0 ] || \
+                     [ "${'$'}auth_replaced" -eq 0 ]; then
+                    rm -f "${'$'}auth_backup" || true
+                  fi
+                  if [ "${'$'}restore_failed" -eq 1 ]; then
+                    printf '%s\n' 'Codex config rollback failed; backup retained.' >&2
+                    exit 1
+                  fi
+                  exit "${'$'}status"
+                }
+                trap rollback EXIT
+                trap 'exit 1' HUP INT TERM
+                rm -f "${'$'}config_tmp" "${'$'}auth_tmp" \
+                  "${'$'}config_backup" "${'$'}auth_backup"
+                printf %s ${shellQuote(configToml)} > "${'$'}config_tmp"
+                printf %s ${shellQuote(authJson)} > "${'$'}auth_tmp"
+                chmod 600 "${'$'}config_tmp" "${'$'}auth_tmp"
+                if [ -f "${'$'}config_path" ]; then
+                  config_existed=1
+                  cp -p "${'$'}config_path" "${'$'}config_backup"
+                  chmod 600 "${'$'}config_backup"
+                  config_backup_ready=1
+                fi
+                if [ -f "${'$'}auth_path" ]; then
+                  auth_existed=1
+                  cp -p "${'$'}auth_path" "${'$'}auth_backup"
+                  chmod 600 "${'$'}auth_backup"
+                  auth_backup_ready=1
+                fi
+                config_replaced=1
+                mv -f "${'$'}config_tmp" "${'$'}config_path"
+                auth_replaced=1
+                mv -f "${'$'}auth_tmp" "${'$'}auth_path"
+                chmod 600 "${'$'}config_path" "${'$'}auth_path"
+                committed=1
+                rm -f "${'$'}config_backup" "${'$'}auth_backup" || true
+                trap - EXIT HUP INT TERM
                 printf '__OMNI_CODEX_WRITE_OK__\n'
             """.trimIndent()
             val result = TerminalManager.getInstance(appContext).executeHiddenCommand(
@@ -865,6 +1010,12 @@ class CodexAppServerManager private constructor(
                     result.error.ifBlank { result.rawOutputPreview.ifBlank { "Failed to write Codex config." } }
                 )
             }
+            if (applyCommonDefaultsMigration) {
+                configMigrationPreferences
+                    .edit()
+                    .putBoolean(COMMON_DEFAULTS_MIGRATION_KEY, true)
+                    .apply()
+            }
         }
         // B36/B37: only kill session when hard identity changes (provider/model/key/remote).
         // Soft toggles (fast_mode, auto_compaction, service_tier, threshold, effort,
@@ -874,7 +1025,7 @@ class CodexAppServerManager private constructor(
         val existingTomlKnown = existingToml.isNotBlank()
         val existingAuthKnown = existingAuthJson.isNotBlank()
         val existingModel = extractTomlString(existingToml, "model").orEmpty()
-        val existingBaseUrl = extractTomlString(existingToml, "base_url").orEmpty()
+        val existingBaseUrl = extractCodexInternalProviderBaseUrl(existingToml).orEmpty()
         val existingApiKey = extractOpenAiApiKey(existingAuthJson).orEmpty()
         val remoteHardChanged =
             previousRemoteConfig.enabled != savedRemoteConfig.enabled ||
@@ -888,41 +1039,51 @@ class CodexAppServerManager private constructor(
         // First-time local write only when no known toml AND no live session (fail-open soft).
         val hasLiveSession = session != null
         val firstLocalBootstrap = localComplete && !existingTomlKnown && !hasLiveSession
-        val shouldRestartSession = remoteHardChanged || localHardChanged || firstLocalBootstrap
+        // A provider switch must not report success while a live session keeps
+        // an identity that could not be read. Conservatively reconnect once;
+        // ordinary soft preference writes retain the previous fail-open path.
+        val providerIdentityUnknown =
+            localComplete &&
+                explicitProviderSwitch &&
+                (!existingTomlKnown || !existingAuthKnown)
+        val shouldRestartSession =
+            remoteHardChanged ||
+                localHardChanged ||
+                firstLocalBootstrap ||
+                providerIdentityUnknown
         if (shouldRestartSession) {
             val reason = when {
                 remoteHardChanged -> "remote-hard"
                 localHardChanged -> "local-hard"
                 firstLocalBootstrap -> "bootstrap"
+                providerIdentityUnknown -> "provider-hard-unknown"
                 else -> "unknown"
             }
             Log.i(
                 "CodexAppServerManager",
                 "B37 writeLocalConfig restart session reason=$reason"
             )
-            sessionMutex.withLock {
-                val currentSession = session
-                val currentGeneration = activeSessionGeneration
-                serverMessageBarrier.run {
-                    synchronized(sessionStateLock) {
-                        if (currentSession != null &&
-                            currentGeneration != NO_SESSION_GENERATION
-                        ) {
-                            invalidateServerRequestsLocked(
-                                generation = currentGeneration,
-                                sessionIdentity = currentSession,
-                                reason = "session_replaced",
-                            )
-                        }
-                        if (session === currentSession) {
-                            clearActiveSessionLocked()
-                        }
+            val currentSession = session
+            val currentGeneration = activeSessionGeneration
+            serverMessageBarrier.run {
+                synchronized(sessionStateLock) {
+                    if (currentSession != null &&
+                        currentGeneration != NO_SESSION_GENERATION
+                    ) {
+                        invalidateServerRequestsLocked(
+                            generation = currentGeneration,
+                            sessionIdentity = currentSession,
+                            reason = "session_replaced",
+                        )
+                    }
+                    if (session === currentSession) {
+                        clearActiveSessionLocked()
                     }
                 }
-                currentSession?.disconnect()
-                activeTurnsByThreadId.clear()
-                finishedNotifyOnceByThread.clear()
             }
+            currentSession?.disconnect()
+            activeTurnsByThreadId.clear()
+            finishedNotifyOnceByThread.clear()
         } else {
             // B38 T5: explicit soft-path observability (PLAN soft conf disconnect).
             val softReason = when {
@@ -934,7 +1095,7 @@ class CodexAppServerManager private constructor(
                 "B38 writeLocalConfig restart=skipped reason=$softReason hasLiveSession=$hasLiveSession"
             )
         }
-        return buildCodexLocalConfigPayload(
+        buildCodexLocalConfigPayload(
             model = model,
             baseUrl = baseUrl,
             apiKey = apiKey,
@@ -947,6 +1108,7 @@ class CodexAppServerManager private constructor(
             remoteConfig = savedRemoteConfig,
             runtime = resolveRuntime().kind.payloadValue
         )
+        }
     }
 
     private suspend fun readExistingCodexConfigToml(): String {
@@ -968,6 +1130,34 @@ class CodexAppServerManager private constructor(
                 result.output
             }
         }.getOrDefault("")
+    }
+
+    private suspend fun writeCodexConfigTomlAtomically(configToml: String) {
+        val configPath = "${CodexAppServerDefaults.CODEX_HOME}/config.toml"
+        val tempPath = "$configPath.omni-migration-tmp"
+        val command = """
+            set -eu
+            mkdir -p ${shellQuote(CodexAppServerDefaults.CODEX_HOME)}
+            umask 077
+            rm -f ${shellQuote(tempPath)}
+            printf %s ${shellQuote(configToml)} > ${shellQuote(tempPath)}
+            chmod 600 ${shellQuote(tempPath)}
+            mv -f ${shellQuote(tempPath)} ${shellQuote(configPath)}
+        """.trimIndent()
+        val result = TerminalManager.getInstance(appContext).executeHiddenCommand(
+            command = command,
+            executorKey = "codex-config-common-defaults-migration",
+            timeoutMs = 30_000L,
+        )
+        if (!result.isOk || result.exitCode != 0) {
+            throw IllegalStateException(
+                result.error.ifBlank {
+                    result.rawOutputPreview.ifBlank {
+                        "Failed to migrate Codex common defaults."
+                    }
+                }
+            )
+        }
     }
 
     /** B36: read auth.json so soft conf writes can detect hard apiKey identity changes. */
@@ -1881,6 +2071,10 @@ class CodexAppServerManager private constructor(
         private const val SESSION_GENERATION_PREFERENCES =
             "codex_app_server_lifecycle"
         private const val SESSION_GENERATION_KEY = "last_session_generation"
+        private const val CONFIG_MIGRATION_PREFERENCES =
+            "codex_config_migrations"
+        private const val COMMON_DEFAULTS_MIGRATION_KEY =
+            "common_defaults_v1"
         private const val SERVER_REQUEST_RESOLVED_METHOD = "serverRequest/resolved"
         private const val SERVER_REQUEST_INVALIDATED_METHOD = "serverRequest/invalidated"
 
@@ -2182,6 +2376,7 @@ private fun buildCodexLocalConfigPayload(
 ): Map<String, Any?> {
     return linkedMapOf(
         "codexHome" to CodexAppServerDefaults.CODEX_HOME,
+        "modelProvider" to CODEX_INTERNAL_MODEL_PROVIDER,
         "model" to model,
         "baseUrl" to baseUrl,
         "apiKey" to apiKey,
@@ -2198,6 +2393,46 @@ private fun buildCodexLocalConfigPayload(
         "remoteConfigured" to remoteConfig.isConfigured,
         "runtime" to runtime
     )
+}
+
+/**
+ * One-time migration for app-wide Codex defaults. Provider endpoint, model,
+ * approval/sandbox keys, hooks, and unrelated tables are preserved.
+ */
+internal fun migrateCodexCommonDefaultsToml(existingToml: String): String {
+    if (existingToml.isBlank()) {
+        return existingToml
+    }
+    val model = extractTomlString(existingToml, "model").orEmpty()
+    val baseUrl = extractCodexInternalProviderBaseUrl(existingToml).orEmpty()
+    if (model.isBlank() || baseUrl.isBlank()) {
+        return existingToml
+    }
+    return buildCodexConfigToml(
+        baseUrl = baseUrl,
+        model = model,
+        serviceTier =
+            normalizeCodexServiceTier(extractTomlString(existingToml, "service_tier"))
+                ?.takeUnless { it == "fast" },
+        modelReasoningEffort =
+            extractTomlString(existingToml, "model_reasoning_effort").orEmpty(),
+        defaultGoal = "",
+        fastMode = false,
+        autoCompaction = true,
+        contextTokenThreshold =
+            extractTomlInt(existingToml, "omnimind_context_token_threshold"),
+        existingFeatures =
+            extractTomlTableEntries(existingToml, "features"),
+        existingToml = existingToml,
+    )
+}
+
+internal fun extractCodexInternalProviderBaseUrl(source: String): String? {
+    val providerBody = extractTomlTableBody(
+        source,
+        "model_providers.$CODEX_INTERNAL_MODEL_PROVIDER",
+    )
+    return extractTomlString(providerBody, "base_url")
 }
 
 /**
@@ -2221,7 +2456,7 @@ internal fun buildCodexConfigToml(
     existingToml: String = ""
 ): String {
     val lines = mutableListOf(
-        "model_provider = \"omnimind\"",
+        "model_provider = \"$CODEX_INTERNAL_MODEL_PROVIDER\"",
         "model = ${tomlString(model)}",
         "disable_response_storage = true"
     )
@@ -2262,15 +2497,18 @@ internal fun buildCodexConfigToml(
     )
     lines += listOf(
         "",
-        "[model_providers.omnimind]",
-        "name = \"omnimind\"",
+        "[model_providers.$CODEX_INTERNAL_MODEL_PROVIDER]",
+        "name = \"$CODEX_INTERNAL_MODEL_PROVIDER\"",
         "base_url = ${tomlString(baseUrl)}",
         "wire_api = \"responses\"",
         "requires_openai_auth = true"
     )
     val otherTables = extractPreservedTomlTables(
         existingToml,
-        skipTables = setOf("features", "model_providers.omnimind")
+        skipTables = setOf(
+            "features",
+            "model_providers.$CODEX_INTERNAL_MODEL_PROVIDER",
+        )
     )
     if (otherTables.isNotEmpty()) {
         lines += ""

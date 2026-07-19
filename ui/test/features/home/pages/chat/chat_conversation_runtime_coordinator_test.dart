@@ -720,6 +720,147 @@ void main() {
     );
   });
 
+  testWidgets(
+    'terminal Codex persistence merges dirty flags and flushes once',
+    (tester) async {
+      const conversationId = 2003;
+      final runtime = coordinator.ensureRuntime(
+        conversationId: conversationId,
+        mode: kChatRuntimeModeCodex,
+      );
+      runtime.messages.insert(0, ChatMessageModel.userMessage('persist once'));
+
+      coordinator.applyCodexEvent(
+        conversationId: conversationId,
+        event: const <String, dynamic>{
+          'message': <String, dynamic>{
+            'method': 'item/agentMessage/delta',
+            'params': <String, dynamic>{
+              'threadId': 'thread-persist',
+              'turnId': 'turn-persist',
+              'delta': 'final answer',
+            },
+          },
+        },
+      );
+      coordinator.schedulePersistRuntimeConversation(
+        conversationId: conversationId,
+        mode: kChatRuntimeModeCodex,
+        markComplete: true,
+      );
+      coordinator.applyCodexEvent(
+        conversationId: conversationId,
+        event: const <String, dynamic>{
+          'message': <String, dynamic>{
+            'method': 'turn/completed',
+            'params': <String, dynamic>{
+              'threadId': 'thread-persist',
+              'turnId': 'turn-persist',
+            },
+          },
+        },
+      );
+
+      await coordinator.waitForCodexTerminalPersistence(
+        conversationId: conversationId,
+        mode: kChatRuntimeModeCodex,
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final replaceCalls = recordedMethodCalls
+          .where((call) => call.method == 'replaceConversationMessages')
+          .toList();
+      final completeCalls = recordedMethodCalls
+          .where((call) => call.method == 'completeConversation')
+          .toList();
+      expect(replaceCalls, hasLength(1));
+      expect(completeCalls, hasLength(1));
+      expect(coordinator.codexPersistenceQueueCount, 1);
+      expect(coordinator.codexPersistenceFlushCount, 1);
+    },
+  );
+
+  testWidgets(
+    'coalesces a streaming Codex burst to one UI invalidation per frame',
+    (tester) async {
+      const conversationId = 2002;
+      final runtime = coordinator.ensureRuntime(
+        conversationId: conversationId,
+        mode: kChatRuntimeModeCodex,
+      );
+      var listenerCalls = 0;
+      void listener() {
+        listenerCalls += 1;
+      }
+
+      coordinator.addListener(listener);
+      addTearDown(() => coordinator.removeListener(listener));
+
+      Map<String, dynamic> deltaEvent() {
+        return <String, dynamic>{
+          'message': <String, dynamic>{
+            'method': 'item/agentMessage/delta',
+            'params': <String, dynamic>{
+              'turnId': 'turn-burst',
+              'delta': 'x',
+            },
+          },
+        };
+      }
+
+      coordinator.applyCodexEvent(
+        conversationId: conversationId,
+        event: deltaEvent(),
+      );
+      final rowListenable = runtime.messages.listenableAt(0);
+      var rowListenerCalls = 0;
+      void rowListener() {
+        rowListenerCalls += 1;
+      }
+
+      rowListenable.addListener(rowListener);
+      addTearDown(() => rowListenable.removeListener(rowListener));
+
+      for (var index = 1; index < 1000; index += 1) {
+        coordinator.applyCodexEvent(
+          conversationId: conversationId,
+          event: deltaEvent(),
+        );
+      }
+
+      expect(coordinator.codexHandledEventCount, 1000);
+      expect(listenerCalls, 0);
+      expect(rowListenerCalls, 0);
+      await tester.pump();
+      expect(listenerCalls, 1);
+      expect(rowListenerCalls, 1);
+      expect(coordinator.codexUiInvalidationCount, 1);
+      expect(coordinator.codexCoalescedInvalidationCount, 999);
+      final performance = coordinator.codexPerformanceSnapshot(
+        conversationId: conversationId,
+        mode: kChatRuntimeModeCodex,
+      );
+      expect(performance.eventCount, 1000);
+      expect(performance.uiInvalidationCount, 1);
+      expect(performance.coalescedInvalidationCount, 999);
+      expect(
+        coordinator
+            .codexPerformanceSnapshot(
+              conversationId: conversationId + 1,
+              mode: kChatRuntimeModeCodex,
+            )
+            .eventCount,
+        0,
+      );
+      expect(
+        runtime.messages.any(
+          (message) => (message.text ?? '').length == 1000,
+        ),
+        isTrue,
+      );
+    },
+  );
+
   test('replaces divergent agent snapshots instead of concatenating', () async {
     const conversationId = 1003;
     const taskId = 'agent-task-divergent-snapshot';

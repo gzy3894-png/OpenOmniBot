@@ -270,12 +270,15 @@ class DebugFileLog {
     String? requestId,
     String? decision,
     String? threadId,
+    String? turnId,
     String? summary,
     String? approvalKind,
     String? serverRequestMethod,
     int? sessionGeneration,
     String? reviewId,
+    String? targetItemId,
     String? status,
+    String? outcome,
     String? decisionSource,
     String? approvalPolicy,
     String? approvalsReviewer,
@@ -311,6 +314,7 @@ class DebugFileLog {
         if (requestId != null && requestId.isNotEmpty) 'requestId': requestId,
         if (decision != null) 'decision': decision,
         if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
+        if (turnId != null && turnId.isNotEmpty) 'turnId': turnId,
         if (summary != null && summary.isNotEmpty) 'summary': summary,
         if (approvalKind != null && approvalKind.isNotEmpty)
           'approvalKind': approvalKind,
@@ -319,7 +323,10 @@ class DebugFileLog {
         if (sessionGeneration != null)
           'sessionGeneration': sessionGeneration,
         if (reviewId != null && reviewId.isNotEmpty) 'reviewId': reviewId,
+        if (targetItemId != null && targetItemId.isNotEmpty)
+          'targetItemId': targetItemId,
         if (status != null && status.isNotEmpty) 'status': status,
+        if (outcome != null && outcome.isNotEmpty) 'outcome': outcome,
         if (decisionSource != null && decisionSource.isNotEmpty)
           'decisionSource': decisionSource,
         if (approvalPolicy != null && approvalPolicy.isNotEmpty)

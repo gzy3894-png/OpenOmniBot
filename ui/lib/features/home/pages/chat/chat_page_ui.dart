@@ -198,7 +198,8 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   }
 
   bool get _isCodexGoalBarMounted =>
-      _activeMode == ChatPageMode.codex && _codexGoalModeEnabled;
+      _activeMode == ChatPageMode.codex &&
+      (_codexActiveGoalText ?? '').trim().isNotEmpty;
 
   bool get _isCodexContextBarMounted => _activeMode == ChatPageMode.codex;
 
@@ -366,7 +367,7 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       },
       onHeightChanged: _handleCodexContextBarHeightChanged,
     );
-    if (!_codexGoalModeEnabled) {
+    if ((_codexActiveGoalText ?? '').trim().isEmpty) {
       return contextBar;
     }
     return Column(
@@ -374,19 +375,14 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       children: [
         CodexGoalModeBar(
           goalText: _codexActiveGoalText,
-          // B6: 空目标不占位锁底栏
           showWhenEmpty: false,
           visible: true,
           onHeightChanged: _handleCodexGoalBarHeightChanged,
+          onTap: () {
+            unawaited(_openCodexGoalEditor());
+          },
           onClear: () {
-            // B24: bar X = clear thread goal + leave mode.
-            // Toggle OFF alone keeps thread goal.
-            unawaited(
-              _setCodexGoalModeEnabled(
-                false,
-                clearThreadGoal: true,
-              ),
-            );
+            unawaited(_executeCodexClearGoalCommand());
           },
         ),
         const SizedBox(height: _kChatInputTopBannerGap),
@@ -637,45 +633,33 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     _ensureCodexLocalConfigHydrated();
     final query = _messageController.text.trimLeft().toLowerCase();
     final planModeEnabled = _isCodexPlanMode(_activeCodexCollaborationMode);
-    // Session flag declared on base (default false). Toggle handlers: M4.
-    final goalModeEnabled = _codexGoalModeEnabled;
+    final activeGoal = (_codexActiveGoalText ?? '').trim();
+    final hasActiveGoal = activeGoal.isNotEmpty;
     final fastModeEnabled = _activeCodexFastEnabled;
     // B33: conf auto_compaction; null → UI default on (Codex-ish).
     final autoCompactionEnabled = _activeCodexAutoCompactionEnabled ?? true;
     final isEnglish = LegacyTextLocalizer.isEnglish;
     // B15 白名单：常用工作模式优先；下架 stop/skills（@ 仍可插技能；手输 /stop 仍解析）。
-    // 顺序：goal-mode → fast → auto-compact → review → plan → compact。
+    // 顺序：goal → fast → auto-compact → review → plan → compact。
     final commands = <Map<String, dynamic>>[
       _buildCodexCommandCard(
-        cardId: 'slash-command-codex-goal-mode',
-        toolTitle: '/goal-mode',
-        displayName: isEnglish ? 'Goal mode' : '目标模式',
+        cardId: 'slash-command-codex-goal',
+        toolTitle: '/goal',
+        displayName: isEnglish ? 'Goal' : '目标',
         toolTypeLabel: isEnglish ? 'Goal' : '目标',
-        status: goalModeEnabled ? 'success' : 'running',
-        statusLabel: goalModeEnabled
-            ? (isEnglish ? 'On' : '开启')
-            : (isEnglish ? 'Off' : '关闭'),
-        summary: goalModeEnabled
-            ? (isEnglish
-                  ? 'On: type an objective and send to set goal'
-                  : '开启后输入目标并发送')
+        status: hasActiveGoal ? 'success' : 'running',
+        statusLabel: hasActiveGoal
+            ? (isEnglish ? 'Edit' : '编辑')
+            : (isEnglish ? 'Set' : '设置'),
+        summary: isEnglish
+            ? 'Open the independent Goal editor'
+            : '打开独立目标编辑器',
+        progress: hasActiveGoal
+            ? (isEnglish ? 'Active goal: $activeGoal' : '当前目标：$activeGoal')
             : (isEnglish
-                  ? 'Off: leave goal mode (thread goal kept; X clears)'
-                  : '关闭仅退出模式（线程目标保留；X 清除）'),
-        progress: goalModeEnabled
-            ? (isEnglish
-                  ? ((_codexActiveGoalText ?? '').trim().isEmpty
-                        ? 'Goal mode on; no active goal text yet'
-                        : 'Active goal: ${_codexActiveGoalText!.trim()}')
-                  : ((_codexActiveGoalText ?? '').trim().isEmpty
-                        ? '目标模式已开；尚未设置目标正文'
-                        : '当前目标：${_codexActiveGoalText!.trim()}'))
-            : (isEnglish
-                  ? 'Toggles _codexGoalModeEnabled (handlers: M4)'
-                  : '切换 _codexGoalModeEnabled（开关逻辑：M4）'),
-        isToggle: true,
-        toggleValue: goalModeEnabled,
-        controlType: 'toggle',
+                  ? 'Normal messages stay in the chat composer'
+                  : '普通消息仍在主输入框发送'),
+        controlType: 'action',
       ),
       _buildCodexCommandCard(
         cardId: 'slash-command-codex-fast-mode',
@@ -1947,11 +1931,6 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
                           _activeMode == ChatPageMode.codex
                           ? (m) => unawaited(_setCodexPermissionMode(m))
                           : null,
-                      codexGoalModeEnabled: _activeMode == ChatPageMode.codex &&
-                          _codexGoalModeEnabled,
-                      codexGoalText: _activeMode == ChatPageMode.codex
-                          ? _codexActiveGoalText
-                          : null,
                       onInputHeightChanged: _handleInputAreaHeightChanged,
                       onClearSelectedModelOverride:
                           _activeMode == ChatPageMode.normal &&
@@ -2404,6 +2383,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
 
   @override
   Widget build(BuildContext context) {
+    if (_activeMode == ChatPageMode.codex) {
+      _codexPerformanceMetrics.recordPageRebuild();
+    }
     final mediaQuery = MediaQuery.of(context);
     final isHdPadLandscape = _isHdPadLandscapeForMediaQuery(mediaQuery);
     final bottomInset = mediaQuery.viewInsets.bottom;

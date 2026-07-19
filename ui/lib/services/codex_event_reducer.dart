@@ -19,6 +19,9 @@ class CodexReduceResult {
     this.collaborationMode,
     this.model,
     this.effort,
+    this.reviewId,
+    this.approvalStatus,
+    this.decisionSource,
   });
 
   final bool handled;
@@ -31,6 +34,12 @@ class CodexReduceResult {
   final String? model;
   /// Thread reasoning effort from `thread/settings/updated` (or equivalent).
   final String? effort;
+  /// Stable id shared by an auto-approval review's started/completed events.
+  final String? reviewId;
+  /// Upstream auto-approval review status, including its terminal outcome.
+  final String? approvalStatus;
+  /// Upstream source that produced the terminal auto-approval decision.
+  final String? decisionSource;
 }
 
 class CodexEventReducer {
@@ -173,23 +182,45 @@ class CodexEventReducer {
         method == 'item/autoApprovalReview/completed') {
       final review = _asStringMap(params['review']);
       final completed = method.endsWith('/completed');
+      final reviewId = _firstString([
+        params['reviewId'],
+        params['review_id'],
+      ]);
+      final targetItemId = _firstString([
+        params['targetItemId'],
+        params['target_item_id'],
+      ]);
+      final status = _firstString([
+        review?['status'],
+        params['status'],
+        completed ? 'completed' : 'started',
+      ]);
+      final decisionSource = _firstString([
+        params['decisionSource'],
+        params['decision_source'],
+      ]);
+      unawaited(
+        DebugFileLog.logApproval(
+          'flutter_event_received',
+          threadId: threadId,
+          turnId: turnId,
+          reviewId: reviewId,
+          targetItemId: targetItemId,
+          status: status,
+          decisionSource: decisionSource,
+          summary: method,
+        ),
+      );
       unawaited(
         DebugFileLog.logApproval(
           completed ? 'auto_review_completed' : 'auto_review_started',
           threadId: threadId,
-          reviewId: _firstString([
-            params['reviewId'],
-            params['review_id'],
-          ]),
-          status: _firstString([
-            review?['status'],
-            params['status'],
-            completed ? 'completed' : 'started',
-          ]),
-          decisionSource: _firstString([
-            params['decisionSource'],
-            params['decision_source'],
-          ]),
+          turnId: turnId,
+          reviewId: reviewId,
+          targetItemId: targetItemId,
+          status: status,
+          outcome: completed ? status : null,
+          decisionSource: decisionSource,
           summary: _approvalReviewSummary(params),
         ),
       );
@@ -198,6 +229,9 @@ class CodexEventReducer {
         method: method,
         threadId: threadId,
         turnId: turnId,
+        reviewId: reviewId,
+        approvalStatus: status,
+        decisionSource: decisionSource,
       );
     }
 

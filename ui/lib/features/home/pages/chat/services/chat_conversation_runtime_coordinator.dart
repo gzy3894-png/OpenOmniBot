@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:ui/features/home/pages/chat/chat_page_models.dart';
 import 'package:ui/features/home/pages/authorize/authorize_page_args.dart';
 import 'package:ui/features/home/pages/chat/utils/stream_text_merge.dart';
@@ -110,13 +111,16 @@ class ChatConversationRuntimeState {
   ChatConversationRuntimeState({
     required this.conversationId,
     required this.mode,
-  }) : chatIslandDisplayLayer = ChatIslandDisplayLayer.mode;
+  }) : messages = ObservableChatMessageList(
+         coalesceContentNotifications: mode == kChatRuntimeModeCodex,
+       ),
+       chatIslandDisplayLayer = ChatIslandDisplayLayer.mode;
 
   final int conversationId;
   final String mode;
 
   ConversationModel? conversation;
-  final ObservableChatMessageList messages = ObservableChatMessageList();
+  final ObservableChatMessageList messages;
   final Map<String, String> currentAiMessages = <String, String>{};
   final Map<String, String> currentThinkingMessages = <String, String>{};
   final Map<String, AgentStreamTaskState> agentStreamStates =
@@ -217,9 +221,62 @@ class _PendingPersistenceRequest {
   final int conversationId;
   final String mode;
   final Timer timer;
-  final bool generateSummary;
-  final bool markComplete;
-  final bool persistMessages;
+  bool generateSummary;
+  bool markComplete;
+  bool persistMessages;
+
+  void merge({
+    required bool generateSummary,
+    required bool markComplete,
+    required bool persistMessages,
+  }) {
+    this.generateSummary = this.generateSummary || generateSummary;
+    this.markComplete = this.markComplete || markComplete;
+    this.persistMessages = this.persistMessages || persistMessages;
+  }
+}
+
+@immutable
+class CodexRuntimePerformanceSnapshot {
+  const CodexRuntimePerformanceSnapshot({
+    this.eventCount = 0,
+    this.reduceDurationMicros = 0,
+    this.uiInvalidationCount = 0,
+    this.coalescedInvalidationCount = 0,
+    this.persistenceQueueCount = 0,
+    this.persistenceFlushCount = 0,
+    this.persistenceDurationMicros = 0,
+  });
+
+  final int eventCount;
+  final int reduceDurationMicros;
+  final int uiInvalidationCount;
+  final int coalescedInvalidationCount;
+  final int persistenceQueueCount;
+  final int persistenceFlushCount;
+  final int persistenceDurationMicros;
+}
+
+class _CodexRuntimePerformanceCounters {
+  int eventCount = 0;
+  int reduceDurationMicros = 0;
+  int uiInvalidationCount = 0;
+  int coalescedInvalidationCount = 0;
+  int persistenceQueueCount = 0;
+  int persistenceFlushCount = 0;
+  int persistenceDurationMicros = 0;
+
+  CodexRuntimePerformanceSnapshot snapshot() {
+    return CodexRuntimePerformanceSnapshot(
+      eventCount: eventCount,
+      reduceDurationMicros: reduceDurationMicros,
+      uiInvalidationCount: uiInvalidationCount,
+      coalescedInvalidationCount: coalescedInvalidationCount,
+      persistenceQueueCount: persistenceQueueCount,
+      persistenceFlushCount: persistenceFlushCount,
+      persistenceDurationMicros: persistenceDurationMicros,
+    );
+  }
 }
 
 class ChatConversationRuntimeCoordinator extends ChangeNotifier {
@@ -253,11 +310,62 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
   final Map<String, _TaskBinding> _taskBindings = <String, _TaskBinding>{};
   final Map<String, _PendingPersistenceRequest> _pendingPersistence =
       <String, _PendingPersistenceRequest>{};
+  final Map<String, Future<void>> _runtimePersistenceChains =
+      <String, Future<void>>{};
+  final Map<String, Future<void>> _codexTerminalPersistence =
+      <String, Future<void>>{};
   final Set<String> _ephemeralRuntimeKeys = <String>{};
+  bool _codexRuntimeNotificationScheduled = false;
+  int _codexRuntimeNotificationEpoch = 0;
+  int _pendingCodexNotificationEvents = 0;
+  final Map<String, int> _pendingCodexNotificationEventsByRuntime =
+      <String, int>{};
+  final Map<String, _CodexRuntimePerformanceCounters>
+      _codexPerformanceByRuntime =
+      <String, _CodexRuntimePerformanceCounters>{};
+  int _codexHandledEventCount = 0;
+  int _codexUiInvalidationCount = 0;
+  int _codexCoalescedInvalidationCount = 0;
+  int _codexReduceDurationMicros = 0;
+  int _codexPersistenceQueueCount = 0;
+  int _codexPersistenceFlushCount = 0;
+  int _codexPersistenceDurationMicros = 0;
 
   bool _initialized = false;
 
   bool get _isEnglish => LegacyTextLocalizer.isEnglish;
+
+  @visibleForTesting
+  int get codexHandledEventCount => _codexHandledEventCount;
+
+  @visibleForTesting
+  int get codexUiInvalidationCount => _codexUiInvalidationCount;
+
+  @visibleForTesting
+  int get codexCoalescedInvalidationCount =>
+      _codexCoalescedInvalidationCount;
+
+  @visibleForTesting
+  int get codexReduceDurationMicros => _codexReduceDurationMicros;
+
+  @visibleForTesting
+  int get codexPersistenceQueueCount => _codexPersistenceQueueCount;
+
+  @visibleForTesting
+  int get codexPersistenceFlushCount => _codexPersistenceFlushCount;
+
+  @visibleForTesting
+  int get codexPersistenceDurationMicros =>
+      _codexPersistenceDurationMicros;
+
+  CodexRuntimePerformanceSnapshot codexPerformanceSnapshot({
+    required int conversationId,
+    required String mode,
+  }) {
+    final key = _runtimeKey(conversationId: conversationId, mode: mode);
+    return _codexPerformanceByRuntime[key]?.snapshot() ??
+        const CodexRuntimePerformanceSnapshot();
+  }
 
   void ensureInitialized() {
     if (_initialized) return;
@@ -585,21 +693,106 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
       conversation: conversation,
       initialChatIslandDisplayLayer: ChatIslandDisplayLayer.mode,
     );
+    final runtimeKey = _runtimeKey(
+      conversationId: conversationId,
+      mode: kChatRuntimeModeCodex,
+    );
+    final reduceWatch = Stopwatch()..start();
     final result = _codexEventReducer.reduce(runtime: runtime, event: event);
+    reduceWatch.stop();
     if (result.handled) {
-      notifyListeners();
+      _codexHandledEventCount += 1;
+      _codexReduceDurationMicros += reduceWatch.elapsedMicroseconds;
+      final runtimePerformance = _codexPerformanceByRuntime.putIfAbsent(
+        runtimeKey,
+        _CodexRuntimePerformanceCounters.new,
+      );
+      runtimePerformance.eventCount += 1;
+      runtimePerformance.reduceDurationMicros +=
+          reduceWatch.elapsedMicroseconds;
+      _scheduleCodexRuntimeNotification(runtimeKey);
       if (!isEphemeralRuntime(
         conversationId: conversationId,
         mode: kChatRuntimeModeCodex,
       )) {
-        schedulePersistRuntimeConversation(
-          conversationId: conversationId,
-          mode: kChatRuntimeModeCodex,
-          persistMessages: true,
-        );
+        if (_isCodexTerminalMethod(result.method)) {
+          final persistence = _persistRuntimeConversationImmediately(
+            conversationId: conversationId,
+            mode: kChatRuntimeModeCodex,
+            persistMessages: true,
+          );
+          _codexTerminalPersistence[runtimeKey] = persistence;
+          void clearTerminalPersistence() {
+            if (identical(
+              _codexTerminalPersistence[runtimeKey],
+              persistence,
+            )) {
+              _codexTerminalPersistence.remove(runtimeKey);
+            }
+          }
+          unawaited(
+            persistence.then<void>(
+              (_) => clearTerminalPersistence(),
+              onError: (_, __) => clearTerminalPersistence(),
+            ),
+          );
+        } else {
+          schedulePersistRuntimeConversation(
+            conversationId: conversationId,
+            mode: kChatRuntimeModeCodex,
+            persistMessages: true,
+          );
+        }
       }
     }
     return result;
+  }
+
+  void _scheduleCodexRuntimeNotification(String runtimeKey) {
+    _pendingCodexNotificationEvents += 1;
+    _pendingCodexNotificationEventsByRuntime.update(
+      runtimeKey,
+      (count) => count + 1,
+      ifAbsent: () => 1,
+    );
+    if (_codexRuntimeNotificationScheduled) {
+      return;
+    }
+    _codexRuntimeNotificationScheduled = true;
+    final epoch = _codexRuntimeNotificationEpoch;
+    SchedulerBinding.instance.scheduleFrameCallback((_) {
+      if (epoch != _codexRuntimeNotificationEpoch) {
+        return;
+      }
+      _codexRuntimeNotificationScheduled = false;
+      final eventCount = _pendingCodexNotificationEvents;
+      final eventsByRuntime = Map<String, int>.from(
+        _pendingCodexNotificationEventsByRuntime,
+      );
+      _pendingCodexNotificationEvents = 0;
+      _pendingCodexNotificationEventsByRuntime.clear();
+      _codexUiInvalidationCount += 1;
+      if (eventCount > 1) {
+        _codexCoalescedInvalidationCount += eventCount - 1;
+      }
+      for (final entry in eventsByRuntime.entries) {
+        final runtimePerformance = _codexPerformanceByRuntime.putIfAbsent(
+          entry.key,
+          _CodexRuntimePerformanceCounters.new,
+        );
+        runtimePerformance.uiInvalidationCount += 1;
+        if (entry.value > 1) {
+          runtimePerformance.coalescedInvalidationCount += entry.value - 1;
+        }
+      }
+      notifyListeners();
+    });
+  }
+
+  bool _isCodexTerminalMethod(String? method) {
+    return method == 'turn/completed' ||
+        method == 'turn/failed' ||
+        method == 'thread/closed';
   }
 
   void clearPureChatThinking({
@@ -637,10 +830,24 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
 
   @visibleForTesting
   void resetForTest() {
+    _codexRuntimeNotificationEpoch += 1;
+    _codexRuntimeNotificationScheduled = false;
+    _pendingCodexNotificationEvents = 0;
+    _pendingCodexNotificationEventsByRuntime.clear();
+    _codexPerformanceByRuntime.clear();
+    _codexHandledEventCount = 0;
+    _codexUiInvalidationCount = 0;
+    _codexCoalescedInvalidationCount = 0;
+    _codexReduceDurationMicros = 0;
+    _codexPersistenceQueueCount = 0;
+    _codexPersistenceFlushCount = 0;
+    _codexPersistenceDurationMicros = 0;
     for (final request in _pendingPersistence.values) {
       request.timer.cancel();
     }
     _pendingPersistence.clear();
+    _runtimePersistenceChains.clear();
+    _codexTerminalPersistence.clear();
     for (final runtime in _runtimes.values) {
       _flushRuntimeStreamingText(runtime);
       runtime.dispose();
@@ -684,21 +891,23 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     required int conversationId,
     required String mode,
   }) {
+    final runtimeKey = _runtimeKey(
+      conversationId: conversationId,
+      mode: mode,
+    );
     final runtime = runtimeFor(conversationId: conversationId, mode: mode);
     if (runtime != null) {
       _flushRuntimeStreamingText(runtime);
     }
     _cancelPendingPersistence(conversationId: conversationId, mode: mode);
-    _ephemeralRuntimeKeys.remove(
-      _runtimeKey(conversationId: conversationId, mode: mode),
-    );
+    _ephemeralRuntimeKeys.remove(runtimeKey);
+    _pendingCodexNotificationEventsByRuntime.remove(runtimeKey);
+    _codexPerformanceByRuntime.remove(runtimeKey);
     _taskBindings.removeWhere(
       (_, binding) =>
           binding.conversationId == conversationId && binding.mode == mode,
     );
-    final removed = _runtimes.remove(
-      _runtimeKey(conversationId: conversationId, mode: mode),
-    );
+    final removed = _runtimes.remove(runtimeKey);
     if (removed != null) {
       removed.dispose();
       notifyListeners();
@@ -743,8 +952,40 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     bool generateSummary = false,
     bool markComplete = false,
     bool persistMessages = false,
-  }) async {
+  }) {
     _cancelPendingPersistence(conversationId: conversationId, mode: mode);
+    if (isEphemeralRuntime(conversationId: conversationId, mode: mode)) {
+      return Future<void>.value();
+    }
+    final key = _runtimeKey(conversationId: conversationId, mode: mode);
+    final previous =
+        _runtimePersistenceChains[key] ?? Future<void>.value();
+    final ready = previous.then<void>((_) {}, onError: (_, __) {});
+    late final Future<void> tracked;
+    tracked = ready.then<void>((_) {
+      return _persistRuntimeConversationNow(
+        conversationId: conversationId,
+        mode: mode,
+        generateSummary: generateSummary,
+        markComplete: markComplete,
+        persistMessages: persistMessages,
+      );
+    });
+    _runtimePersistenceChains[key] = tracked;
+    return tracked.whenComplete(() {
+      if (identical(_runtimePersistenceChains[key], tracked)) {
+        _runtimePersistenceChains.remove(key);
+      }
+    });
+  }
+
+  Future<void> _persistRuntimeConversationNow({
+    required int conversationId,
+    required String mode,
+    required bool generateSummary,
+    required bool markComplete,
+    required bool persistMessages,
+  }) async {
     if (isEphemeralRuntime(conversationId: conversationId, mode: mode)) {
       return;
     }
@@ -752,6 +993,9 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     if (runtime == null) return;
     _flushRuntimeStreamingText(runtime);
     if (runtime.messages.isEmpty) return;
+    final persistenceWatch = mode == kChatRuntimeModeCodex
+        ? (Stopwatch()..start())
+        : null;
 
     final snapshotMessages = List<ChatMessageModel>.from(runtime.messages);
     final snapshotConversation = runtime.conversation;
@@ -825,6 +1069,23 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
         mode: conversationMode,
       );
     }
+    if (persistenceWatch != null) {
+      persistenceWatch.stop();
+      _codexPersistenceFlushCount += 1;
+      _codexPersistenceDurationMicros +=
+          persistenceWatch.elapsedMicroseconds;
+      final runtimeKey = _runtimeKey(
+        conversationId: conversationId,
+        mode: mode,
+      );
+      final runtimePerformance = _codexPerformanceByRuntime.putIfAbsent(
+        runtimeKey,
+        _CodexRuntimePerformanceCounters.new,
+      );
+      runtimePerformance.persistenceFlushCount += 1;
+      runtimePerformance.persistenceDurationMicros +=
+          persistenceWatch.elapsedMicroseconds;
+    }
   }
 
   void schedulePersistRuntimeConversation({
@@ -840,32 +1101,47 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
       return;
     }
     final previous = _pendingPersistence[key];
-    previous?.timer.cancel();
-    final nextGenerateSummary =
-        generateSummary || (previous?.generateSummary ?? false);
-    final nextMarkComplete = markComplete || (previous?.markComplete ?? false);
-    final nextPersistMessages =
-        persistMessages || (previous?.persistMessages ?? false);
+    if (previous != null) {
+      previous.merge(
+        generateSummary: generateSummary,
+        markComplete: markComplete,
+        persistMessages: persistMessages,
+      );
+      return;
+    }
+    late final _PendingPersistenceRequest request;
     final timer = Timer(delay, () {
-      _pendingPersistence.remove(key);
+      final pending = _pendingPersistence.remove(key);
+      if (!identical(pending, request)) {
+        return;
+      }
       unawaited(
         persistRuntimeConversation(
           conversationId: conversationId,
           mode: mode,
-          generateSummary: nextGenerateSummary,
-          markComplete: nextMarkComplete,
-          persistMessages: nextPersistMessages,
+          generateSummary: request.generateSummary,
+          markComplete: request.markComplete,
+          persistMessages: request.persistMessages,
         ),
       );
     });
-    _pendingPersistence[key] = _PendingPersistenceRequest(
+    request = _PendingPersistenceRequest(
       conversationId: conversationId,
       mode: mode,
       timer: timer,
-      generateSummary: nextGenerateSummary,
-      markComplete: nextMarkComplete,
-      persistMessages: nextPersistMessages,
+      generateSummary: generateSummary,
+      markComplete: markComplete,
+      persistMessages: persistMessages,
     );
+    _pendingPersistence[key] = request;
+    if (mode == kChatRuntimeModeCodex) {
+      _codexPersistenceQueueCount += 1;
+      final runtimePerformance = _codexPerformanceByRuntime.putIfAbsent(
+        key,
+        _CodexRuntimePerformanceCounters.new,
+      );
+      runtimePerformance.persistenceQueueCount += 1;
+    }
   }
 
   Future<void> flushPendingPersistence({
@@ -890,6 +1166,14 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     );
   }
 
+  Future<void> waitForCodexTerminalPersistence({
+    required int conversationId,
+    required String mode,
+  }) {
+    final key = _runtimeKey(conversationId: conversationId, mode: mode);
+    return _codexTerminalPersistence[key] ?? Future<void>.value();
+  }
+
   Future<void> flushAllPendingPersistence() async {
     final requests = _pendingPersistence.values.toList(growable: false);
     _pendingPersistence.clear();
@@ -903,6 +1187,26 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
         persistMessages: request.persistMessages,
       );
     }
+  }
+
+  Future<void> _persistRuntimeConversationImmediately({
+    required int conversationId,
+    required String mode,
+    bool generateSummary = false,
+    bool markComplete = false,
+    bool persistMessages = false,
+  }) {
+    final key = _runtimeKey(conversationId: conversationId, mode: mode);
+    final pending = _pendingPersistence.remove(key);
+    pending?.timer.cancel();
+    return persistRuntimeConversation(
+      conversationId: conversationId,
+      mode: mode,
+      generateSummary: generateSummary || (pending?.generateSummary ?? false),
+      markComplete: markComplete || (pending?.markComplete ?? false),
+      persistMessages:
+          persistMessages || (pending?.persistMessages ?? false),
+    );
   }
 
   String _streamingTextBatchKey(String taskId, _StreamingTextStreamKind kind) =>

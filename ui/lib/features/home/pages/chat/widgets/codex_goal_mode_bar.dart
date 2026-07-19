@@ -10,6 +10,7 @@ class CodexGoalModeBar extends StatelessWidget {
   const CodexGoalModeBar({
     super.key,
     this.goalText,
+    this.onTap,
     this.onClear,
     this.prefixLabel,
     this.showWhenEmpty = false,
@@ -21,6 +22,9 @@ class CodexGoalModeBar extends StatelessWidget {
 
   /// 当前目标正文；空白时按 [showWhenEmpty] 决定是否展示。
   final String? goalText;
+
+  /// Opens the independent Goal editor.
+  final VoidCallback? onTap;
 
   /// 清除按钮回调；为 null 时不显示清除按钮。
   final VoidCallback? onClear;
@@ -109,21 +113,24 @@ class CodexGoalModeBar extends StatelessWidget {
             : (_hasGoal ? '当前目标：$_trimmedGoal' : '目标模式，尚未设置目标'),
         child: Material(
           color: Colors.transparent,
-          child: Container(
+          child: InkWell(
             key: const ValueKey('codex-goal-mode-bar'),
-            width: double.infinity,
-            padding: EdgeInsets.fromLTRB(
-              horizontal,
-              vertical,
-              onClear == null ? horizontal : horizontal - 2,
-              vertical,
-            ),
-            decoration: BoxDecoration(
-              color: surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: borderColor),
-            ),
-            child: Row(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Ink(
+              width: double.infinity,
+              padding: EdgeInsets.fromLTRB(
+                horizontal,
+                vertical,
+                onClear == null ? horizontal : horizontal - 2,
+                vertical,
+              ),
+              decoration: BoxDecoration(
+                color: surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: borderColor),
+              ),
+              child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
@@ -196,6 +203,7 @@ class CodexGoalModeBar extends StatelessWidget {
                   ),
                 ],
               ],
+              ),
             ),
           ),
         ),

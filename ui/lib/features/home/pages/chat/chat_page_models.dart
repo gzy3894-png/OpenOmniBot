@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:ui/features/home/pages/chat/utils/agent_run_timeline.dart';
 import 'package:ui/models/chat_message_model.dart';
 
@@ -41,13 +42,23 @@ class ChatMessageListItemNotifier extends ValueNotifier<ChatMessageModel> {
 
 class ObservableChatMessageList extends ChangeNotifier
     with ListMixin<ChatMessageModel> {
+  ObservableChatMessageList({
+    this.coalesceContentNotifications = false,
+  });
+
   static const String _kAgentToolSummaryCardType = 'agent_tool_summary';
 
+  final bool coalesceContentNotifications;
   final List<ChatMessageModel> _messages = <ChatMessageModel>[];
   final List<ChatMessageListItemNotifier> _messageNotifiers =
       <ChatMessageListItemNotifier>[];
+  final Map<ChatMessageListItemNotifier, ChatMessageModel>
+      _pendingContentNotifications =
+      <ChatMessageListItemNotifier, ChatMessageModel>{};
 
   bool _isDisposed = false;
+  bool _contentNotificationScheduled = false;
+  int _contentNotificationEpoch = 0;
   int _structureRevision = 0;
   int _lastMutationRevision = 0;
   bool _lastMutationAffectsPageChrome = false;
@@ -80,6 +91,7 @@ class ObservableChatMessageList extends ChangeNotifier
   }
 
   void replaceAllMessages(Iterable<ChatMessageModel> messages) {
+    _flushPendingContentNotifications();
     final nextMessages = List<ChatMessageModel>.from(messages);
     final affectsPageChrome =
         _batchAffectsPageChrome(_messages) ||
@@ -109,6 +121,7 @@ class ObservableChatMessageList extends ChangeNotifier
         'Expanding the message list length is unsupported',
       );
     }
+    _flushPendingContentNotifications();
     final removedMessages = _messages.sublist(newLength);
     final removedNotifiers = _messageNotifiers.sublist(newLength);
     _messages.removeRange(newLength, _messages.length);
@@ -127,15 +140,22 @@ class ObservableChatMessageList extends ChangeNotifier
   void operator []=(int index, ChatMessageModel value) {
     final previous = _messages[index];
     _messages[index] = value;
-    _messageNotifiers[index].update(value);
     final affectsPageChrome =
         _messageAffectsPageChrome(previous) || _messageAffectsPageChrome(value);
     if (_timelineStructureChanged(previous, value)) {
+      _flushPendingContentNotifications();
+      _messageNotifiers[index].update(value);
       _recordStructureMutation(affectsPageChrome: affectsPageChrome);
+      notifyListeners();
     } else {
       _recordContentMutation(affectsPageChrome: affectsPageChrome);
+      if (coalesceContentNotifications) {
+        _scheduleContentNotification(_messageNotifiers[index], value);
+      } else {
+        _messageNotifiers[index].update(value);
+        notifyListeners();
+      }
     }
-    notifyListeners();
   }
 
   /// 判断一次原位替换是否会影响 agent_run_timeline 的分组结果。流式追加
@@ -199,6 +219,7 @@ class ObservableChatMessageList extends ChangeNotifier
     if (nextMessages.isEmpty) {
       return;
     }
+    _flushPendingContentNotifications();
     _messages.addAll(nextMessages);
     _messageNotifiers.addAll(nextMessages.map(ChatMessageListItemNotifier.new));
     _recordStructureMutation(
@@ -212,6 +233,7 @@ class ObservableChatMessageList extends ChangeNotifier
     if (_messages.isEmpty) {
       return;
     }
+    _flushPendingContentNotifications();
     final removedMessages = List<ChatMessageModel>.from(_messages);
     _messages.clear();
     _disposeMessageNotifiers(_messageNotifiers);
@@ -224,6 +246,7 @@ class ObservableChatMessageList extends ChangeNotifier
 
   @override
   void insert(int index, ChatMessageModel element) {
+    _flushPendingContentNotifications();
     _messages.insert(index, element);
     _messageNotifiers.insert(index, ChatMessageListItemNotifier(element));
     _recordStructureMutation(
@@ -238,6 +261,7 @@ class ObservableChatMessageList extends ChangeNotifier
     if (nextMessages.isEmpty) {
       return;
     }
+    _flushPendingContentNotifications();
     _messages.insertAll(index, nextMessages);
     _messageNotifiers.insertAll(
       index,
@@ -251,6 +275,7 @@ class ObservableChatMessageList extends ChangeNotifier
 
   @override
   ChatMessageModel removeAt(int index) {
+    _flushPendingContentNotifications();
     final removedMessage = _messages.removeAt(index);
     final removedNotifier = _messageNotifiers.removeAt(index);
     removedNotifier.dispose();
@@ -266,6 +291,7 @@ class ObservableChatMessageList extends ChangeNotifier
     if (start == end) {
       return;
     }
+    _flushPendingContentNotifications();
     final removedMessages = _messages.sublist(start, end);
     final removedNotifiers = _messageNotifiers.sublist(start, end);
     _messages.removeRange(start, end);
@@ -279,6 +305,7 @@ class ObservableChatMessageList extends ChangeNotifier
 
   @override
   void removeWhere(bool Function(ChatMessageModel element) test) {
+    _flushPendingContentNotifications();
     final removedMessages = <ChatMessageModel>[];
     final removedNotifiers = <ChatMessageListItemNotifier>[];
     for (var index = _messages.length - 1; index >= 0; index--) {
@@ -307,10 +334,46 @@ class ObservableChatMessageList extends ChangeNotifier
       return;
     }
     _isDisposed = true;
+    _contentNotificationEpoch += 1;
+    _contentNotificationScheduled = false;
+    _pendingContentNotifications.clear();
     _disposeMessageNotifiers(_messageNotifiers);
     _messageNotifiers.clear();
     _messages.clear();
     super.dispose();
+  }
+
+  void _scheduleContentNotification(
+    ChatMessageListItemNotifier notifier,
+    ChatMessageModel message,
+  ) {
+    _pendingContentNotifications[notifier] = message;
+    if (_contentNotificationScheduled) {
+      return;
+    }
+    _contentNotificationScheduled = true;
+    final epoch = _contentNotificationEpoch;
+    SchedulerBinding.instance.scheduleFrameCallback((_) {
+      if (_isDisposed || epoch != _contentNotificationEpoch) {
+        return;
+      }
+      _contentNotificationScheduled = false;
+      _flushPendingContentNotifications();
+    });
+  }
+
+  void _flushPendingContentNotifications() {
+    if (_isDisposed || _pendingContentNotifications.isEmpty) {
+      return;
+    }
+    final pending = Map<ChatMessageListItemNotifier, ChatMessageModel>.from(
+      _pendingContentNotifications,
+    );
+    _pendingContentNotifications.clear();
+    for (final entry in pending.entries) {
+      entry.key.update(entry.value);
+    }
+    notifyListeners();
   }
 
   void _recordContentMutation({required bool affectsPageChrome}) {

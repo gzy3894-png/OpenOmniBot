@@ -26,6 +26,7 @@ import '../common/openclaw_connection_checker.dart';
 import '../omnibot_workspace/widgets/omnibot_workspace_browser.dart';
 import 'services/chat_conversation_lifecycle_guard.dart';
 import 'services/chat_conversation_runtime_coordinator.dart';
+import 'services/codex_performance_metrics.dart';
 import 'package:ui/constants/openclaw/openclaw_keys.dart';
 import 'package:ui/core/router/go_router_manager.dart';
 import 'package:ui/features/home/widgets/permission_bottom_sheet.dart';
@@ -86,6 +87,7 @@ import 'mixins/conversation_manager.dart';
 import 'chat_page_models.dart';
 import 'tool_activity_utils.dart';
 import 'widgets/chat_widgets.dart';
+import 'widgets/codex_goal_editor_sheet.dart';
 import 'widgets/codex_goal_mode_bar.dart';
 import 'widgets/codex_context_bar.dart';
 import 'widgets/chat_browser_overlay.dart';
@@ -416,6 +418,13 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   final CodexServerRequestLifecycleEventBuffer
   _deferredCodexServerRequestEvents =
       CodexServerRequestLifecycleEventBuffer();
+  final CodexPerformanceMetrics _codexPerformanceMetrics =
+      CodexPerformanceMetrics();
+  late final TimingsCallback _codexFrameTimingsCallback = (timings) {
+    if (_activeMode == ChatPageMode.codex) {
+      _codexPerformanceMetrics.recordFrameTimings(timings);
+    }
+  };
   Timer? _remoteCodexSessionSyncTimer;
   bool _remoteCodexSessionSyncInFlight = false;
   String? _remoteCodexSessionSyncThreadId;
@@ -435,9 +444,11 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   /// conf `features.auto_compaction` mirror; null=unknown (UI default on).
   /// On base so Codex mixin slash toggle can read/write without cross-mixin private.
   bool? _activeCodexAutoCompactionEnabled;
-  // Goal-mode session chrome (UI defaults). Handlers/RPC ownership: M4.
-  bool _codexGoalModeEnabled = false;
+  // Active Goal for the current Codex thread. Goal editor state is local to
+  // CodexGoalEditorSheet and never shares the main composer.
   String? _codexActiveGoalText;
+  String? _codexGoalLoadedKey;
+  int _codexGoalStateRevision = 0;
   // Codex skills panel session cache (M4). M6 reads cards when route==skills.
   bool _codexSkillsPanelVisible = false;
   bool _codexSkillPanelLoading = false;
@@ -1666,13 +1677,14 @@ abstract class _ChatPageStateBase extends State<ChatPage>
     _userMessageEditControllerForMode(mode).clear();
     _draftMessageByMode[mode] = '';
     if (mode == ChatPageMode.codex) {
+      _codexPerformanceMetrics.reset();
       _stopRemoteCodexSessionSync();
       _activeCodexRemoteRuntimeId = null;
       _activeCodexThreadId = null;
       _activeCodexTurnId = null;
-      // B24: drop sticky goal chrome so the next thread cannot inherit a
-      // null-kill or mode-on from the previous conversation.
-      _codexGoalModeEnabled = false;
+      // Drop thread-scoped Goal chrome before binding the next conversation.
+      _codexGoalLoadedKey = null;
+      _codexGoalStateRevision += 1;
       _codexActiveGoalText = null;
     }
     if (mode == ChatPageMode.normal) {
@@ -1826,17 +1838,11 @@ abstract class _ChatPageStateBase extends State<ChatPage>
   /// Session permission mode change (local tip only; not a model turn).
   Future<void> _setCodexPermissionMode(CodexPermissionMode mode);
 
-  /// Goal-mode session toggle (composer chrome).
-  ///
-  /// [clearThreadGoal] true (bar X / explicit clear): also RPC clearGoal.
-  /// Plain OFF only drops mode chrome and keeps the thread goal.
-  Future<void> _setCodexGoalModeEnabled(
-    bool enabled, {
-    bool clearThreadGoal = false,
-  });
+  /// Opens the Goal editor without reusing the main composer.
+  Future<void> _openCodexGoalEditor();
 
-  /// B24: refresh per-thread goal chrome (mode + active goal text).
-  Future<void> _refreshCodexActiveGoalText();
+  /// Refreshes the active Goal text for the current thread.
+  Future<void> _refreshCodexActiveGoalText({bool force = false});
 
   Future<void> _activateCodexPlanMode({
     bool persistOnly = false,

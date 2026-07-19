@@ -220,11 +220,18 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   bool _isSavingProfile = false;
   bool _saveQueued = false;
   bool _isSwitchingProfile = false;
+  bool _isExiting = false;
+  bool _exitPersistenceCompleted = false;
   String _selectedSourceType = BuiltinOfficialProviderCatalog.customKey;
   String _selectedProtocolType = 'openai_compatible';
   String _selectedWireApi = 'chat_completions';
 
   Timer? _autoSaveTimer;
+  Future<void>? _profileSaveFuture;
+  Future<void> _modelLibraryOperationFuture = Future<void>.value();
+  Object? _profileSaveError;
+  int _modelLibraryFailureRevision = 0;
+  Object? _modelLibraryLastError;
   StreamSubscription<AgentAiConfigChangedEvent>? _configChangedSubscription;
 
   List<ModelProviderProfileSummary> _profiles = const [];
@@ -235,6 +242,8 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   Set<String> _hiddenChatModelIds = <String>{};
   Set<String> _deletingModelIds = <String>{};
   final Map<String, bool> _expandedModelGroups = <String, bool>{};
+  int _profileDataGeneration = 0;
+  int _modelStateRevision = 0;
   bool _customHeadersExpanded = false;
   final List<_EditableHeaderEntry> _customHeaderEntries =
       <_EditableHeaderEntry>[];
@@ -248,6 +257,66 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       }
     }
     return _profiles.isEmpty ? null : _profiles.first;
+  }
+
+  bool _isSameProfileOperation({
+    required String profileId,
+    required int generation,
+    int? modelRevision,
+  }) {
+    return mounted &&
+        _editingProfileId == profileId &&
+        _profileDataGeneration == generation &&
+        (modelRevision == null || _modelStateRevision == modelRevision);
+  }
+
+  bool _isCurrentProfileOperation({
+    required String profileId,
+    required int generation,
+    int? modelRevision,
+  }) {
+    return !_isSwitchingProfile &&
+        !_isExiting &&
+        _isSameProfileOperation(
+          profileId: profileId,
+          generation: generation,
+          modelRevision: modelRevision,
+        );
+  }
+
+  Future<T> _enqueueModelLibraryOperation<T>(
+    Future<T> Function() operation, {
+    bool trackPersistenceFailure = false,
+  }) {
+    final completer = Completer<T>();
+    _modelLibraryOperationFuture =
+        _modelLibraryOperationFuture.then<void>((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        if (trackPersistenceFailure) {
+          _modelLibraryFailureRevision += 1;
+          _modelLibraryLastError = error;
+        }
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _drainModelLibraryOperations() async {
+    while (true) {
+      final pending = _modelLibraryOperationFuture;
+      await pending;
+      if (identical(pending, _modelLibraryOperationFuture)) {
+        return;
+      }
+    }
+  }
+
+  bool _modelLibraryFailedSince(int revision) {
+    return _modelLibraryFailureRevision != revision &&
+        _modelLibraryLastError != null;
   }
 
   bool get _hasAnyProfileFieldFocus =>
@@ -472,12 +541,15 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
 
   @override
   void dispose() {
+    _profileDataGeneration += 1;
     _configChangedSubscription?.cancel();
     _autoSaveTimer?.cancel();
-    if (_shouldAutoSaveDraft) {
+    if (!_exitPersistenceCompleted && _shouldAutoSaveDraft) {
       unawaited(_persistProfileDraft());
     }
-    unawaited(_persistManualModelIds());
+    if (!_exitPersistenceCompleted) {
+      unawaited(_persistManualModelIds().then<void>((_) {}));
+    }
     _nameFocusNode.removeListener(_onProfileFieldFocusChanged);
     _baseUrlFocusNode.removeListener(_onProfileFieldFocusChanged);
     _apiKeyFocusNode.removeListener(_onProfileFieldFocusChanged);
@@ -497,7 +569,10 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   }
 
   void _onProfileChanged() {
-    if (_isSyncingControllers || _isLoading || _isSwitchingProfile) {
+    if (_isSyncingControllers ||
+        _isLoading ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
     if (_hasAnyProfileFieldFocus) {
@@ -508,7 +583,10 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   }
 
   void _onProfileFieldFocusChanged() {
-    if (_isSyncingControllers || _isLoading || _isSwitchingProfile) {
+    if (_isSyncingControllers ||
+        _isLoading ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
     if (_hasAnyProfileFieldFocus) {
@@ -519,7 +597,10 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   }
 
   void _onCustomHeadersChanged() {
-    if (_isSyncingControllers || _isLoading || _isSwitchingProfile) {
+    if (_isSyncingControllers ||
+        _isLoading ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
     _updateCustomHeadersError();
@@ -567,40 +648,69 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
         hasCustomHeaderChanges;
   }
 
-  Future<void> _persistManualModelIds() async {
-    final current = _currentProfile;
-    if (current == null) {
-      return;
+  Future<bool> _persistManualModelIds({
+    String? profileId,
+    List<String>? modelIds,
+  }) async {
+    final resolvedProfileId =
+        profileId?.trim() ?? _currentProfile?.id.trim() ?? '';
+    if (resolvedProfileId.isEmpty) {
+      return true;
     }
+    final snapshot = List<String>.unmodifiable(
+      modelIds ?? List<String>.from(_manualModelIds),
+    );
     try {
-      await ModelProviderConfigService.saveManualModelIds(
-        profileId: current.id,
-        ids: _manualModelIds,
+      await _enqueueModelLibraryOperation<void>(
+        () => ModelProviderConfigService.saveManualModelIds(
+          profileId: resolvedProfileId,
+          ids: snapshot,
+        ),
+        trackPersistenceFailure: true,
       );
+      return true;
     } catch (_) {
-      // no-op
+      return false;
     }
   }
 
-  Future<void> _persistProfileDraft() async {
-    final current = _currentProfile;
-    if (current == null || current.readOnly) {
-      return;
-    }
+  Future<void> _persistProfileDraft() {
     _autoSaveTimer?.cancel();
     _autoSaveTimer = null;
 
-    if (_isSavingProfile) {
+    final pending = _profileSaveFuture;
+    if (pending != null) {
       _saveQueued = true;
-      return;
+      return pending;
     }
 
+    late final Future<void> tracked;
+    _profileSaveError = null;
+    tracked = _drainProfileDraftSaves().whenComplete(() {
+      if (identical(_profileSaveFuture, tracked)) {
+        _profileSaveFuture = null;
+      }
+    });
+    _profileSaveFuture = tracked;
+    return tracked;
+  }
+
+  Future<void> _drainProfileDraftSaves() async {
     do {
       _saveQueued = false;
-      final nextName = _nameController.text.trim();
+      final current = _currentProfile;
+      if (current == null || current.readOnly) {
+        return;
+      }
+      final profileId = current.id;
+      final generation = _profileDataGeneration;
+      final nextName = _nameController.text.trim().isEmpty
+          ? current.name
+          : _nameController.text.trim();
+      final nextBaseUrlDraft = _baseUrlController.text.trim();
       final nextBaseUrl =
           ModelProviderConfigService.normalizeApiBase(
-            _baseUrlController.text,
+            nextBaseUrlDraft,
           ) ??
           '';
       final nextApiKey = _apiKeyController.text.trim();
@@ -611,10 +721,20 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
           );
       final currentBaseUrl =
           ModelProviderConfigService.normalizeApiBase(current.baseUrl) ?? '';
+      final nextSourceType = _selectedSourceType;
+      final nextProtocolType = _selectedProtocolType;
+      final nextWireApi = _selectedWireApi;
+      final currentWireApi = _normalizeWireApiForProtocol(
+        current.protocolType,
+        current.wireApi,
+      );
 
       if (nextName == current.name &&
           nextBaseUrl == currentBaseUrl &&
           nextApiKey == current.apiKey &&
+          nextSourceType == current.sourceType &&
+          nextProtocolType == current.protocolType &&
+          nextWireApi == currentWireApi &&
           _stringMapsEqual(
             nextCustomHeaders,
             ModelProviderConfigService.normalizeCustomHeaders(
@@ -627,31 +747,84 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       _isSavingProfile = true;
       try {
         final saved = await ModelProviderConfigService.saveProfile(
-          id: current.id,
-          name: nextName.isEmpty ? current.name : nextName,
-          baseUrl: _baseUrlController.text.trim(),
+          id: profileId,
+          name: nextName,
+          baseUrl: nextBaseUrlDraft,
           apiKey: nextApiKey,
           customHeaders: nextCustomHeaders,
-          sourceType: _selectedSourceType,
-          protocolType: _selectedProtocolType,
-          wireApi: _selectedWireApi,
+          sourceType: nextSourceType,
+          protocolType: nextProtocolType,
+          wireApi: nextWireApi,
         );
-        if (!mounted) return;
-        setState(() {
-          _profiles = _profiles
-              .map((profile) => profile.id == saved.id ? saved : profile)
-              .toList();
-          _editingProfileId = saved.id;
-        });
-      } catch (_) {
+        if (_isSameProfileOperation(
+          profileId: profileId,
+          generation: generation,
+        )) {
+          setState(() {
+            _profiles = _profiles
+                .map((profile) => profile.id == saved.id ? saved : profile)
+                .toList();
+            _editingProfileId = saved.id;
+          });
+          _profileSaveError = null;
+        }
+      } catch (error) {
         // Auto-save failures should not interrupt typing.
+        if (_isSameProfileOperation(
+          profileId: profileId,
+          generation: generation,
+        )) {
+          _profileSaveError = error;
+        }
       } finally {
         _isSavingProfile = false;
       }
     } while (_saveQueued && mounted);
   }
 
+  Future<void> _persistAndExit() async {
+    if (_isExiting) {
+      return;
+    }
+    final modelLibraryFailureRevision = _modelLibraryFailureRevision;
+    _isExiting = true;
+    FocusManager.instance.primaryFocus?.unfocus();
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = null;
+    await _persistProfileDraft();
+    await _drainModelLibraryOperations();
+    final currentProfileId = _currentProfile?.id;
+    final manualModelIds = List<String>.from(_manualModelIds);
+    final manualModelsSaved = await _persistManualModelIds(
+      profileId: currentProfileId,
+      modelIds: manualModelIds,
+    );
+    await _drainModelLibraryOperations();
+    if (_profileSaveError != null ||
+        !manualModelsSaved ||
+        _modelLibraryFailedSince(modelLibraryFailureRevision)) {
+      _isExiting = false;
+      if (mounted) {
+        showToast(
+          _headerText(
+            '供应商配置保存失败，请重试',
+            'Failed to save supplier settings. Try again.',
+          ),
+          type: ToastType.error,
+        );
+        _scheduleAutoSave();
+      }
+      return;
+    }
+    _profileDataGeneration += 1;
+    _exitPersistenceCompleted = true;
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
   Future<void> _loadData() async {
+    _profileDataGeneration += 1;
     setState(() => _isLoading = true);
     try {
       final payload = await ModelProviderConfigService.listProfiles();
@@ -702,6 +875,8 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
     required List<ProviderModelOption> remoteModels,
     required bool syncControllers,
   }) {
+    _profileDataGeneration += 1;
+    _modelStateRevision += 1;
     final current = profiles.firstWhere(
       (profile) => profile.id == editingProfileId,
       orElse: () => profiles.first,
@@ -719,6 +894,7 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       _hiddenChatModelIds = hiddenChatModelIds.toSet();
       _manualModels = manualModels;
       _remoteModels = remoteModels;
+      _deletingModelIds = <String>{};
       _selectedSourceType = current.sourceType;
       _selectedProtocolType = current.protocolType;
       _selectedWireApi = _normalizeWireApiForProtocol(
@@ -748,9 +924,11 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
         profile.readOnly && profile.sourceType == 'omniinfer';
     if (isBuiltinLocalProvider) {
       try {
-        return await ModelProviderConfigService.fetchModels(
-          profileId: profile.id,
-          providerName: profile.name,
+        return await _enqueueModelLibraryOperation(
+          () => ModelProviderConfigService.fetchModels(
+            profileId: profile.id,
+            providerName: profile.name,
+          ),
         );
       } catch (_) {
         final cached = await ModelProviderConfigService.getCachedFetchedModels(
@@ -945,18 +1123,33 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   }
 
   Future<void> _switchToProfile(String profileId) async {
-    if (_isSwitchingProfile || profileId == _editingProfileId) {
+    if (_isSwitchingProfile || _isExiting || profileId == _editingProfileId) {
       return;
     }
     final index = _profiles.indexWhere((profile) => profile.id == profileId);
     if (index == -1) {
       return;
     }
+    final modelLibraryFailureRevision = _modelLibraryFailureRevision;
     _isSwitchingProfile = true;
     try {
-      if (_shouldAutoSaveDraft) {
-        await _persistProfileDraft();
+      await _persistProfileDraft();
+      if (_profileSaveError != null) {
+        throw StateError('Unable to persist the current provider profile');
       }
+      await _drainModelLibraryOperations();
+      final currentProfileId = _currentProfile?.id;
+      final currentManualModelIds = List<String>.from(_manualModelIds);
+      final manualModelsSaved = await _persistManualModelIds(
+        profileId: currentProfileId,
+        modelIds: currentManualModelIds,
+      );
+      await _drainModelLibraryOperations();
+      if (!manualModelsSaved ||
+          _modelLibraryFailedSince(modelLibraryFailureRevision)) {
+        throw StateError('Unable to persist the current provider model library');
+      }
+      _profileDataGeneration += 1;
       final selected = await ModelProviderConfigService.setEditingProfile(
         profileId,
       );
@@ -993,28 +1186,62 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
   }
 
   Future<void> _promptAddProfile() async {
-    if (!mounted) {
+    if (!mounted || _isSwitchingProfile || _isExiting) {
       return;
     }
-    FocusScope.of(context).unfocus();
-    _autoSaveTimer?.cancel();
-    if (_shouldAutoSaveDraft) {
+    final modelLibraryFailureRevision = _modelLibraryFailureRevision;
+    _isSwitchingProfile = true;
+    try {
+      FocusScope.of(context).unfocus();
+      _autoSaveTimer?.cancel();
       await _persistProfileDraft();
+      if (_profileSaveError != null) {
+        if (mounted) {
+          showToast(
+            _headerText(
+              '供应商配置保存失败，请重试',
+              'Failed to save supplier settings. Try again.',
+            ),
+            type: ToastType.error,
+          );
+        }
+        return;
+      }
+      await _drainModelLibraryOperations();
+      final currentProfileId = _currentProfile?.id;
+      final currentManualModelIds = List<String>.from(_manualModelIds);
+      final manualModelsSaved = await _persistManualModelIds(
+        profileId: currentProfileId,
+        modelIds: currentManualModelIds,
+      );
+      await _drainModelLibraryOperations();
+      if (!manualModelsSaved ||
+          _modelLibraryFailedSince(modelLibraryFailureRevision)) {
+        if (mounted) {
+          showToast(
+            _headerText(
+              '模型库保存失败，请重试',
+              'Failed to save the model library. Try again.',
+            ),
+            type: ToastType.error,
+          );
+        }
+        return;
+      }
       if (!mounted) {
         return;
       }
-    }
-    final name = (await AppDialog.input(
-      context,
-      title: context.l10n.modelAddProviderTitle,
-      hintText: context.l10n.modelProviderNameHint,
-      confirmText: context.l10n.modelAddButton,
-      cancelText: context.trLegacy('取消'),
-    ))?.trim();
-    if (name == null || name.isEmpty) {
-      return;
-    }
-    try {
+      _profileDataGeneration += 1;
+      final name = (await AppDialog.input(
+        context,
+        title: context.l10n.modelAddProviderTitle,
+        hintText: context.l10n.modelProviderNameHint,
+        confirmText: context.l10n.modelAddButton,
+        cancelText: context.trLegacy('取消'),
+      ))?.trim();
+      if (name == null || name.isEmpty) {
+        return;
+      }
       final saved = await ModelProviderConfigService.saveProfile(
         name: name,
         baseUrl: '',
@@ -1050,14 +1277,25 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
           type: ToastType.error,
         );
       });
+    } finally {
+      _isSwitchingProfile = false;
     }
   }
 
   Future<void> _fetchModelsLocalized({bool silentError = false}) async {
     final current = _currentProfile;
-    if (current == null || _isFetchingModels) return;
+    if (current == null ||
+        _isFetchingModels ||
+        _isSwitchingProfile ||
+        _isExiting) {
+      return;
+    }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
+    final modelRevision = _modelStateRevision;
     final baseUrl = _baseUrlController.text.trim();
     final apiKey = _apiKeyController.text.trim();
+    final providerName = current.name;
 
     if (baseUrl.isEmpty) {
       if (!silentError) {
@@ -1091,16 +1329,27 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
 
     setState(() => _isFetchingModels = true);
     try {
-      final models = await ModelProviderConfigService.fetchModels(
-        apiBase: baseUrl,
-        apiKey: apiKey,
-        customHeaders: customHeaders,
-        profileId: current.id,
-        providerName: current.name,
+      final models = await _enqueueModelLibraryOperation(
+        () => ModelProviderConfigService.fetchModels(
+          apiBase: baseUrl,
+          apiKey: apiKey,
+          customHeaders: customHeaders,
+          profileId: profileId,
+          providerName: providerName,
+        ),
       );
-      if (!mounted) return;
+      if (!_isCurrentProfileOperation(
+            profileId: profileId,
+            generation: generation,
+            modelRevision: modelRevision,
+          ) ||
+          _baseUrlController.text.trim() != baseUrl ||
+          _apiKeyController.text.trim() != apiKey) {
+        return;
+      }
       setState(() {
         _remoteModels = models;
+        _modelStateRevision += 1;
       });
       if (!silentError) {
         final message = models.isEmpty
@@ -1112,7 +1361,13 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
         );
       }
     } catch (e) {
-      if (!mounted || silentError) return;
+      if (!_isCurrentProfileOperation(
+            profileId: profileId,
+            generation: generation,
+          ) ||
+          silentError) {
+        return;
+      }
       showToast(
         context.l10n.modelProviderFetchFailed(e.toString()),
         type: ToastType.error,
@@ -1126,7 +1381,11 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
 
   Future<void> _deleteCurrentProfile() async {
     final current = _currentProfile;
-    if (current == null || current.readOnly || _profiles.length <= 1) {
+    if (current == null ||
+        current.readOnly ||
+        _profiles.length <= 1 ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
     final confirmed = await showDialog<bool>(
@@ -1148,10 +1407,38 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
         );
       },
     );
-    if (confirmed != true) {
+    if (confirmed != true || _currentProfile?.id != current.id) {
       return;
     }
+    final modelLibraryFailureRevision = _modelLibraryFailureRevision;
+    _isSwitchingProfile = true;
     try {
+      _autoSaveTimer?.cancel();
+      _autoSaveTimer = null;
+      await _persistProfileDraft();
+      if (_profileSaveError != null) {
+        throw StateError('Unable to persist the current provider profile');
+      }
+      await _drainModelLibraryOperations();
+      final manualModelsSaved = await _persistManualModelIds(
+        profileId: current.id,
+        modelIds: List<String>.from(_manualModelIds),
+      );
+      await _drainModelLibraryOperations();
+      if (!manualModelsSaved ||
+          _modelLibraryFailedSince(modelLibraryFailureRevision)) {
+        if (mounted) {
+          showToast(
+            _headerText(
+              '模型库保存失败，请重试',
+              'Failed to save the model library. Try again.',
+            ),
+            type: ToastType.error,
+          );
+        }
+        return;
+      }
+      _profileDataGeneration += 1;
       final payload = await ModelProviderConfigService.deleteProfile(
         current.id,
       );
@@ -1188,21 +1475,35 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
         context.l10n.modelProviderDeleteFailed(e),
         type: ToastType.error,
       );
+    } finally {
+      _isSwitchingProfile = false;
     }
   }
 
   Future<void> _promptAddModel() async {
     final current = _currentProfile;
-    if (current == null || current.readOnly) {
+    if (current == null ||
+        current.readOnly ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
+    final initialModelRevision = _modelStateRevision;
     final modelId = await showDialog<String>(
       context: context,
       useRootNavigator: false,
       builder: (_) => const _AddModelIdDialog(),
     );
 
-    if (!mounted) return;
+    if (!_isCurrentProfileOperation(
+      profileId: profileId,
+      generation: generation,
+      modelRevision: initialModelRevision,
+    )) {
+      return;
+    }
     if (modelId == null) {
       return;
     }
@@ -1220,29 +1521,75 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
     }
 
     final nextManual = [..._manualModelIds, normalized];
-    final nextManualModels = await _loadManualModelsForProfile(
-      current,
-      nextManual,
+    final nextManualModels = await _enqueueModelLibraryOperation(
+      () => _loadManualModelsForProfile(
+        current,
+        nextManual,
+      ),
     );
-    if (!mounted) return;
+    if (!_isCurrentProfileOperation(
+      profileId: profileId,
+      generation: generation,
+      modelRevision: initialModelRevision,
+    )) {
+      return;
+    }
+    final previousManualModelIds = List<String>.from(_manualModelIds);
+    final previousManualModels = List<ProviderModelOption>.from(_manualModels);
     setState(() {
       _manualModelIds = nextManual;
       _manualModels = nextManualModels;
+      _modelStateRevision += 1;
     });
+    final appliedModelRevision = _modelStateRevision;
 
-    await ModelProviderConfigService.saveManualModelIds(
-      profileId: current.id,
-      ids: nextManual,
+    final saved = await _persistManualModelIds(
+      profileId: profileId,
+      modelIds: nextManual,
     );
-    if (!mounted) return;
-    showToast(context.l10n.modelAdded, type: ToastType.success);
+    if (!_isSameProfileOperation(
+      profileId: profileId,
+      generation: generation,
+      modelRevision: appliedModelRevision,
+    )) {
+      return;
+    }
+    if (!saved) {
+      setState(() {
+        _manualModelIds = previousManualModelIds;
+        _manualModels = previousManualModels;
+        _modelStateRevision += 1;
+      });
+      if (_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+      )) {
+        showToast(
+          _headerText('添加模型失败', 'Failed to add model'),
+          type: ToastType.error,
+        );
+      }
+      return;
+    }
+    if (_isCurrentProfileOperation(
+      profileId: profileId,
+      generation: generation,
+    )) {
+      showToast(context.l10n.modelAdded, type: ToastType.success);
+    }
   }
 
   Future<void> _deleteModel(_ProviderModelItem item) async {
     final current = _currentProfile;
-    if (current == null || _deletingModelIds.contains(item.id)) {
+    if (current == null ||
+        _deletingModelIds.contains(item.id) ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
+    final cacheBaseUrl = _baseUrlController.text.trim();
 
     final prevManual = List<String>.from(_manualModelIds);
     final prevManualModels = List<ProviderModelOption>.from(_manualModels);
@@ -1253,33 +1600,65 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       _manualModelIds = _manualModelIds.where((id) => id != item.id).toList();
       _manualModels = _manualModels.where((m) => m.id != item.id).toList();
       _remoteModels = _remoteModels.where((m) => m.id != item.id).toList();
+      _modelStateRevision += 1;
     });
+    final appliedModelRevision = _modelStateRevision;
+    final nextManualModelIds = List<String>.unmodifiable(_manualModelIds);
+    final nextRemoteModels = List<ProviderModelOption>.unmodifiable(
+      _remoteModels,
+    );
 
     try {
-      await Future.wait([
-        ModelProviderConfigService.saveManualModelIds(
-          profileId: current.id,
-          ids: _manualModelIds,
-        ),
-        ModelProviderConfigService.saveCachedFetchedModels(
-          profileId: current.id,
-          apiBase: _baseUrlController.text.trim(),
-          models: _remoteModels,
-        ),
-      ]);
+      await _enqueueModelLibraryOperation<void>(
+        () async {
+          await Future.wait<void>([
+            ModelProviderConfigService.saveManualModelIds(
+              profileId: profileId,
+              ids: nextManualModelIds,
+            ),
+            ModelProviderConfigService.saveCachedFetchedModels(
+              profileId: profileId,
+              apiBase: cacheBaseUrl,
+              models: nextRemoteModels,
+            ),
+          ]);
+        },
+        trackPersistenceFailure: true,
+      );
 
-      if (!mounted) return;
+      if (!_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+        modelRevision: appliedModelRevision,
+      )) {
+        return;
+      }
       showToast(context.l10n.modelDeleted, type: ToastType.success);
     } catch (_) {
-      if (!mounted) return;
+      if (!_isSameProfileOperation(
+        profileId: profileId,
+        generation: generation,
+        modelRevision: appliedModelRevision,
+      )) {
+        return;
+      }
       setState(() {
         _manualModelIds = prevManual;
         _manualModels = prevManualModels;
         _remoteModels = prevRemote;
+        _modelStateRevision += 1;
       });
-      showToast(context.l10n.modelDeleteFailed, type: ToastType.error);
+      if (_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+      )) {
+        showToast(context.l10n.modelDeleteFailed, type: ToastType.error);
+      }
     } finally {
-      if (mounted) {
+      if (_isSameProfileOperation(
+        profileId: profileId,
+        generation: generation,
+      )) {
         setState(() {
           _deletingModelIds = {..._deletingModelIds}..remove(item.id);
         });
@@ -1296,9 +1675,11 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
     bool visible,
   ) async {
     final current = _currentProfile;
-    if (current == null) {
+    if (current == null || _isSwitchingProfile || _isExiting) {
       return false;
     }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
     final previous = Set<String>.from(_hiddenChatModelIds);
     final next = Set<String>.from(_hiddenChatModelIds);
     if (visible) {
@@ -1312,14 +1693,24 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
 
     setState(() {
       _hiddenChatModelIds = next;
+      _modelStateRevision += 1;
     });
+    final appliedModelRevision = _modelStateRevision;
 
     try {
-      await ModelProviderConfigService.saveHiddenChatModelIds(
-        profileId: current.id,
-        ids: next.toList(),
+      final snapshot = List<String>.unmodifiable(next);
+      await _enqueueModelLibraryOperation<void>(
+        () => ModelProviderConfigService.saveHiddenChatModelIds(
+          profileId: profileId,
+          ids: snapshot,
+        ),
+        trackPersistenceFailure: true,
       );
-      if (!mounted) {
+      if (!_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+        modelRevision: appliedModelRevision,
+      )) {
         return true;
       }
       showToast(
@@ -1330,25 +1721,40 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       );
       return true;
     } catch (_) {
-      if (!mounted) {
+      if (!_isSameProfileOperation(
+        profileId: profileId,
+        generation: generation,
+        modelRevision: appliedModelRevision,
+      )) {
         return false;
       }
       setState(() {
         _hiddenChatModelIds = previous;
+        _modelStateRevision += 1;
       });
-      showToast(
-        _headerText('更新聊天页模型失败', 'Failed to update chat list'),
-        type: ToastType.error,
-      );
+      if (_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+      )) {
+        showToast(
+          _headerText('更新聊天页模型失败', 'Failed to update chat list'),
+          type: ToastType.error,
+        );
+      }
       return false;
     }
   }
 
   Future<bool> _hideAllChatModels() async {
     final current = _currentProfile;
-    if (current == null || _remoteModels.isEmpty) {
+    if (current == null ||
+        _remoteModels.isEmpty ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return false;
     }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
     final previous = Set<String>.from(_hiddenChatModelIds);
     final next = Set<String>.from(_hiddenChatModelIds)
       ..addAll(_remoteModels.map((model) => model.id));
@@ -1358,14 +1764,24 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
 
     setState(() {
       _hiddenChatModelIds = next;
+      _modelStateRevision += 1;
     });
+    final appliedModelRevision = _modelStateRevision;
 
     try {
-      await ModelProviderConfigService.saveHiddenChatModelIds(
-        profileId: current.id,
-        ids: next.toList(),
+      final snapshot = List<String>.unmodifiable(next);
+      await _enqueueModelLibraryOperation<void>(
+        () => ModelProviderConfigService.saveHiddenChatModelIds(
+          profileId: profileId,
+          ids: snapshot,
+        ),
+        trackPersistenceFailure: true,
       );
-      if (!mounted) {
+      if (!_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+        modelRevision: appliedModelRevision,
+      )) {
         return true;
       }
       showToast(
@@ -1374,16 +1790,26 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       );
       return true;
     } catch (_) {
-      if (!mounted) {
+      if (!_isSameProfileOperation(
+        profileId: profileId,
+        generation: generation,
+        modelRevision: appliedModelRevision,
+      )) {
         return false;
       }
       setState(() {
         _hiddenChatModelIds = previous;
+        _modelStateRevision += 1;
       });
-      showToast(
-        _headerText('更新聊天页模型失败', 'Failed to update chat list'),
-        type: ToastType.error,
-      );
+      if (_isCurrentProfileOperation(
+        profileId: profileId,
+        generation: generation,
+      )) {
+        showToast(
+          _headerText('更新聊天页模型失败', 'Failed to update chat list'),
+          type: ToastType.error,
+        );
+      }
       return false;
     }
   }
@@ -1405,11 +1831,16 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       return;
     }
     final current = _currentProfile;
-    if (current == null || current.readOnly) {
+    if (current == null ||
+        current.readOnly ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
     final previousSourceType = _selectedSourceType;
-    final previousValue = _selectedProtocolType;
+    final previousProtocolType = _selectedProtocolType;
     final previousWireApi = _selectedWireApi;
     final previousName = _nameController.text;
     final previousBaseUrl = _baseUrlController.text;
@@ -1422,41 +1853,28 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       _syncController(_nameController, selected.providerName);
       _syncController(_baseUrlController, selected.baseUrl);
     }
-    try {
-      final saved = await ModelProviderConfigService.saveProfile(
-        id: current.id,
-        name: _nameController.text.trim().isEmpty
-            ? current.name
-            : _nameController.text.trim(),
-        baseUrl: _baseUrlController.text.trim(),
-        apiKey: _apiKeyController.text.trim(),
-        customHeaders:
-            _validatedCustomHeadersDraft() ??
-            ModelProviderConfigService.normalizeCustomHeaders(
-              current.customHeaders,
-            ),
-        sourceType: selected.sourceType,
-        protocolType: nextProtocolType,
-        wireApi: nextWireApi,
-      );
-      if (!mounted) return;
-      setState(() {
-        _profiles = _profiles.map((p) => p.id == saved.id ? saved : p).toList();
-        _selectedSourceType = saved.sourceType;
-        _selectedProtocolType = saved.protocolType;
-        _selectedWireApi = _normalizeWireApiForProtocol(
-          saved.protocolType,
-          saved.wireApi,
-        );
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _selectedSourceType = previousSourceType;
-        _selectedProtocolType = previousValue;
-        _selectedWireApi = previousWireApi;
-      });
+    final selectedName = _nameController.text;
+    final selectedBaseUrl = _baseUrlController.text;
+    await _persistProfileDraft();
+    if (!_isSameProfileOperation(
+          profileId: profileId,
+          generation: generation,
+        ) ||
+        _profileSaveError == null ||
+        _selectedSourceType != selected.sourceType ||
+        _selectedProtocolType != nextProtocolType ||
+        _selectedWireApi != nextWireApi) {
+      return;
+    }
+    setState(() {
+      _selectedSourceType = previousSourceType;
+      _selectedProtocolType = previousProtocolType;
+      _selectedWireApi = previousWireApi;
+    });
+    if (_nameController.text == selectedName) {
       _syncController(_nameController, previousName);
+    }
+    if (_baseUrlController.text == selectedBaseUrl) {
       _syncController(_baseUrlController, previousBaseUrl);
     }
   }
@@ -1472,46 +1890,30 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
       return;
     }
     final current = _currentProfile;
-    if (current == null || current.readOnly) {
+    if (current == null ||
+        current.readOnly ||
+        _isSwitchingProfile ||
+        _isExiting) {
       return;
     }
+    final profileId = current.id;
+    final generation = _profileDataGeneration;
     final previousWireApi = _selectedWireApi;
     setState(() {
       _selectedWireApi = normalizedWireApi;
     });
-    try {
-      final saved = await ModelProviderConfigService.saveProfile(
-        id: current.id,
-        name: _nameController.text.trim().isEmpty
-            ? current.name
-            : _nameController.text.trim(),
-        baseUrl: _baseUrlController.text.trim(),
-        apiKey: _apiKeyController.text.trim(),
-        customHeaders:
-            _validatedCustomHeadersDraft() ??
-            ModelProviderConfigService.normalizeCustomHeaders(
-              current.customHeaders,
-            ),
-        sourceType: BuiltinOfficialProviderCatalog.customKey,
-        protocolType: _selectedProtocolType,
-        wireApi: normalizedWireApi,
-      );
-      if (!mounted) return;
-      setState(() {
-        _profiles = _profiles.map((p) => p.id == saved.id ? saved : p).toList();
-        _selectedSourceType = saved.sourceType;
-        _selectedProtocolType = saved.protocolType;
-        _selectedWireApi = _normalizeWireApiForProtocol(
-          saved.protocolType,
-          saved.wireApi,
-        );
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _selectedWireApi = previousWireApi;
-      });
+    await _persistProfileDraft();
+    if (!_isSameProfileOperation(
+          profileId: profileId,
+          generation: generation,
+        ) ||
+        _profileSaveError == null ||
+        _selectedWireApi != normalizedWireApi) {
+      return;
     }
+    setState(() {
+      _selectedWireApi = previousWireApi;
+    });
   }
 
   Future<void> _openProviderTypeMenu(BuildContext anchorContext) async {
@@ -2897,17 +3299,25 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
     final modelItems = _modelItems;
     final modelGroups = _modelGroups;
 
-    return Scaffold(
-      backgroundColor: _pageBackground,
-      appBar: CommonAppBar(
-        title: context.l10n.settingsModelProviderTitle,
-        primary: true,
-      ),
-      body: SafeArea(
-        top: false,
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : ListView(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          unawaited(_persistAndExit());
+        }
+      },
+      child: Scaffold(
+        backgroundColor: _pageBackground,
+        appBar: CommonAppBar(
+          title: context.l10n.settingsModelProviderTitle,
+          primary: true,
+          onBackPressed: () => unawaited(_persistAndExit()),
+        ),
+        body: SafeArea(
+          top: false,
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 24),
                 children: [
                   SettingsSectionTitle(
@@ -3198,6 +3608,7 @@ class _ModelProviderSettingPageState extends State<ModelProviderSettingPage> {
                   ),
                 ],
               ),
+        ),
       ),
     );
   }
