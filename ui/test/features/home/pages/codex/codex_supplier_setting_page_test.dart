@@ -164,9 +164,10 @@ void main() {
   testWidgets('select visible enables only the filtered set', (tester) async {
     await seedSupplier(
       models: const <CodexSupplierModelEntry>[
-        CodexSupplierModelEntry(id: 'alpha', enabled: false),
-        CodexSupplierModelEntry(id: 'beta', enabled: false),
-        CodexSupplierModelEntry(id: 'gamma', enabled: true),
+        // Search "ap" must match apple+apricot only (berry has no "ap").
+        CodexSupplierModelEntry(id: 'apple', enabled: false),
+        CodexSupplierModelEntry(id: 'berry', enabled: false),
+        CodexSupplierModelEntry(id: 'apricot', enabled: true),
       ],
     );
 
@@ -174,9 +175,9 @@ void main() {
 
     final search = find.byKey(const Key('codex-supplier-model-search'));
     await reveal(tester, search);
-    await tester.enterText(search, 'a');
+    await tester.enterText(search, 'ap');
     await tester.pump();
-    // visible: alpha, gamma (beta filtered out)
+    // visible: apple, apricot (berry filtered out)
     final selectVisible = find.byKey(const Key('codex-supplier-select-visible'));
     await reveal(tester, selectVisible);
     await tester.tap(selectVisible);
@@ -187,9 +188,9 @@ void main() {
     final models = library.suppliers.single.models;
     bool enabledOf(String id) =>
         models.firstWhere((item) => item.id == id).enabled;
-    expect(enabledOf('alpha'), isTrue);
-    expect(enabledOf('beta'), isFalse);
-    expect(enabledOf('gamma'), isTrue);
+    expect(enabledOf('apple'), isTrue);
+    expect(enabledOf('berry'), isFalse);
+    expect(enabledOf('apricot'), isTrue);
   });
 
   testWidgets('fetch models merges with default-enable new ids', (

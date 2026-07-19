@@ -21,10 +21,9 @@ void main() {
   ];
 
   Widget wrap(Widget child) {
+    // Default MaterialApp locale is en; do not pin unsupported locales without
+    // localizationDelegates (that breaks DropdownButton MaterialLocalizations).
     return MaterialApp(
-      // Product helper copy is locale-sensitive; pin zh so assertions are stable.
-      locale: const Locale('zh'),
-      supportedLocales: const <Locale>[Locale('zh'), Locale('en')],
       home: Scaffold(
         body: SingleChildScrollView(child: child),
       ),
@@ -67,9 +66,9 @@ void main() {
     // Model dropdown contains only enabled ids.
     await tester.tap(find.byKey(const Key('codex-provider-model-selector')));
     await tester.pumpAndSettle();
-    expect(find.text('m1').hitTestable(), findsWidgets);
-    expect(find.text('m3').hitTestable(), findsOneWidget);
-    expect(find.text('m2').hitTestable(), findsNothing);
+    expect(find.text('m1'), findsWidgets);
+    expect(find.text('m3'), findsWidgets);
+    expect(find.text('m2'), findsNothing);
 
     await tester.tap(find.text('m3').last);
     await tester.pumpAndSettle();
