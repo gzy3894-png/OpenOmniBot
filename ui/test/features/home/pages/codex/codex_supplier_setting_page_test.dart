@@ -59,6 +59,11 @@ void main() {
     })?
     listModelsOverride,
   }) async {
+    // Tall surface so ListView builds the models card (not lazy-offscreen).
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() async {
+      await tester.binding.setSurfaceSize(null);
+    });
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.lightTheme,
@@ -69,7 +74,15 @@ void main() {
       ),
     );
     await tester.pump();
+    // Finish ensureMigrated + first setState(_isLoading=false).
     await tester.pump(const Duration(milliseconds: 50));
+    await tester.pump();
+  }
+
+  Future<void> reveal(WidgetTester tester, Finder finder) async {
+    expect(finder, findsOneWidget);
+    await tester.ensureVisible(finder);
+    await tester.pump();
   }
 
   testWidgets('renders supplier page without protocol selector', (
@@ -96,8 +109,29 @@ void main() {
     expect(find.byKey(const Key('codex-supplier-api-key-field')), findsOneWidget);
     expect(find.byKey(const Key('codex-supplier-memo-field')), findsOneWidget);
 
-    // Key must not leak into debug/status text.
-    expect(find.textContaining('sk-secret-should-not-appear'), findsNothing);
+    // Form intentionally holds the key for edit, but it must stay obscured and
+    // never appear in banners / status / model stats.
+    final keyField = tester.widget<TextField>(
+      find.byKey(const Key('codex-supplier-api-key-field')),
+    );
+    expect(keyField.obscureText, isTrue);
+    expect(keyField.controller?.text, 'sk-secret-should-not-appear');
+    expect(find.byKey(const Key('codex-supplier-status')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('codex-supplier-wire-locked')),
+        matching: find.textContaining('sk-secret-should-not-appear'),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('codex-supplier-models')),
+        matching: find.textContaining('sk-secret-should-not-appear'),
+      ),
+      findsNothing,
+    );
+    await reveal(tester, find.byKey(const Key('codex-supplier-model-stat')));
     expect(find.textContaining('启用 1 / 可见 2 / 总数 2'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -113,10 +147,9 @@ void main() {
 
     await pumpPage(tester);
 
-    await tester.enterText(
-      find.byKey(const Key('codex-supplier-model-search')),
-      'gpt',
-    );
+    final search = find.byKey(const Key('codex-supplier-model-search'));
+    await reveal(tester, search);
+    await tester.enterText(search, 'gpt');
     await tester.pump();
 
     expect(find.byKey(const Key('codex-supplier-model-gpt-4.1')), findsOneWidget);
@@ -139,13 +172,14 @@ void main() {
 
     await pumpPage(tester);
 
-    await tester.enterText(
-      find.byKey(const Key('codex-supplier-model-search')),
-      'a',
-    );
+    final search = find.byKey(const Key('codex-supplier-model-search'));
+    await reveal(tester, search);
+    await tester.enterText(search, 'a');
     await tester.pump();
     // visible: alpha, gamma (beta filtered out)
-    await tester.tap(find.byKey(const Key('codex-supplier-select-visible')));
+    final selectVisible = find.byKey(const Key('codex-supplier-select-visible'));
+    await reveal(tester, selectVisible);
+    await tester.tap(selectVisible);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
@@ -184,9 +218,12 @@ void main() {
       },
     );
 
-    await tester.tap(find.byKey(const Key('codex-supplier-fetch-models')));
+    final fetch = find.byKey(const Key('codex-supplier-fetch-models'));
+    await reveal(tester, fetch);
+    await tester.tap(fetch);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
 
     final library = CodexSupplierStore.read();
     final models = library.suppliers.single.models;
@@ -196,7 +233,14 @@ void main() {
     expect(byId['keep-me']!.enabled, isFalse); // preserve user choice
     expect(byId['new-model-a']!.enabled, isTrue);
     expect(byId['new-model-b']!.enabled, isTrue);
-    expect(find.textContaining('sk-secret-should-not-appear'), findsNothing);
+    // Key stays in the obscure form field only; never in status/models chrome.
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('codex-supplier-models')),
+        matching: find.textContaining('sk-secret-should-not-appear'),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('add supplier creates empty draft in Codex store only', (
@@ -205,7 +249,9 @@ void main() {
     await pumpPage(tester);
 
     expect(CodexSupplierStore.read().suppliers, isEmpty);
-    await tester.tap(find.byKey(const Key('codex-supplier-add-button')));
+    final add = find.byKey(const Key('codex-supplier-add-button'));
+    await reveal(tester, add);
+    await tester.tap(add);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 

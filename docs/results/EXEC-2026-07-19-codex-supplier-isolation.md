@@ -1,8 +1,9 @@
 # EXEC · Codex 供应商独立化 · 2026-07-19
 
 > 真源：`PLAN-2026-07-19-codex-supplier-isolation.md`  
-> 阶段：`IMPLEMENTED`（源码已齐 · 待主线程 commit/push · 待远端九路）  
+> 阶段：`IMPLEMENTED`（widget 测修 push 中 · 等九路绿）  
 > 基线 HEAD 开工：`451b1be7c80bec976a478886c9224baf5bd46943`  
+> 整合 HEAD：见下表（语法修 `d9dc42d` · 测修待 commit）  
 > 站规：主线程调度/验收 · push 仅 mine · GHA only · 禁本机 assemble  
 > 状态机：`PLANNED → IMPLEMENTED → REMOTE_VERIFIED → APK_STAGED → DEVICE_PARTIAL → DEVICE_PASS → READY`
 
@@ -11,10 +12,10 @@
 | 字段 | 当前值 |
 |------|--------|
 | 用户批准 | 2026-07-19 已确认「执行」 |
-| 工作线 | **W1–W6 源码完成** · 主线程静态审查通过 · 未 commit / 未 push |
-| 源码整合 HEAD | （commit 后回填） |
-| 九路 GHA | （未跑） |
-| APK stage | （未） |
+| 工作线 | W1–W6 源码 ✅ · `67a9c44` · 语法修 `d9dc42d` · widget 测修（ListView 可见性 + locale helper） |
+| 源码整合 HEAD | 上一绿编译：`d9dc42d` · 下一 push：widget test fix |
+| 九路 GHA | `#29683315510` on `d9dc42d`：analyze/unit ✅ · Flutter shard 2/3 FAIL（setting page ×4 + selector ×1）· 测修后重跑 |
+| APK stage | （未 · 等九路 SUCCESS） |
 | 设备矩阵 S1–S8 | （未） |
 
 ## 1. 工作线

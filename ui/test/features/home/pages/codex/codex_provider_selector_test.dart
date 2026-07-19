@@ -22,6 +22,9 @@ void main() {
 
   Widget wrap(Widget child) {
     return MaterialApp(
+      // Product helper copy is locale-sensitive; pin zh so assertions are stable.
+      locale: const Locale('zh'),
+      supportedLocales: const <Locale>[Locale('zh'), Locale('en')],
       home: Scaffold(
         body: SingleChildScrollView(child: child),
       ),
@@ -113,9 +116,12 @@ void main() {
     );
     expect(modelField.onChanged, isNull);
     expect(modelChanged, isFalse);
+    final helper = modelField.decoration.helperText ?? '';
     expect(
-      find.textContaining('启用至少一个模型'),
-      findsOneWidget,
+      helper.contains('启用至少一个模型') ||
+          helper.contains('Enable at least one model'),
+      isTrue,
+      reason: 'expected empty-models helper, got: $helper',
     );
   });
 }
