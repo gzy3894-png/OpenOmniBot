@@ -813,7 +813,7 @@ void main() {
       model: 'gpt-test',
       apiKey: 'sk-test',
     );
-    expect(captured?.method, 'writeLocalConfig');
+    expect(captured?.method, 'config/local/write');
     final argsWithout = Map<String, dynamic>.from(captured!.arguments as Map);
     expect(argsWithout.containsKey('webSearchMode'), isFalse);
 
