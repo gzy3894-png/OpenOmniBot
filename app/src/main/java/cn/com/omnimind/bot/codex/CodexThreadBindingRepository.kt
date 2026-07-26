@@ -7,6 +7,7 @@ import cn.com.omnimind.baselib.database.DatabaseHelper
 import cn.com.omnimind.bot.webchat.ConversationDomainService
 import cn.com.omnimind.bot.webchat.FlutterChatSyncBridge
 import cn.com.omnimind.bot.webchat.RealtimeHub
+import java.util.concurrent.ConcurrentHashMap
 
 internal class CodexThreadBindingRepository(
     context: Context
@@ -14,12 +15,37 @@ internal class CodexThreadBindingRepository(
     private val appContext = context.applicationContext
     private val conversationDomainService by lazy { ConversationDomainService(appContext) }
 
+    /** threadId -> conversationId; only bind/rebind changes it. */
+    private val conversationIdByThreadId = ConcurrentHashMap<String, Long>()
+
     suspend fun getBindingByConversationId(conversationId: Long): CodexThreadBinding? {
         return DatabaseHelper.getCodexThreadBindingByConversationId(conversationId)
     }
 
     suspend fun getBindingByThreadId(threadId: String): CodexThreadBinding? {
         return DatabaseHelper.getCodexThreadBindingByThreadId(threadId)
+    }
+
+    /**
+     * Hot path: every codex event resolves its conversation id, including each
+     * streaming delta. Hitting Room that often stalls event dispatch, so the
+     * mapping is memoised and refreshed on every binding upsert.
+     */
+    suspend fun getConversationIdByThreadId(threadId: String): Long? {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return null
+        }
+        conversationIdByThreadId[normalizedThreadId]?.let { return it }
+        val conversationId =
+            getBindingByThreadId(normalizedThreadId)?.conversationId ?: return null
+        conversationIdByThreadId[normalizedThreadId] = conversationId
+        return conversationId
+    }
+
+    private suspend fun upsertBinding(binding: CodexThreadBinding) {
+        DatabaseHelper.upsertCodexThreadBinding(binding)
+        conversationIdByThreadId[binding.threadId] = binding.conversationId
     }
 
     suspend fun ensureBinding(
@@ -66,7 +92,7 @@ internal class CodexThreadBindingRepository(
                 DatabaseHelper.updateConversation(updatedConversation)
                 publishConversationEvent("conversation_updated", updatedConversation)
             }
-            DatabaseHelper.upsertCodexThreadBinding(
+            upsertBinding(
                 existingBinding.copy(
                     cwd = cwd.ifBlank { existingBinding.cwd },
                     updatedAt = now
@@ -102,7 +128,7 @@ internal class CodexThreadBindingRepository(
             createdAt = now,
             updatedAt = now
         )
-        DatabaseHelper.upsertCodexThreadBinding(binding)
+        upsertBinding(binding)
         return targetConversation.id
     }
 
@@ -131,7 +157,7 @@ internal class CodexThreadBindingRepository(
             publishConversationEvent("conversation_updated", updatedTarget)
         }
 
-        DatabaseHelper.upsertCodexThreadBinding(
+        upsertBinding(
             existingBinding.copy(
                 conversationId = conversationId,
                 cwd = cwd.ifBlank { existingBinding.cwd },
@@ -258,6 +284,7 @@ internal class CodexThreadBindingRepository(
             return
         }
         DatabaseHelper.deleteConversationById(conversationId)
+        conversationIdByThreadId.values.remove(conversationId)
         publishConversationEvent("conversation_deleted", conversation)
     }
 

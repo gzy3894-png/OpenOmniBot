@@ -30,6 +30,7 @@ const String kChatRuntimeModeOpenClaw = 'openclaw';
 const String kChatRuntimeModeCodex = 'codex';
 const int _kStreamingTextChunkFlushThreshold = 5;
 const Duration _kStreamingTextMaxFlushLatency = Duration(milliseconds: 160);
+const Duration _kCodexMidTurnPersistInterval = Duration(seconds: 5);
 
 enum _StreamingTextStreamKind {
   pureChatReply,
@@ -314,6 +315,8 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
       <String, Future<void>>{};
   final Map<String, Future<void>> _codexTerminalPersistence =
       <String, Future<void>>{};
+  final Map<String, DateTime> _codexLastMidTurnMessagePersistAt =
+      <String, DateTime>{};
   final Set<String> _ephemeralRuntimeKeys = <String>{};
   bool _codexRuntimeNotificationScheduled = false;
   int _codexRuntimeNotificationEpoch = 0;
@@ -700,6 +703,13 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
     final reduceWatch = Stopwatch()..start();
     final result = _codexEventReducer.reduce(runtime: runtime, event: event);
     reduceWatch.stop();
+    // Context occupancy rides on the raw event (native side reads codex
+    // `token_count`), so it must be applied even when the reducer ignores
+    // the event itself.
+    final usageChanged = _applyCodexTokenUsage(runtime, event);
+    if (usageChanged && !result.handled) {
+      _scheduleCodexRuntimeNotification(runtimeKey);
+    }
     if (result.handled) {
       _codexHandledEventCount += 1;
       _codexReduceDurationMicros += reduceWatch.elapsedMicroseconds;
@@ -716,6 +726,7 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
         mode: kChatRuntimeModeCodex,
       )) {
         if (_isCodexTerminalMethod(result.method)) {
+          _codexLastMidTurnMessagePersistAt.remove(runtimeKey);
           final persistence = _persistRuntimeConversationImmediately(
             conversationId: conversationId,
             mode: kChatRuntimeModeCodex,
@@ -737,15 +748,32 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
             ),
           );
         } else {
+          // Mid-turn events arrive continuously; persisting the whole message
+          // list every debounce window costs a full re-serialize plus a Room
+          // replace, which is the dominant source of streaming jank. Terminal
+          // events always persist, so this only bounds how much is lost if the
+          // process dies mid-turn.
           schedulePersistRuntimeConversation(
             conversationId: conversationId,
             mode: kChatRuntimeModeCodex,
-            persistMessages: true,
+            persistMessages: _shouldPersistCodexMessagesMidTurn(runtimeKey),
           );
         }
       }
     }
     return result;
+  }
+
+  /// Throttles mid-turn message snapshots to [_kCodexMidTurnPersistInterval].
+  bool _shouldPersistCodexMessagesMidTurn(String runtimeKey) {
+    final now = DateTime.now();
+    final last = _codexLastMidTurnMessagePersistAt[runtimeKey];
+    if (last != null &&
+        now.difference(last) < _kCodexMidTurnPersistInterval) {
+      return false;
+    }
+    _codexLastMidTurnMessagePersistAt[runtimeKey] = now;
+    return true;
   }
 
   void _scheduleCodexRuntimeNotification(String runtimeKey) {
@@ -3332,6 +3360,27 @@ class ChatConversationRuntimeCoordinator extends ChangeNotifier {
       conversationId: conversationId,
       mode: mode,
     );
+  }
+
+  /// Apply the context occupancy the native side attached to a codex event.
+  /// Returns whether the runtime conversation actually changed.
+  bool _applyCodexTokenUsage(
+    ChatConversationRuntimeState runtime,
+    Map<String, dynamic> event,
+  ) {
+    final raw = event['latestPromptTokens'];
+    final latestPromptTokens = raw is num ? raw.toInt() : null;
+    if (latestPromptTokens == null || latestPromptTokens <= 0) {
+      return false;
+    }
+    if (runtime.conversation?.latestPromptTokens == latestPromptTokens) {
+      return false;
+    }
+    _applyPromptTokenUsageUpdate(
+      runtime,
+      latestPromptTokens: latestPromptTokens,
+    );
+    return true;
   }
 
   void _applyPromptTokenUsageUpdate(

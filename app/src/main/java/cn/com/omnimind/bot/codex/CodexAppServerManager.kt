@@ -13,6 +13,7 @@ import cn.com.omnimind.bot.util.TaskRuntimeSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -51,6 +52,16 @@ class CodexAppServerManager private constructor(
     private val serverRequestResponder = CodexServerRequestResponder(serverRequests)
     /** Single-fire guard: threadId -> terminal token (turnId or synthetic). */
     private val finishedNotifyOnceByThread = ConcurrentHashMap<String, String>()
+
+    /**
+     * Threads that already reported `token_count`. `turn/completed.usage` may
+     * aggregate several model calls of one turn, so it over-reports context
+     * occupancy; it is only used for threads that never emit `token_count`.
+     */
+    private val tokenCountSeenThreads = ConcurrentHashMap.newKeySet<String>()
+
+    /** Last context occupancy written to DB, keyed by conversation id. */
+    private val persistedPromptTokensByConversation = ConcurrentHashMap<Long, Int>()
 
     @Volatile
     private var pendingThreadStartConversationId: Long? = null
@@ -1469,6 +1480,7 @@ class CodexAppServerManager private constructor(
         if (!threadId.isNullOrBlank() && method == "thread/closed") {
             activeTurnsByThreadId.remove(threadId)
             finishedNotifyOnceByThread.remove(threadId)
+            tokenCountSeenThreads.remove(threadId)
         }
 
         val localConversationId = syncMessage(method, message, params, threadId)
@@ -1597,6 +1609,7 @@ class CodexAppServerManager private constructor(
                 clearActiveSessionLocked()
                 activeTurnsByThreadId.clear()
                 finishedNotifyOnceByThread.clear()
+                tokenCountSeenThreads.clear()
             }
 
             val event = linkedMapOf<String, Any?>(
@@ -1609,6 +1622,21 @@ class CodexAppServerManager private constructor(
                 "params" to params,
                 "message" to message,
             )
+            val tokenUsage = extractCodexTokenUsage(
+                method = method,
+                message = message,
+                params = params,
+                protocolEventType = protocolEventType,
+                threadId = threadId,
+                tokenCountSeenThreads = tokenCountSeenThreads,
+            )
+            if (tokenUsage != null) {
+                event["latestPromptTokens"] = tokenUsage.usedTokens
+                if (tokenUsage.contextWindowTokens != null) {
+                    event["contextWindowTokens"] = tokenUsage.contextWindowTokens
+                }
+                persistPromptTokenUsage(localConversationId, tokenUsage.usedTokens)
+            }
             if (lifecycleRequestId != null) {
                 event["requestId"] = lifecycleRequestId
                 event["serverRequestMethod"] = lifecycleMethod
@@ -1720,8 +1748,10 @@ class CodexAppServerManager private constructor(
                 }
             }
             else -> {
+                // Every streaming delta lands here, so use the memoised lookup
+                // instead of a Room query per event.
                 if (!threadId.isNullOrBlank()) {
-                    bindingRepository.getBindingByThreadId(threadId)?.conversationId
+                    bindingRepository.getConversationIdByThreadId(threadId)
                 } else {
                     null
                 }
@@ -1890,6 +1920,33 @@ class CodexAppServerManager private constructor(
             ),
             pendingRequest = request,
         )
+    }
+
+    /**
+     * Mirror context occupancy into the conversation row so a reopened chat
+     * shows the last known value instead of zero until the next turn.
+     */
+    private fun persistPromptTokenUsage(conversationId: Long?, usedTokens: Int) {
+        if (conversationId == null || conversationId <= 0L) {
+            return
+        }
+        if (persistedPromptTokensByConversation.put(conversationId, usedTokens) == usedTokens) {
+            return
+        }
+        scope.launch {
+            runCatching {
+                val conversation = DatabaseHelper.getConversationById(conversationId)
+                    ?: return@runCatching
+                DatabaseHelper.updateConversation(
+                    conversation.copy(
+                        latestPromptTokens = usedTokens,
+                        latestPromptTokensUpdatedAt = System.currentTimeMillis(),
+                    )
+                )
+            }.onFailure {
+                Log.w(TAG, "persist codex prompt token usage failed: ${it.message}")
+            }
+        }
     }
 
     private fun emitEvent(
@@ -3080,6 +3137,74 @@ private fun codexProtocolEventType(value: Any?): String {
     return msg["type"]?.toString()?.trim()?.lowercase()
         ?.replace(Regex("[^a-z0-9]+"), "_")
         .orEmpty()
+}
+
+/** Context occupancy carried by a codex event, in tokens. */
+private data class CodexTokenUsage(
+    val usedTokens: Int,
+    val contextWindowTokens: Int?,
+)
+
+/**
+ * Pull context occupancy out of a codex event.
+ *
+ * `token_count` fires several times inside one turn and carries
+ * `last_token_usage`, which is exactly what currently sits in the context
+ * window. `turn/completed.usage` is a per-turn aggregate and is therefore only
+ * a fallback for threads that never emit `token_count`.
+ */
+private fun extractCodexTokenUsage(
+    method: String,
+    message: Map<*, *>,
+    params: Map<*, *>,
+    protocolEventType: String,
+    threadId: String?,
+    tokenCountSeenThreads: MutableSet<String>,
+): CodexTokenUsage? {
+    if (protocolEventType == "token_count") {
+        val info = codexTokenUsageInfo(params) ?: codexTokenUsageInfo(message) ?: return null
+        val used = codexUsageTokens(info["last_token_usage"])
+            ?: codexUsageTokens(info["total_token_usage"])
+            ?: return null
+        if (!threadId.isNullOrBlank()) {
+            tokenCountSeenThreads.add(threadId)
+        }
+        return CodexTokenUsage(used, codexPositiveInt(info["model_context_window"]))
+    }
+    if (method == "turn/completed") {
+        if (!threadId.isNullOrBlank() && tokenCountSeenThreads.contains(threadId)) {
+            return null
+        }
+        val usage = params["usage"] as? Map<*, *> ?: return null
+        val used = codexUsageTokens(usage) ?: return null
+        return CodexTokenUsage(used, null)
+    }
+    return null
+}
+
+private fun codexTokenUsageInfo(value: Any?): Map<*, *>? {
+    val msg = codexProtocolMsg(value) ?: return null
+    return msg["info"] as? Map<*, *>
+}
+
+private fun codexUsageTokens(value: Any?): Int? {
+    val usage = value as? Map<*, *> ?: return null
+    codexPositiveInt(usage["total_tokens"])?.let { return it }
+    val sum = (codexPositiveInt(usage["input_tokens"]) ?: 0) +
+        (codexPositiveInt(usage["output_tokens"]) ?: 0)
+    return if (sum > 0) sum else null
+}
+
+private fun codexPositiveInt(value: Any?): Int? {
+    val number = when (value) {
+        is Number -> value.toLong()
+        is String -> value.trim().toLongOrNull()
+        else -> null
+    } ?: return null
+    if (number <= 0L) {
+        return null
+    }
+    return number.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 }
 
 private fun codexProtocolMsg(value: Any?, depth: Int = 0): Map<*, *>? {

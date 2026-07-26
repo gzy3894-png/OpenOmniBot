@@ -618,6 +618,9 @@ abstract class _ChatPageStateBase extends State<ChatPage>
       runtime.isExecutingTask ? '1' : '0',
       runtime.chatIslandDisplayLayer.wireName,
       runtime.lastAgentToolType ?? '',
+      // Context bar / threshold sheet read this; the updatedAt stamp is
+      // deliberately excluded so identical readings do not repaint.
+      '${runtime.conversation?.latestPromptTokens ?? 0}',
       _browserSnapshotSignature(runtime.browserSessionSnapshot),
     ].join('|');
   }

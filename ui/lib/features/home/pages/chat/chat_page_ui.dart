@@ -17,6 +17,34 @@ const List<String> _kAgentReasoningEffortOptions = <String>[
 
 enum _UserMessageQuickAction { copy, edit, retry }
 
+class _ToolActivitySnapshotMemo {
+  const _ToolActivitySnapshotMemo({
+    required this.snapshot,
+    required this.source,
+    required this.mutationRevision,
+    required this.activeTaskIds,
+    required this.preferredCompletedTaskId,
+  });
+
+  final AgentToolActivitySnapshot snapshot;
+  final List<ChatMessageModel> source;
+  final int mutationRevision;
+  final Set<String> activeTaskIds;
+  final String? preferredCompletedTaskId;
+
+  bool matches({
+    required List<ChatMessageModel> source,
+    required int mutationRevision,
+    required Set<String> activeTaskIds,
+    required String? preferredCompletedTaskId,
+  }) {
+    return identical(this.source, source) &&
+        this.mutationRevision == mutationRevision &&
+        this.preferredCompletedTaskId == preferredCompletedTaskId &&
+        setEquals(this.activeTaskIds, activeTaskIds);
+  }
+}
+
 mixin _ChatPageUiMixin on _ChatPageStateBase {
   ChatPaneOverlayAnchorGeometry? _lastStableToolActivityAnchorGeometry;
   static const double _kChatInputWrapperTopPadding = 8.0;
@@ -35,11 +63,19 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   // so Codex slash toggle can share the same mirror field.
   bool _codexLocalConfigHydrateInFlight = false;
   bool _codexLocalConfigHydrated = false;
+  DateTime? _codexLocalConfigHydrateFailedAt;
+  static const Duration _kCodexLocalConfigRetryBackoff = Duration(seconds: 10);
   /// 输入柱整柱实测高度（ChatInputWrapper 含 topBanner + composer + 顶 padding）。
   /// 优先用于 transcript bottom inset，避免只量 ChatInputArea 漏掉 Goal bar。
   double _inputPillarMeasuredHeight = 0;
+  bool _inputPillarHeightSyncScheduled = false;
   final Set<String> _pendingManualAgentRetryTaskIds = <String>{};
   final Set<String> _pendingManualAgentContinueTaskIds = <String>{};
+  /// Memo for [resolveAgentToolActivitySnapshot], which walks the whole message
+  /// list. Without it every layout-only rebuild (keyboard, PageView drag,
+  /// height sync) pays an O(messages) scan.
+  final Map<ChatPageMode, _ToolActivitySnapshotMemo> _toolActivitySnapshotMemo =
+      <ChatPageMode, _ToolActivitySnapshotMemo>{};
   final Map<ChatPageMode, bool> _messageListInputFocusByMode = {
     ChatPageMode.normal: false,
     ChatPageMode.openclaw: false,
@@ -260,8 +296,17 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   }
 
   /// 懒加载 conf：阈值 + auto_compaction（B30/B33 展示用）。
+  ///
+  /// 调用点在 build 路径上，而 readLocalConfig 会 fork 一个 Alpine shell，
+  /// 所以失败后必须退避，否则每帧都重新发起一次。
   void _ensureCodexLocalConfigHydrated() {
     if (_codexLocalConfigHydrated || _codexLocalConfigHydrateInFlight) {
+      return;
+    }
+    final lastFailure = _codexLocalConfigHydrateFailedAt;
+    if (lastFailure != null &&
+        DateTime.now().difference(lastFailure) <
+            _kCodexLocalConfigRetryBackoff) {
       return;
     }
     _codexLocalConfigHydrateInFlight = true;
@@ -279,9 +324,11 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
             );
           }
           _codexLocalConfigHydrated = true;
+          _codexLocalConfigHydrateFailedAt = null;
         });
       } catch (_) {
-        // 保持默认；下次再试。
+        // 保持默认；退避后再试。
+        _codexLocalConfigHydrateFailedAt = DateTime.now();
       } finally {
         _codexLocalConfigHydrateInFlight = false;
       }
@@ -349,6 +396,45 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     }
   }
 
+  AgentToolActivitySnapshot _resolveToolActivitySnapshotForMode({
+    required ChatPageMode mode,
+    required List<ChatMessageModel> messages,
+    required Set<String> activeTaskIds,
+    required String? preferredCompletedTaskId,
+  }) {
+    final mutationRevision = messages is ObservableChatMessageList
+        ? messages.lastMutationRevision
+        : -1;
+    final cached = _toolActivitySnapshotMemo[mode];
+    if (mutationRevision >= 0 &&
+        cached != null &&
+        cached.matches(
+          source: messages,
+          mutationRevision: mutationRevision,
+          activeTaskIds: activeTaskIds,
+          preferredCompletedTaskId: preferredCompletedTaskId,
+        )) {
+      return cached.snapshot;
+    }
+    final snapshot = resolveAgentToolActivitySnapshot(
+      messages,
+      activeTaskIds: activeTaskIds,
+      preferredCompletedTaskId: preferredCompletedTaskId,
+    );
+    if (mutationRevision >= 0) {
+      _toolActivitySnapshotMemo[mode] = _ToolActivitySnapshotMemo(
+        snapshot: snapshot,
+        source: messages,
+        mutationRevision: mutationRevision,
+        activeTaskIds: Set<String>.from(activeTaskIds),
+        preferredCompletedTaskId: preferredCompletedTaskId,
+      );
+    } else {
+      _toolActivitySnapshotMemo.remove(mode);
+    }
+    return snapshot;
+  }
+
   Widget? _buildCodexTopBanner() {
     if (_activeMode != ChatPageMode.codex) {
       return null;
@@ -396,7 +482,6 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     final initialThreshold = _codexContextTokenThreshold > 0
         ? _codexContextTokenThreshold
         : _kDefaultContextTokenThreshold;
-    final usageTokens = _currentConversation?.latestPromptTokens ?? 0;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -404,7 +489,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       backgroundColor: Colors.transparent,
       builder: (_) => _ContextThresholdSheet(
         initialThreshold: initialThreshold,
-        currentUsageTokens: usageTokens,
+        usageListenable: _runtimeCoordinator,
+        readUsageTokens: () => _currentConversation?.latestPromptTokens ?? 0,
+        appliesToCurrentConversation: false,
         onThresholdSaved: (nextThreshold) async {
           if (nextThreshold == _codexContextTokenThreshold) {
             return true;
@@ -459,8 +546,16 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
   }
 
   /// 测量 `_inputAreaKey` 整柱高度（含 topBanner Goal bar），写入 inset。
+  ///
+  /// Goal bar、上下文顶栏和 composer 会在同一帧各调一次；每次都排回调就会在帧尾
+  /// 做多次 findRenderObject，所以这里合并成每帧一次。
   void _scheduleInputPillarHeightSync() {
+    if (_inputPillarHeightSyncScheduled) {
+      return;
+    }
+    _inputPillarHeightSyncScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _inputPillarHeightSyncScheduled = false;
       if (!mounted) return;
       if (!_isInputAreaVisible) {
         if (_inputPillarMeasuredHeight > 0.5) {
@@ -1355,8 +1450,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     final runtime = _runtimeForMode(mode);
     final resolvedMessages = runtime?.messages ?? _messagesByMode[mode]!;
     final activeAgentTaskIds = runtime?.activeAgentTaskIds ?? const <String>{};
-    final toolActivitySnapshot = resolveAgentToolActivitySnapshot(
-      List<ChatMessageModel>.from(resolvedMessages),
+    final toolActivitySnapshot = _resolveToolActivitySnapshotForMode(
+      mode: mode,
+      messages: resolvedMessages,
       activeTaskIds: activeAgentTaskIds,
       preferredCompletedTaskId: _latestExpandedAgentRunTaskIdForMode(mode),
     );
@@ -1626,8 +1722,9 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
     VoidCallback? onWorkspacePaneTap,
     bool showWorkspacePaneButton = false,
   }) {
-    final toolActivitySnapshot = resolveAgentToolActivitySnapshot(
-      List<ChatMessageModel>.from(_messages),
+    final toolActivitySnapshot = _resolveToolActivitySnapshotForMode(
+      mode: _activeMode,
+      messages: _messages,
       activeTaskIds: _activeRuntime?.activeAgentTaskIds ?? const <String>{},
       preferredCompletedTaskId: _latestExpandedAgentRunTaskIdForMode(
         _activeMode,
@@ -2622,7 +2719,11 @@ mixin _ChatPageUiMixin on _ChatPageStateBase {
       backgroundColor: Colors.transparent,
       builder: (_) => _ContextThresholdSheet(
         initialThreshold: conversation.promptTokenThreshold,
-        currentUsageTokens: conversation.latestPromptTokens,
+        usageListenable: _runtimeCoordinator,
+        readUsageTokens: () =>
+            _currentConversation?.id == conversation.id
+            ? _currentConversation!.latestPromptTokens
+            : conversation.latestPromptTokens,
         onThresholdSaved: (nextThreshold) async {
           final trackedConversation =
               _currentConversationByMode[ChatPageMode.normal];
@@ -3369,12 +3470,24 @@ class _PaneResizeHandle extends StatelessWidget {
 class _ContextThresholdSheet extends StatefulWidget {
   const _ContextThresholdSheet({
     required this.initialThreshold,
-    required this.currentUsageTokens,
+    required this.usageListenable,
+    required this.readUsageTokens,
     required this.onThresholdSaved,
+    this.appliesToCurrentConversation = true,
   });
 
   final int initialThreshold;
-  final int currentUsageTokens;
+
+  /// Normal mode writes the conversation row and takes effect at once; codex
+  /// mode writes `conf`, which only new conversations pick up.
+  final bool appliesToCurrentConversation;
+
+  /// Fires whenever context occupancy may have changed; the sheet stays open
+  /// across a whole turn, so the metrics row has to follow it live.
+  final Listenable usageListenable;
+
+  /// Reads current occupancy at build time.
+  final int Function() readUsageTokens;
   final Future<bool> Function(int threshold) onThresholdSaved;
 
   @override
@@ -3600,9 +3713,6 @@ class _ContextThresholdSheetState extends State<_ContextThresholdSheet> {
     final isDark = context.isDarkTheme;
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final draftThreshold = _draftThreshold.round();
-    final usageRatio = widget.currentUsageTokens <= 0
-        ? 0.0
-        : widget.currentUsageTokens / draftThreshold;
     final dividerColor = isDark
         ? palette.borderSubtle
         : palette.borderSubtle.withValues(alpha: 0.9);
@@ -3695,9 +3805,13 @@ class _ContextThresholdSheetState extends State<_ContextThresholdSheet> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    LegacyTextLocalizer.isEnglish
-                        ? 'Changes are auto-saved. The new threshold takes effect immediately.'
-                        : '修改后自动保存，新的阈值会立刻用于当前对话。',
+                    widget.appliesToCurrentConversation
+                        ? (LegacyTextLocalizer.isEnglish
+                              ? 'Changes are auto-saved. The new threshold takes effect immediately.'
+                              : '修改后自动保存，新的阈值会立刻用于当前对话。')
+                        : (LegacyTextLocalizer.isEnglish
+                              ? 'Changes are auto-saved and take effect on new conversations.'
+                              : '修改后自动保存，新的阈值在新开对话后生效。'),
                     style: TextStyle(
                       fontSize: 13,
                       height: 1.4,
@@ -3713,40 +3827,49 @@ class _ContextThresholdSheetState extends State<_ContextThresholdSheet> {
                         bottom: BorderSide(color: dividerColor),
                       ),
                     ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _ThresholdMetric(
-                            label: LegacyTextLocalizer.isEnglish
-                                ? 'Current context'
-                                : '当前上下文',
-                            value: _formatTokenCount(widget.currentUsageTokens),
-                            accent: palette.textPrimary,
-                          ),
-                        ),
-                        Container(width: 1, height: 38, color: dividerColor),
-                        Expanded(
-                          child: _ThresholdMetric(
-                            label: LegacyTextLocalizer.isEnglish
-                                ? 'Target threshold'
-                                : '目标阈值',
-                            value: _formatTokenCount(draftThreshold),
-                            accent: accentColor,
-                          ),
-                        ),
-                        Container(width: 1, height: 38, color: dividerColor),
-                        Expanded(
-                          child: _ThresholdMetric(
-                            label: LegacyTextLocalizer.isEnglish
-                                ? 'Usage'
-                                : '占用比例',
-                            value: _formatUsagePercent(usageRatio),
-                            accent: usageRatio >= 1
-                                ? warningColor
-                                : successColor,
-                          ),
-                        ),
-                      ],
+                    child: ListenableBuilder(
+                      listenable: widget.usageListenable,
+                      builder: (context, _) {
+                        final usageTokens = widget.readUsageTokens();
+                        final usageRatio = usageTokens <= 0
+                            ? 0.0
+                            : usageTokens / draftThreshold;
+                        return Row(
+                          children: [
+                            Expanded(
+                              child: _ThresholdMetric(
+                                label: LegacyTextLocalizer.isEnglish
+                                    ? 'Current context'
+                                    : '当前上下文',
+                                value: _formatTokenCount(usageTokens),
+                                accent: palette.textPrimary,
+                              ),
+                            ),
+                            Container(width: 1, height: 38, color: dividerColor),
+                            Expanded(
+                              child: _ThresholdMetric(
+                                label: LegacyTextLocalizer.isEnglish
+                                    ? 'Target threshold'
+                                    : '目标阈值',
+                                value: _formatTokenCount(draftThreshold),
+                                accent: accentColor,
+                              ),
+                            ),
+                            Container(width: 1, height: 38, color: dividerColor),
+                            Expanded(
+                              child: _ThresholdMetric(
+                                label: LegacyTextLocalizer.isEnglish
+                                    ? 'Usage'
+                                    : '占用比例',
+                                value: _formatUsagePercent(usageRatio),
+                                accent: usageRatio >= 1
+                                    ? warningColor
+                                    : successColor,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ),
                   const SizedBox(height: 18),
